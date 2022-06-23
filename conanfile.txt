@@ -1,0 +1,12 @@
+[requires]
+scine_utilities/[5.0.0]@
+scine_molassembler/[1.2.0]@
+scine_database/[1.0.0]@
+
+[options]
+scine_utilities:python=True
+scine_molassembler:python=True
+scine_database:python=True
+
+[generators]
+virtualenv_python
