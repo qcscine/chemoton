@@ -55,11 +55,11 @@ class CompoundFiltersTests(unittest.TestCase):
             structure.link(structures)
             structure.create(os.path.join(rr, xyz + ".xyz"), 0, 1)
             structure.set_label(db.Label.MINIMUM_OPTIMIZED)
-            structure.set_compound(db.ID())
+            structure.set_aggregate(db.ID())
             compound = db.Compound()
             compound.link(compounds)
             compound.create([structure.id()])
-            structure.set_compound(compound.id())
+            structure.set_aggregate(compound.id())
             test_compounds[xyz] = compound
 
         # Setup filter
@@ -114,11 +114,11 @@ class CompoundFiltersTests(unittest.TestCase):
             structure.link(structures)
             structure.create(os.path.join(rr, xyz + ".xyz"), 0, 1)
             structure.set_label(db.Label.MINIMUM_OPTIMIZED)
-            structure.set_compound(db.ID())
+            structure.set_aggregate(db.ID())
             compound = db.Compound()
             compound.link(compounds)
             compound.create([structure.id()])
-            structure.set_compound(compound.id())
+            structure.set_aggregate(compound.id())
             test_compounds[xyz] = compound
 
         # Setup filter
@@ -161,11 +161,11 @@ class CompoundFiltersTests(unittest.TestCase):
             structure.link(structures)
             structure.create(os.path.join(rr, xyz + ".xyz"), 0, 1)
             structure.set_label(db.Label.MINIMUM_OPTIMIZED)
-            structure.set_compound(db.ID())
+            structure.set_aggregate(db.ID())
             compound = db.Compound()
             compound.link(compounds)
             compound.create([structure.id()])
-            structure.set_compound(compound.id())
+            structure.set_aggregate(compound.id())
             test_compounds[xyz] = compound
 
         # Setup filter
@@ -205,11 +205,11 @@ class CompoundFiltersTests(unittest.TestCase):
             structure.link(structures)
             structure.create(os.path.join(rr, xyz + ".xyz"), 0, 1)
             structure.set_label(db.Label.MINIMUM_OPTIMIZED)
-            structure.set_compound(db.ID())
+            structure.set_aggregate(db.ID())
             compound = db.Compound()
             compound.link(compounds)
             compound.create([structure.id()])
-            structure.set_compound(compound.id())
+            structure.set_aggregate(compound.id())
             test_compounds[xyz] = compound
 
         # Setup filter
@@ -248,11 +248,11 @@ class CompoundFiltersTests(unittest.TestCase):
             structure.link(structures)
             structure.create(os.path.join(rr, xyz + ".xyz"), 0, 1)
             structure.set_label(db.Label.USER_OPTIMIZED)
-            structure.set_compound(db.ID())
+            structure.set_aggregate(db.ID())
             compound = db.Compound()
             compound.link(compounds)
             compound.create([structure.id()])
-            structure.set_compound(compound.id())
+            structure.set_aggregate(compound.id())
             test_compounds[xyz] = compound
 
             if xyz in ("water", "arginine"):
@@ -289,11 +289,11 @@ class CompoundFiltersTests(unittest.TestCase):
             structure.link(structures)
             structure.create(os.path.join(rr, xyz + ".xyz"), 0, 1)
             structure.set_label(db.Label.MINIMUM_OPTIMIZED)
-            structure.set_compound(db.ID())
+            structure.set_aggregate(db.ID())
             compound = db.Compound()
             compound.link(compounds)
             compound.create([structure.id()])
-            structure.set_compound(compound.id())
+            structure.set_aggregate(compound.id())
             test_compounds[xyz] = compound
 
         f = SelfReactionFilter()
@@ -328,7 +328,7 @@ class CompoundFiltersTests(unittest.TestCase):
             structure.link(structures)
             structure.create(os.path.join(rr, xyz + ".xyz"), 0, 1)
             structure.set_label(db.Label.MINIMUM_OPTIMIZED)
-            structure.set_compound(db.ID())
+            structure.set_aggregate(db.ID())
 
             if xyz in ["arginine", "h4o2"]:
                 data = np.loadtxt(os.path.join(rr, xyz + "_frequencies.dat"), dtype="float64")
@@ -342,7 +342,7 @@ class CompoundFiltersTests(unittest.TestCase):
             compound = db.Compound()
             compound.link(compounds)
             compound.create([structure.id()])
-            structure.set_compound(compound.id())
+            structure.set_aggregate(compound.id())
             test_compounds[xyz] = compound
 
         f = TrueMinimumFilter(structures, properties, 0.0)
@@ -383,11 +383,11 @@ class CompoundFiltersTests(unittest.TestCase):
             structure.link(structures)
             structure.create(os.path.join(rr, xyz + ".xyz"), 0, 1)
             structure.set_label(db.Label.MINIMUM_OPTIMIZED)
-            structure.set_compound(db.ID())
+            structure.set_aggregate(db.ID())
             compound = db.Compound()
             compound.link(compounds)
             compound.create([structure.id()])
-            structure.set_compound(compound.id())
+            structure.set_aggregate(compound.id())
             test_compounds[xyz] = compound
 
         # Setup filter
@@ -566,11 +566,11 @@ class CompoundFiltersTests(unittest.TestCase):
             structure.link(structures)
             structure.create(os.path.join(rr, xyz + ".xyz"), 0, 1)
             structure.set_label(db.Label.MINIMUM_OPTIMIZED)
-            structure.set_compound(db.ID())
+            structure.set_aggregate(db.ID())
             compound = db.Compound()
             compound.link(compounds)
             compound.create([structure.id()])
-            structure.set_compound(compound.id())
+            structure.set_aggregate(compound.id())
             test_compounds[xyz] = compound
 
         # Setup filter
@@ -614,11 +614,11 @@ class CompoundFiltersTests(unittest.TestCase):
             structure.link(structures)
             structure.create(os.path.join(rr, xyz + ".xyz"), 0, 1)
             structure.set_label(db.Label.MINIMUM_OPTIMIZED)
-            structure.set_compound(db.ID())
+            structure.set_aggregate(db.ID())
             compound = db.Compound()
             compound.link(compounds)
             compound.create([structure.id()])
-            structure.set_compound(compound.id())
+            structure.set_aggregate(compound.id())
             test_compounds[xyz] = compound
 
         # Setup filter

@@ -1,3 +1,4 @@
+-r requirements.txt
 matplotlib
 pytest
 coverage
@@ -8,5 +9,7 @@ sphinx_autodoc_typehints
 sphinx_copybutton
 numpydoc
 pylint
+pylint-exit
+mypy
 autopep8
 flake8

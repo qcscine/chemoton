@@ -6,7 +6,7 @@ See LICENSE.txt for details.
 """
 
 # Standard library imports
-from typing import Dict, List
+from typing import Dict, List, Optional
 from collections import Counter
 import numpy as np
 
@@ -14,36 +14,35 @@ import numpy as np
 import scine_database as db
 import scine_utilities as utils
 
+from scine_chemoton.gears import HoldsCollections
 
-class CompoundFilter:
+
+class CompoundFilter(HoldsCollections):
     """
     The base and default class for all filters. The default is to allow/pass all
     given checks.
 
     CompoundFilters are optional barriers in Chemoton that allow the user to cut down
     the exponential growth of the combinatorial explosion. The different
-    sub-classes of this main CompoundFilter allow for a tailored choice of which
+    subclasses of this main CompoundFilter allow for a tailored choice of which
     additional branches of the network to allow.
 
-    The are some predefined filters that will be given in Chemoton, however,
+    There are some predefined filters that will be given in Chemoton, however,
     it should be simple to extend as needed even on a per-project basis.
     The key element when sub-classing this interface is to override the `filter`
     functions as defined here. When sub-classing please be aware that these
     filters are expected to be called often. Having each call do loops over
     entire collections is not wise.
 
-    For the latter reason, user defined sub-classes are intended to be more
+    For the latter reason, user defined subclasses are intended to be more
     complex, allowing for non-database stored/cached data across a run.
-    This can be a significant speed up and allow for more intricate filtering.
+    This can be a significant speed-up and allow for more intricate filtering.
     """
 
     def __init__(self):
-        self._calculations = None
-        self._structures = None
-        self._compounds = None
-        self._reactions = None
-        self._elementary_steps = None
-        self._properties = None
+        super().__init__()
+        self._required_collections = ["calculations", "compounds", "elementary_steps",
+                                      "properties", "structures", "reactions"]
 
     def __and__(self, o):
         if not isinstance(o, CompoundFilter):
@@ -57,7 +56,7 @@ class CompoundFilter:
                             "(or derived class) to chain with.")
         return CompoundFilterOrArray([self, o])
 
-    def filter(self, compound_one: db.Compound, compound_two: db.Compound = None) -> bool:
+    def filter(self, _: db.Compound, __: db.Compound = None) -> bool:
         """
         The blueprint for a filter function, checking if both of the compounds
         are allowed to be used in an exploration (logical and). If only one
@@ -66,9 +65,9 @@ class CompoundFilter:
 
         Attributes
         ----------
-        compound_one :: db.Compound
+        _ :: db.Compound
             The compound to be checked.
-        compound_two :: db.Compound
+        _ :: db.Compound
             The other compound to be checked in the case of bimolecular reactions.
 
         Returns
@@ -90,8 +89,10 @@ class CompoundFilterAndArray(CompoundFilter):
         A list of filters to be combined.
     """
 
-    def __init__(self, filters: List[CompoundFilter] = None):
+    def __init__(self, filters: Optional[List[CompoundFilter]] = None):
         super().__init__()
+        if filters is None:
+            filters = []
         self._filters = filters
         for f in filters:
             if not isinstance(f, CompoundFilter):
@@ -117,6 +118,8 @@ class CompoundFilterOrArray(CompoundFilter):
 
     def __init__(self, filters: List[CompoundFilter] = None):
         super().__init__()
+        if filters is None:
+            filters = []
         self._filters = filters
         for f in filters:
             if not isinstance(f, CompoundFilter):
@@ -148,7 +151,7 @@ class ElementCountFilter(CompoundFilter):
 
     def __init__(self, atom_type_count: Dict[str, int], structures: db.Collection):
         super().__init__()
-        self.counts = Counter()
+        self.counts: Counter = Counter()
         for k, v in atom_type_count.items():
             self.counts.update({k.capitalize(): v})
         self._structures = structures
@@ -190,8 +193,7 @@ class ElementCountFilter(CompoundFilter):
 class ElementSumCountFilter(CompoundFilter):
     """
     Filters by atom counts. All given compounds must resolve to structures
-    that together fall below the given threshold. No assumptions about atom
-    counts of possible combinations/products are made in this filter.
+    that together fall below the given threshold.
 
     Attributes
     ----------
@@ -206,12 +208,12 @@ class ElementSumCountFilter(CompoundFilter):
 
     def __init__(self, atom_type_count: Dict[str, int], structures: db.Collection):
         super().__init__()
-        self.counts = Counter()
+        self.counts: Counter = Counter()
         for k, v in atom_type_count.items():
             self.counts.update({k.capitalize(): v})
         self._structures = structures
 
-    def filter(self, compound_one: db.Compound, compound_two: db.Compound = None) -> bool:
+    def filter(self, compound_one: db.Compound, compound_two: Optional[db.Compound] = None) -> bool:
         # One compound case
         if compound_two is None:
             structure = db.Structure(compound_one.get_centroid())
@@ -279,17 +281,13 @@ class MolecularWeightFilter(CompoundFilter):
         # One compound case
         if compound_two is None:
             structure = db.Structure(compound_one.get_centroid())
-            if self._calculate_weight(structure) < self.max_weight:
-                return True
-            return False
+            return self._calculate_weight(structure) < self.max_weight
         # Two compounds case
         structure_one = db.Structure(compound_one.get_centroid())
         structure_two = db.Structure(compound_two.get_centroid())
         weight_one = self._calculate_weight(structure_one)
         weight_two = self._calculate_weight(structure_two)
-        if weight_one < self.max_weight and weight_two < self.max_weight:
-            return True
-        return False
+        return weight_one < self.max_weight and weight_two < self.max_weight
 
     def _calculate_weight(self, structure: db.Structure) -> float:
         """
@@ -334,9 +332,7 @@ class IDFilter(CompoundFilter):
         compound_ids.add(compound_one.get_id().string())
         if compound_two is not None:
             compound_ids.add(compound_two.get_id().string())
-        if compound_ids.issubset(self.reactive_ids):
-            return True
-        return False
+        return compound_ids.issubset(self.reactive_ids)
 
 
 class SelfReactionFilter(CompoundFilter):
@@ -351,9 +347,7 @@ class SelfReactionFilter(CompoundFilter):
         # Get compound ids
         compound_one_id = compound_one.get_id().string()
         compound_two_id = compound_two.get_id().string()
-        if compound_one_id != compound_two_id:
-            return True
-        return False
+        return compound_one_id != compound_two_id
 
 
 class TrueMinimumFilter(CompoundFilter):
@@ -397,20 +391,14 @@ class TrueMinimumFilter(CompoundFilter):
         # One compound case
         if compound_two is None:
             structure = db.Structure(compound_one.get_centroid())
-            if self._frequency_check(structure):
-                return True
-            else:
-                return False
+            return self._frequency_check(structure)
         # Two compounds case
         structure_one = db.Structure(compound_one.get_centroid())
         structure_two = db.Structure(compound_two.get_centroid())
         # Frequency Check
         freq_check_one = self._frequency_check(structure_one)
         freq_check_two = self._frequency_check(structure_two)
-        if freq_check_one and freq_check_two:
-            return True
-        else:
-            return False
+        return freq_check_one and freq_check_two
 
     def _frequency_check(self, structure: db.Structure) -> bool:
         """
@@ -444,11 +432,7 @@ class TrueMinimumFilter(CompoundFilter):
         freq.link(self._properties)
 
         # # # Check, if there is a frequency below the threshold
-        imaginary_frequency = np.any(freq.get_data() < self.imaginary_frequency_threshold)
-        if imaginary_frequency:
-            return False
-
-        return True
+        return not np.any(freq.get_data() < self.imaginary_frequency_threshold)
 
 
 class CatalystFilter(CompoundFilter):
@@ -462,7 +446,7 @@ class CatalystFilter(CompoundFilter):
     i) reactions that feature the catalyst and one other compound that is not
     the catalyst.
     ii) reactions that only involve a single compound (not restricted to the
-    catalyst)
+    catalyst, unless specified otherwise with flag (see parameters))
 
     Attributes
     ----------
@@ -474,18 +458,24 @@ class CatalystFilter(CompoundFilter):
         order to ban atoms, set their count to zero.
     structures :: db.Collection
         The collection of structures to be used for the counting of elements.
+    restrict_unimolecular_to_catalyst :: bool
+        Whether unimolecular reactions should also be limited to the catalyst.
     """
 
-    def __init__(self, atom_type_count: Dict[str, int], structures: db.Collection):
+    def __init__(self, atom_type_count: Dict[str, int], structures: db.Collection,
+                 restrict_unimolecular_to_catalyst: bool = False):
         super().__init__()
-        self.counts = Counter()
+        self.counts: Counter = Counter()
         for k, v in atom_type_count.items():
             self.counts.update({k.capitalize(): v})
         self._structures = structures
+        self._restrict_unimolecular_to_catalyst = restrict_unimolecular_to_catalyst
 
     def filter(self, compound_one: db.Compound, compound_two: db.Compound = None) -> bool:
         # One compound case
         if compound_two is None:
+            if self._restrict_unimolecular_to_catalyst:
+                return self._check_if_catalyst(db.Structure(compound_one.get_centroid()))
             return True
         # Two compounds case
         structure_one = db.Structure(compound_one.get_centroid())
@@ -600,12 +590,7 @@ class SelectedCompoundIDFilter(CompoundFilter):
         if compound_two is None:
             return one_is_reactive
         # Two compound case
-        else:
-            two_is_reactive = compound_two.get_id().string() in self.reactive_ids
-            one_is_selected = compound_one.get_id().string() in self.selected_ids or one_is_reactive
-            two_is_selected = compound_two.get_id().string() in self.selected_ids or two_is_reactive
-            if one_is_reactive and two_is_selected:
-                return True
-            if two_is_reactive and one_is_selected:
-                return True
-        return False
+        two_is_reactive = compound_two.get_id().string() in self.reactive_ids
+        one_is_selected = compound_one.get_id().string() in self.selected_ids or one_is_reactive
+        two_is_selected = compound_two.get_id().string() in self.selected_ids or two_is_reactive
+        return (one_is_reactive and two_is_selected) or (two_is_reactive and one_is_selected)

@@ -8,7 +8,7 @@ See LICENSE.txt for details.
 # Standard library imports
 import numpy as np
 from copy import deepcopy
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union, Generator
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial import distance_matrix
 
@@ -27,8 +27,8 @@ def assemble_reactive_complex(
     atoms2: utils.AtomCollection,
     lhs_list: List[int],
     rhs_list: List[int],
-    x_alignment_0: List[float] = [],
-    x_alignment_1: List[float] = [],
+    x_alignment_0: Optional[List[float]] = None,
+    x_alignment_1: Optional[List[float]] = None,
     x_rotation: float = 0.0,
     x_spread: float = 2.0,
     displacement: float = 0.0,
@@ -83,6 +83,10 @@ def assemble_reactive_complex(
         The LHS and RHS lists with indices adapted to the reactive complex
         structure.
     """
+    if x_alignment_0 is None:
+        x_alignment_0 = []
+    if x_alignment_1 is None:
+        x_alignment_1 = []
     elements1 = atoms1.elements
     elements2 = atoms2.elements
     coordinates1 = atoms1.positions
@@ -156,6 +160,7 @@ class InterReactiveComplexes(ReactiveComplexes):
     def __init__(self):
         super().__init__()
         self.options = self.Options()
+        self.__cache = {}
 
     @staticmethod
     def _rotation_to_vector(to_rotate: np.ndarray, direction: np.ndarray):
@@ -238,7 +243,7 @@ class InterReactiveComplexes(ReactiveComplexes):
 
     @staticmethod
     def _prune_buried_points(
-        indices: Tuple[int],
+        indices: Union[Tuple[int], Tuple[int, int]],
         coords: np.ndarray,
         element_types: List[utils.ElementType],
         points: np.ndarray,
@@ -252,7 +257,7 @@ class InterReactiveComplexes(ReactiveComplexes):
 
         Parameters
         ----------
-        indices : Tuple[int]
+        indices : Union[Tuple[int], Tuple[int, int]]
             The indices of the atoms around whose centroid the points are
             centered.
         coords : np.ndarray of shape (n,3)
@@ -274,7 +279,7 @@ class InterReactiveComplexes(ReactiveComplexes):
         # Identify close atoms that are not within indices
         close_atoms = []
         vdw_params = []
-        centroid = np.mean(coords[indices], axis=0)
+        centroid = np.mean(coords[list(indices)], axis=0)
         for idx, (c, e) in enumerate(zip(coords, element_types)):
             if idx in indices:
                 continue
@@ -344,7 +349,7 @@ class InterReactiveComplexes(ReactiveComplexes):
 
     def _prune_by_repulsion(
         self,
-        indices: Tuple[int],
+        indices: Union[Tuple[int], Tuple[int, int]],
         coords: np.ndarray,
         element_types: List,
         points: np.ndarray,
@@ -401,7 +406,7 @@ class InterReactiveComplexes(ReactiveComplexes):
         # Identify close atoms
         close_atoms = []
         vdw_params = []
-        centroid = np.mean(coords[indices], axis=0)
+        centroid = np.mean(coords[list(indices)], axis=0)
         for idx, (c, e) in enumerate(zip(coords, element_types)):
             if idx in indices:
                 continue
@@ -413,13 +418,14 @@ class InterReactiveComplexes(ReactiveComplexes):
         # Calculate Repulsion
         repulsion = []
         for p in points:
-            r = 0.0
+            r: float = 0.0
             for c in close_atoms:
                 dist = np.linalg.norm(c - p)
                 if dist <= 0.0:
                     r += float("inf")
                 else:
-                    r += 1 / (dist ** 6)
+                    d2 = dist * dist
+                    r += float(1.0 / (d2 * d2 * d2))
             repulsion.append(r)
 
         if self.options.multiple_attack_points:
@@ -440,7 +446,7 @@ class InterReactiveComplexes(ReactiveComplexes):
                 pruned_repulsion.append(repulsion[k])
             # Rule out valleys of many close attack points
             pruned = self._prune_close_attack_points(
-                repulsion_pruned, pruned_repulsion, radius, min_angle=min_angle_distance
+                repulsion_pruned, np.asarray(pruned_repulsion), radius, min_angle=min_angle_distance
             )
 
             if pruned.size > 0:
@@ -492,10 +498,10 @@ class InterReactiveComplexes(ReactiveComplexes):
             possible_directions = deepcopy(initial_points) * utils.ElementInfo.vdw_radius(e)
             possible_directions += coords[i]
             possible_directions = self._prune_by_repulsion(
-                [i], coords, element_types, possible_directions, nearest_neighbors, utils.ElementInfo.vdw_radius(e)
+                (i,), coords, element_types, possible_directions, nearest_neighbors, utils.ElementInfo.vdw_radius(e)
             )
             possible_directions = self._prune_buried_points(
-                [i], coords, element_types, possible_directions, vdw_scaling=vdw_scaling
+                (i,), coords, element_types, possible_directions, vdw_scaling=vdw_scaling
             )
             if not possible_directions.size == 0:
                 if (i,) in per_atom:
@@ -553,10 +559,10 @@ class InterReactiveComplexes(ReactiveComplexes):
             possible_directions += 0.5 * (coords[i] + coords[j])
             # Prune
             possible_directions = self._prune_by_repulsion(
-                [i, j], coords, element_types, possible_directions, nearest_neighbors, circle_radius
+                (i, j), coords, element_types, possible_directions, nearest_neighbors, circle_radius
             )
             possible_directions = self._prune_buried_points(
-                [i, j], coords, element_types, possible_directions, vdw_scaling=vdw_scaling
+                (i, j), coords, element_types, possible_directions, vdw_scaling=vdw_scaling
             )
             # Since indices are stored empty entries are not necessary
             if not possible_directions.size == 0:
@@ -576,7 +582,7 @@ class InterReactiveComplexes(ReactiveComplexes):
         elem2: List[utils.ElementType],
         sites2: List[int],
         attack_points2: np.ndarray,
-    ) -> List[Tuple[np.array, np.array, float, float]]:
+    ) -> List[Tuple[np.ndarray, np.ndarray, float, float]]:
         """
         Returns the operations to align the given molecules such that
         'centroid(sites1)'--'attack_point1'--'attack_point2'--centroid(sites2)
@@ -626,8 +632,9 @@ class InterReactiveComplexes(ReactiveComplexes):
         # Get average coordinate and vdW radii
         reactive_center1 = np.mean(coordinates1[sites1], axis=0)
         reactive_center2 = np.mean(coordinates2[sites2], axis=0)
-        vdw_average = np.mean(
-            [utils.ElementInfo.vdw_radius(el) for el in list(np.array(elem1)[sites1]) + list(np.array(elem2)[sites2])]
+        vdw_average: float = np.mean(  # type: ignore
+            [utils.ElementInfo.vdw_radius(el) for el in list(
+                np.array(elem1)[sites1]) + list(np.array(elem2)[sites2])]
         )
         # Loop over all attack points
         for attack_point1 in attack_points1:
@@ -670,7 +677,8 @@ class InterReactiveComplexes(ReactiveComplexes):
                     # Rotate a bit around x - axis to distort symmetry
                     angle = 0.1
                     r_breaksymm = np.array(
-                        [[1.0, 0.0, 0.0], [0.0, np.cos(angle), -np.sin(angle)], [0.0, np.sin(angle), np.cos(angle)]]
+                        [[1.0, 0.0, 0.0], [0.0, np.cos(angle), -np.sin(angle)],
+                         [0.0, np.sin(angle), np.cos(angle)]]
                     )
                     coord2 = (r_breaksymm.dot(coord2.T)).T
                     # Combine with previous rotation transformation
@@ -719,19 +727,20 @@ class InterReactiveComplexes(ReactiveComplexes):
                             #  sites are within +-90 degrees of each other
                             # Endpoint logic ensures that angle zero is always included and
                             # 90 removed instead in case of even number of rotamers requested
-                            angles = np.linspace(
+                            angles = list(np.linspace(
                                 -np.pi / 2,
                                 np.pi / 2.0,
                                 num=self.options.number_rotamers_two_on_two,
                                 endpoint=bool(self.options.number_rotamers_two_on_two % 2),
-                            )
+                            ))
 
                     else:
                         # range(0, 2*np.pi) 2*np.pi / n_rotamers
-                        angles = np.linspace(0.0, 2 * np.pi, num=self.options.number_rotamers, endpoint=False)
+                        angles = list(np.linspace(0.0, 2 * np.pi, num=self.options.number_rotamers, endpoint=False))
                     for angle in angles:
                         x_rot = np.array(
-                            [[1.0, 0.0, 0.0], [0.0, np.cos(angle), -np.sin(angle)], [0.0, np.sin(angle), np.cos(angle)]]
+                            [[1.0, 0.0, 0.0], [0.0, np.cos(angle), -np.sin(angle)],
+                             [0.0, np.sin(angle), np.cos(angle)]]
                         )
                         coord4 = x_rot.dot(coord2.T).T
                         # Check again if none of the atoms are too close and shift eventually
@@ -742,8 +751,8 @@ class InterReactiveComplexes(ReactiveComplexes):
         return tuple_list
 
     def generate_reactive_complexes(
-        self, structure1: db.Structure, structure2: db.Structure, reactive_inter_coords: Tuple[Tuple[Tuple[int]]]
-    ) -> Tuple[List[Tuple[int]], np.array, np.array, float, float]:
+        self, structure1: db.Structure, structure2: db.Structure, reactive_inter_coords: List[List[Tuple[int, int]]]
+    ) -> Generator[Tuple[List[Tuple[int, int]], np.ndarray, np.ndarray, float, float], None, None]:
         """
         Generates a set of reactive complexes for two given structures arising from
         the given intermolecular reactive pairs.
@@ -753,7 +762,7 @@ class InterReactiveComplexes(ReactiveComplexes):
         structure1, structure2 :: scine_database.Structure (Scine::Database::Structure)
             The two structures for which a set of reactive complexes is to be
             generated. The structures have to be linked to a collection.
-        reactive_inter_coord : List[List[Tuple[int]]]
+        reactive_inter_coords : List[List[Tuple[int, int]]]
             A list of intermolecular reactive atom pairs corresponding to one
             trial reaction coordinate. Each reactive pair tuple has to be
             ordered such that its first element belongs to structure1
@@ -781,22 +790,40 @@ class InterReactiveComplexes(ReactiveComplexes):
         atoms1 = structure1.get_atoms()
         coordinates1 = atoms1.positions
         elements1 = atoms1.elements
+        id1 = str(structure1.get_id())
 
         # Get structure two data
         atoms2 = structure2.get_atoms()
         coordinates2 = atoms2.positions
         elements2 = atoms2.elements
+        id2 = str(structure1.get_id())
 
         # Get all attack points needed
         # A dictionary with the attack points stored for all relevant atoms and
         #  atom pairs with the indices being the keys
-        attacked_atoms1 = set()
-        attacked_pairs1 = set()
-        attacked_atoms2 = set()
-        attacked_pairs2 = set()
 
-        # TODO Avoid creation of all attack points before any calculation is set up
-        # TODO Take one coord at a time from the outside and store attack points for further calls?
+        # Load cache if possible
+        if id1 in self.__cache:
+            attack_points1 = self.__cache[id1]["points"]
+            attacked_atoms1 = self.__cache[id1]["atoms"]
+            attacked_pairs1 = self.__cache[id1]["pairs"]
+        else:
+            attack_points1 = {}
+            attacked_atoms1 = set()
+            attacked_pairs1 = set()
+        if id2 in self.__cache:
+            attack_points2 = self.__cache[id2]["points"]
+            attacked_atoms2 = self.__cache[id2]["atoms"]
+            attacked_pairs2 = self.__cache[id2]["pairs"]
+        else:
+            attack_points2 = {}
+            attacked_atoms2 = set()
+            attacked_pairs2 = set()
+
+        new_attacked_atoms1 = set()
+        new_attacked_pairs1 = set()
+        new_attacked_atoms2 = set()
+        new_attacked_pairs2 = set()
         for coord in reactive_inter_coords:
 
             if len(coord) > 2:
@@ -804,27 +831,29 @@ class InterReactiveComplexes(ReactiveComplexes):
 
             elif len(coord) == 1:
                 # If one atom pair only, then the sites on both structures are monoatomic
-                attacked_atoms1.add(coord[0][0])
-                attacked_atoms2.add(coord[0][1])
+                if coord[0][0] not in attacked_atoms1:
+                    new_attacked_atoms1.add(coord[0][0])
+                if coord[0][1] not in attacked_atoms2:
+                    new_attacked_atoms2.add(coord[0][1])
             elif len(coord) == 2:
                 # Get unique reactive atoms per structure to check whether twice the same atom or distinct atom pair
                 struct1_sites = set(pair[0] for pair in coord)
                 struct2_sites = set(pair[1] for pair in coord)
-                if len(struct1_sites) == 1:
-                    attacked_atoms1.update(struct1_sites)
-                elif len(struct1_sites) == 2:
-                    attacked_pairs1.add(tuple(sorted(struct1_sites)))
-                else:
+                if len(struct1_sites) == 1 and not struct1_sites.issubset(attacked_atoms1):
+                    new_attacked_atoms1.update(struct1_sites)
+                elif len(struct1_sites) == 2 and not tuple(sorted(struct1_sites)) in attacked_pairs1:
+                    new_attacked_pairs1.add(tuple(sorted(struct1_sites)))
+                elif len(struct1_sites) > 2:
                     # Should not be reachable
                     raise RuntimeError(
                         "More than two atoms per structure involved in "
                         + "interstructural reaction coordinates are not supported"
                     )
-                if len(struct2_sites) == 1:
-                    attacked_atoms2.update(struct2_sites)
-                elif len(struct2_sites) == 2:
-                    attacked_pairs2.add(tuple(sorted(struct2_sites)))
-                else:
+                if len(struct2_sites) == 1 and not struct2_sites.issubset(attacked_atoms2):
+                    new_attacked_atoms2.update(struct2_sites)
+                elif len(struct2_sites) == 2 and not tuple(sorted(struct2_sites)) in attacked_pairs2:
+                    new_attacked_pairs2.add(tuple(sorted(struct2_sites)))
+                elif len(struct2_sites) > 2:
                     # Should not be reachable
                     raise RuntimeError(
                         "More than two atoms per structure involved in interstructural "
@@ -832,10 +861,33 @@ class InterReactiveComplexes(ReactiveComplexes):
                     )
 
         # Generate attack points around atoms
-        attack_points1 = self._get_attack_points_per_atom(coordinates1, elements1, indices=attacked_atoms1)
-        attack_points2 = self._get_attack_points_per_atom(coordinates2, elements2, indices=attacked_atoms2)
-        attack_points1.update(self._get_attack_points_per_atom_pair(coordinates1, elements1, attacked_pairs1))
-        attack_points2.update(self._get_attack_points_per_atom_pair(coordinates2, elements2, attacked_pairs2))
+        attack_points1.update(self._get_attack_points_per_atom(
+            coordinates1, elements1, indices=list(new_attacked_atoms1)))
+        attack_points2.update(self._get_attack_points_per_atom(
+            coordinates2, elements2, indices=list(new_attacked_atoms2)))
+        attack_points1.update(self._get_attack_points_per_atom_pair(
+            coordinates1, elements1, list(new_attacked_pairs1)))
+        attack_points2.update(self._get_attack_points_per_atom_pair(
+            coordinates2, elements2, list(new_attacked_pairs2)))
+
+        # Update cache
+        attacked_atoms1.update(new_attacked_atoms1)
+        attacked_pairs1.update(new_attacked_pairs1)
+        attacked_atoms2.update(new_attacked_atoms2)
+        attacked_pairs2.update(new_attacked_pairs2)
+        self.__cache = {
+            id1: {
+                "points": attack_points1,
+                "atoms": attacked_atoms1,
+                "pairs": attacked_pairs1,
+            },
+            id2: {
+                "points": attack_points2,
+                "atoms": attacked_atoms2,
+                "pairs": attacked_pairs2,
+            }
+        }
+
         # Generate requested complexes
         for coord in reactive_inter_coords:
             # Get reactive fragments from coordinates without duplicate atoms
@@ -849,7 +901,8 @@ class InterReactiveComplexes(ReactiveComplexes):
                     sites2.append(pair[1])
 
             # Get matching attack points
-            # Do not sort sites in place because order relevant for alignment in rotamer generation
+            # Do not sort sites in place because the order is relevant for
+            #  the alignment in the rotamer generation
             sorted_sites1 = tuple(sorted(sites1))
             sorted_sites2 = tuple(sorted(sites2))
             # If all attack points are buried for one of the reactants there is nothing to set up

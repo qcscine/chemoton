@@ -34,7 +34,7 @@ def test_bimol():
     calculations = manager.get_collection("calculations")
 
     # Add fake data
-    model = db.Model("FAKE", "", "")
+    model = db.Model("FAKE", "FAKE", "F-AKE")
     rr = resources_root_path()
     structure_list = []
     for mol in ["hydrogenperoxide", "water"]:
@@ -49,7 +49,7 @@ def test_bimol():
         compound = db.Compound()
         compound.link(compounds)
         compound.create([structure.id()])
-        structure.set_compound(compound.id())
+        structure.set_aggregate(compound.id())
         structure_list.append(structure)
 
     # Setup trial generator with impossible settings:
@@ -266,7 +266,7 @@ def test_unimol_dissociations():
     calculations = manager.get_collection("calculations")
 
     # Add fake data
-    model = db.Model("FAKE", "", "")
+    model = db.Model("FAKE", "FAKE", "F-AKE")
     rr = resources_root_path()
     for mol in ["cyclohexene"]:
         graph = json.load(open(os.path.join(rr, mol + ".json"), "r"))
@@ -280,7 +280,7 @@ def test_unimol_dissociations():
         compound = db.Compound()
         compound.link(compounds)
         compound.create([structure.id()])
-        structure.set_compound(compound.id())
+        structure.set_aggregate(compound.id())
 
     # Setup trial generator with settings that cannot be fulfilled
     trial_generator = BondBased()
@@ -412,7 +412,7 @@ def test_unimol_associations():
     calculations = manager.get_collection("calculations")
 
     # Add fake data
-    model = db.Model("FAKE", "", "")
+    model = db.Model("FAKE", "FAKE", "F-AKE")
     rr = resources_root_path()
     for mol in ["hydrogenperoxide"]:
         graph = json.load(open(os.path.join(rr, mol + ".json"), "r"))
@@ -426,7 +426,7 @@ def test_unimol_associations():
         compound = db.Compound()
         compound.link(compounds)
         compound.create([structure.id()])
-        structure.set_compound(compound.id())
+        structure.set_aggregate(compound.id())
 
     # Setup trial generator with settings that cannot be fulfilled
     trial_generator = BondBased()
@@ -563,7 +563,7 @@ def test_unimol_mixed():
     calculations = manager.get_collection("calculations")
 
     # Add fake data
-    model = db.Model("FAKE", "", "")
+    model = db.Model("FAKE", "FAKE", "F-AKE")
     rr = resources_root_path()
     for mol in ["hydrogenperoxide"]:
         graph = json.load(open(os.path.join(rr, mol + ".json"), "r"))
@@ -577,7 +577,7 @@ def test_unimol_mixed():
         compound = db.Compound()
         compound.link(compounds)
         compound.create([structure.id()])
-        structure.set_compound(compound.id())
+        structure.set_aggregate(compound.id())
 
     # Setup trial generator for either one dissociation or one association
     trial_generator = BondBased()

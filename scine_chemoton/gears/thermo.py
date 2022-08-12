@@ -15,6 +15,7 @@ import scine_utilities as utils
 # Local application imports
 from ..gears import Gear
 from ..utilities.queries import model_query, stationary_points, stop_on_timeout
+from ..utilities.calculation_creation_helpers import finalize_calculation
 
 
 class BasicThermoDataCompletion(Gear):
@@ -51,7 +52,7 @@ class BasicThermoDataCompletion(Gear):
                 takes longer than the cycle_time will effectively lead to longer
                 cycle times and not cause multiple cycles of the same Gear.
             """
-            self.model: db.Model = db.Model("PM6", "", "")
+            self.model: db.Model = db.Model("PM6", "PM6", "")
             """
             db.Model (Scine::Database::Model)
                 The Model used for the Hessian/thermo chemistry calculations.
@@ -74,9 +75,7 @@ class BasicThermoDataCompletion(Gear):
     def __init__(self):
         super().__init__()
         self.options = self.Options()
-        self._calculations = "required"
-        self._structures = "required"
-        self._properties = "required"
+        self._required_collections = ["calculations", "properties", "structures"]
 
     def _loop_impl(self):
         # Setup query for optimized structures linked to a compound and transition states
@@ -90,7 +89,7 @@ class BasicThermoDataCompletion(Gear):
             # Check if a calculation for this is already scheduled
             selection = {
                 "$and": [
-                    {"job.order": {"$eq": self.options.job.order}},
+                    {"job.order": self.options.job.order},
                     {"structures": {"$oid": structure.id().string()}},
                 ]
                 + model_query(self.options.model)
@@ -102,4 +101,4 @@ class BasicThermoDataCompletion(Gear):
             hessian.create(self.options.model, self.options.job, [structure.id()])
             if self.options.settings:
                 hessian.set_settings(self.options.settings)
-            hessian.set_status(db.Status.HOLD)
+            finalize_calculation(hessian, self._structures)

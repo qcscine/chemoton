@@ -6,10 +6,9 @@ See LICENSE.txt for details.
 """
 
 # Standard library imports
-from typing import Tuple
+from typing import List, Tuple
 from json import dumps
 import os
-import pytest
 import random
 
 # Third party imports
@@ -24,9 +23,9 @@ from ..utilities.queries import identical_reaction
 def get_test_db_credentials(name: str = "chemoton_unittests") -> db.Credentials:
     """
     Generate a set of credentials pointing to a database and server.
-    The server port is assumed to be 27017 and the IP is either ``127.0.0.1``
-    or the values of the ``TEST_MONGO_DB_IP`` environment variable, with the
-    latter having precedence over the former.
+    The server IP and port are assumed to be `127.0.0.1` and `27017`
+    unless specified otherwise with the environment variables
+    ``TEST_MONGO_DB_IP`` and ``TEST_MONGO_DB_PORT``.
 
     Parameters
     ----------
@@ -36,12 +35,11 @@ def get_test_db_credentials(name: str = "chemoton_unittests") -> db.Credentials:
     Returns
     -------
     result :: db.Credentials
-        The credentials for toa access the test database.
+        The credentials to access the test database.
     """
-    ip = "127.0.0.1"
-    if os.environ.get("TEST_MONGO_DB_IP") is not None:
-        ip = os.environ.get("TEST_MONGO_DB_IP")
-    return db.Credentials(ip, 27017, name)
+    ip = os.environ.get('TEST_MONGO_DB_IP', "127.0.0.1")
+    port = os.environ.get('TEST_MONGO_DB_PORT', "27017")
+    return db.Credentials(ip, int(port), name)
 
 
 def get_clean_db(name: str = "chemoton_unittests") -> db.Manager:
@@ -75,6 +73,7 @@ def get_clean_db(name: str = "chemoton_unittests") -> db.Manager:
 
 def get_random_db(
     n_compounds: int,
+    n_flasks: int,
     n_reactions: int,
     max_r_per_c: int,
     name: str = "chemoton_unittests",
@@ -91,25 +90,27 @@ def get_random_db(
     Parameters
     ----------
     n_compounds :: int
-        The number of compounds each with a random number of structures
+        The number of compounds each with a random number of structures.
+    n_flasks :: int
+        The number of flasks each with a random number of structures.
     n_reactions :: int
-        The number of reactions each with a random number of elementary steps
+        The number of reactions each with a random number of elementary steps.
     max_r_per_c :: int
-        The maximum number of reactions per compound
+        The maximum number of reactions per compound.
     name :: str
         The name of the database to connect to.
     max_n_products_per_r :: int
-        The maximum number of possible products for a single reaction
+        The maximum number of possible products for a single reaction.
     max_n_educts_per_r :: int
-        The maximum number of possible educts for a single reaction
+        The maximum number of possible educts for a single reaction.
     max_s_per_c :: int
-        The maximum number of possible structures for a single compound
+        The maximum number of possible structures for a single compound.
     max_steps_per_r :: int
-        The maximum number of possible steps for a single reaction
+        The maximum number of possible steps for a single reaction.
     barrier_limits :: Tuple[float, float]
-        The lowest and highest possible barrier for a single reaction in kJ/mol
+        The lowest and highest possible barrier for a single reaction in kJ/mol.
     n_inserts :: int
-        The number of compounds in the network that are marked as inserted by the user
+        The number of compounds in the network that are marked as inserted by the user.
 
     Returns
     -------
@@ -123,7 +124,7 @@ def get_random_db(
     assert n_inserts > 0
     assert n_inserts <= n_compounds
     # enough reactions and allowed products to create the non-user-inserted compounds
-    assert n_compounds < n_reactions * max_n_products_per_r
+    assert n_compounds < (n_reactions - n_flasks) * max_n_products_per_r
     # enough compounds for the biggest possible reaction
     assert n_compounds > max_n_products_per_r + max_n_educts_per_r
     # at least 2 compounds per reaction -> maximum allowed number of reactions
@@ -134,6 +135,7 @@ def get_random_db(
     manager = get_clean_db(name)
     properties = manager.get_collection("properties")
     compounds = manager.get_collection("compounds")
+    flasks = manager.get_collection("flasks")
     reactions = manager.get_collection("reactions")
     structures = manager.get_collection("structures")
     elementary_steps = manager.get_collection("elementary_steps")
@@ -141,7 +143,7 @@ def get_random_db(
     for _ in range(n_inserts):
         _create_compound(max_s_per_c, properties, compounds, structures, user_input=True)
 
-    for _ in range(n_reactions):
+    for _ in range(n_reactions - n_flasks):
         _create_reaction(
             n_compounds,
             max_s_per_c,
@@ -185,13 +187,13 @@ def get_random_db(
             random_reaction.link(reactions)
             products = random_reaction.get_reactants(db.Side.RHS)[1]
             for product_id in products:
-                selection = {"rhs": {"$oid": str(product_id)}}
+                selection = {"rhs": {"$elemMatch": {"id": {"$oid": str(product_id)}}}}
                 if reactions.count(dumps(selection)) > 1:
                     multiple_product = db.Compound(product_id)
                     multiple_product.link(compounds)
                     multiple_product.remove_reaction(random_reaction.get_id())
                     random_reaction.remove_reactant(product_id, db.Side.RHS)
-                    random_reaction.add_reactant(compound.get_id(), db.Side.RHS)
+                    random_reaction.add_reactant(compound.get_id(), db.Side.RHS, db.CompoundOrFlask.COMPOUND)
                     _redo_elementary_steps(
                         random_reaction,
                         max_steps_per_r,
@@ -204,9 +206,104 @@ def get_random_db(
                     got_reaction = True
                     break
 
+    possibilities = []
+    for reaction in reactions.iterate_all_reactions():
+        possibilities.append((reaction.get_id(), db.Side.LHS))
+        possibilities.append((reaction.get_id(), db.Side.RHS))
+    random.shuffle(possibilities)
+    for lot in range(n_flasks):
+        rid, side = possibilities[lot]
+        _insert_flask(
+            rid,
+            side,
+            flasks,
+            structures,
+            reactions,
+            elementary_steps,
+            properties,
+            compounds
+        )
+
     assert compounds.count("{}") == n_compounds
     assert reactions.count("{}") == n_reactions
     return manager
+
+
+def _insert_flask(
+    rid,
+    side,
+    flasks,
+    structures,
+    reactions,
+    elementary_steps,
+    properties,
+    compounds
+):
+    # Generate complex and flask
+    flask = db.Flask()
+    flask.link(flasks)
+    flask.create([], [])
+    flask.disable_exploration()
+    complex = db.Structure()
+    complex.link(structures)
+    complex.create(os.path.join(resources_root_path(), "water.xyz"), 0, 1)
+    complex.set_label(db.Label.COMPLEX_OPTIMIZED)
+    complex.set_aggregate(flask.get_id())
+    complex.set_model(db.Model("FAKE", "FAKE", "F-AKE"))
+    add_random_energy(complex, (-10000.0, -1000.0), properties)
+    flask.add_structure(complex.get_id())
+    # Update original reaction and elementary steps
+    reaction = db.Reaction(rid)
+    reaction.link(reactions)
+    reactants = reaction.get_reactants(side)
+    if side == db.Side.LHS:
+        reactants = reactants[0]
+    else:
+        reactants = reactants[1]
+    reaction.set_reactants([flask.get_id()], side, [db.CompoundOrFlask.FLASK])
+    for esid in reaction.get_elementary_steps():
+        es = db.ElementaryStep(esid)
+        es.link(elementary_steps)
+        step_reactants = es.get_reactants(side)
+        if side == db.Side.LHS:
+            step_reactants = step_reactants[0]
+        else:
+            step_reactants = step_reactants[1]
+        for srid in step_reactants:
+            s = db.Structure(srid)
+            s.link(structures)
+            assert s.get_compound() in reactants
+        es.set_reactants([complex.get_id()], side)
+    # Insert barrierless reaction with elementary step
+    new_reaction = db.Reaction()
+    new_reaction.link(reactions)
+    new_step = db.ElementaryStep()
+    new_step.link(elementary_steps)
+    if side == db.Side.LHS:
+        new_step.create([r for r in step_reactants], [complex.get_id()])
+        new_reaction.create(
+            reactants,
+            [flask.get_id()],
+            [db.CompoundOrFlask.COMPOUND for _ in reactants],
+            [db.CompoundOrFlask.FLASK],
+        )
+    else:
+        new_step.create([complex.get_id()], [r for r in step_reactants])
+        new_reaction.create(
+            [flask.get_id()],
+            reactants,
+            [db.CompoundOrFlask.FLASK],
+            [db.CompoundOrFlask.COMPOUND for _ in reactants],
+        )
+    new_reaction.add_elementary_step(new_step.get_id())
+    new_step.set_reaction(new_reaction.get_id())
+    new_step.set_type(db.ElementaryStepType.BARRIERLESS)
+    # Update compound linkage in flask
+    flask.set_compounds(reactants)
+    flask.add_reaction(new_reaction.id())
+    for c_id in reactants:
+        compound = db.Compound(c_id, compounds)
+        compound.add_reaction(new_reaction.id())
 
 
 def _create_compound(
@@ -240,9 +337,9 @@ def _fake_structure(
         structure.set_label(db.Label.USER_OPTIMIZED)
     else:
         structure.set_label(db.Label.MINIMUM_OPTIMIZED)
-    structure.set_compound(compound.get_id())
-    structure.set_model(db.Model("FAKE", "", ""))
-    add_random_energy(structure, (-10000.0, -1000.0), properties)
+    structure.set_aggregate(compound.get_id())
+    structure.set_model(db.Model("FAKE", "FAKE", "F-AKE"))
+    add_random_energy(structure, (-20.0, -10.0), properties)
 
     return structure.get_id()
 
@@ -264,10 +361,10 @@ def _create_reaction(
     success = False
     while not success:
         n_educts = random.randint(1, max_n_educts_per_r)
-        verified_educts = []
+        verified_educts: List[db.ID] = []
         while not verified_educts:
-            educts = compounds.random_select_compounds(n_educts)
-            for e in educts:
+            educt_objects = compounds.random_select_compounds(n_educts)
+            for e in educt_objects:
                 e.link(compounds)
                 if len(e.get_reactions()) < max_r_per_c:
                     verified_educts.append(e.get_id())
@@ -278,10 +375,10 @@ def _create_reaction(
         # pick existing compounds in database based on probability that existing would be picked from all planned
         # compounds
         n_existing_pick = int(round(n_products * current_n_compounds / n_compounds))
-        verified_products = []
+        verified_products: List[db.ID] = []
         while n_existing_pick > 0 and not verified_products:
-            products = compounds.random_select_compounds(n_existing_pick)
-            for p in products:
+            product_objects = compounds.random_select_compounds(n_existing_pick)
+            for p in product_objects:
                 p.link(compounds)
                 if len(p.get_reactions()) < max_r_per_c and not any(educt == p.get_id() for educt in educts):
                     verified_products.append(p.get_id())
@@ -291,14 +388,15 @@ def _create_reaction(
         products = verified_products
 
         # check if identical reaction already exists
-        success = bool(identical_reaction(educts, products, reactions) is None)
+        educt_types = [db.CompoundOrFlask.COMPOUND for i in educts]
+        product_types = [db.CompoundOrFlask.COMPOUND for i in products]
+        success = bool(identical_reaction(educts, products, educt_types, product_types, reactions) is None)
 
     reaction = db.Reaction()
     reaction.link(reactions)
     reaction.create(educts, products)
     for compound_id in educts + products:
-        compound = db.Compound(compound_id)
-        compound.link(compounds)
+        compound = db.Compound(compound_id, compounds)
         compound.add_reaction(reaction.get_id())
 
     steps = [
@@ -345,7 +443,7 @@ def _add_step(
 ) -> db.ID:
     step = db.ElementaryStep()
     step.link(elementary_steps)
-    model = db.Model("FAKE", "", "")
+    model = db.Model("FAKE", "FAKE", "F-AKE")
     compound_sides = reaction.get_reactants(db.Side.BOTH)
     # pick random structure for each compound
     step_structures = []
@@ -363,7 +461,15 @@ def _add_step(
             for reactant in step_structures[0]
         ]
     )
-    shifted_energy_limits = tuple([barrier + reactant_energies for barrier in barrier_limits])
+    product_energies = sum(
+        [
+            _get_electronic_energy(db.Structure(reactant), structures, properties, model)
+            for reactant in step_structures[1]
+        ]
+    )
+    shift = max(reactant_energies, product_energies)
+    shifted_energy_limits = tuple(barrier + shift for barrier in barrier_limits)
+    assert len(shifted_energy_limits) == 2
     # create TS
     ts = db.Structure()
     ts.link(structures)
@@ -372,7 +478,7 @@ def _add_step(
     ts.set_model(model)
     step.set_transition_state(ts.get_id())
     step.set_reaction(reaction.get_id())
-    add_random_energy(ts, shifted_energy_limits, properties)
+    add_random_energy(ts, shifted_energy_limits, properties)  # type: ignore
 
     return step.get_id()
 
@@ -396,9 +502,8 @@ def add_random_energy(
     """
     prop = db.NumberProperty()
     prop.link(properties)
-    prop.create(
-        db.Model("FAKE", "", ""), "electronic_energy", random.uniform(*energy_limits) * utils.HARTREE_PER_KJPERMOL
-    )
+    prop.create(db.Model("FAKE", "FAKE", "F-AKE"), "electronic_energy",
+                random.uniform(*energy_limits) * utils.HARTREE_PER_KJPERMOL)
     structure.add_property(prop.get_property_name(), prop.get_id())
 
     return prop.get_id()
@@ -408,7 +513,7 @@ def _get_electronic_energy(
     structure: db.Structure,
     structures: db.Collection,
     properties_coll: db.Collection,
-    model: db.Model = db.Model("FAKE", "", ""),
+    model: db.Model = db.Model("FAKE", "FAKE", "F-AKE"),
 ) -> float:
     structure.link(structures)
     properties = structure.query_properties("electronic_energy", model, properties_coll)
@@ -444,7 +549,7 @@ def insert_single_empty_structure_compound(manager: db.Manager, label: db.Label)
     compound.link(compounds)
     compound.create([structure.get_id()])
     compound.disable_exploration()
-    structure.set_compound(compound.get_id())
+    structure.set_aggregate(compound.get_id())
     structure.set_label(label)
 
     return compound.get_id(), structure.get_id()
@@ -453,6 +558,7 @@ def insert_single_empty_structure_compound(manager: db.Manager, label: db.Label)
 def test_random_db():
     n_compounds = 9
     n_reactions = 6
+    n_flasks = 1
     max_r_per_c = 10
     max_n_products_per_r = 2
     max_n_educts_per_r = 2
@@ -462,6 +568,7 @@ def test_random_db():
     n_inserts = 3
     manager = get_random_db(
         n_compounds,
+        n_flasks,
         n_reactions,
         max_r_per_c,
         "chemoton_test_random_db",
@@ -487,7 +594,8 @@ def test_random_db():
         structure.link(structures)
         assert structure.has_property("electronic_energy")
 
+    import pytest
     with pytest.raises(AssertionError):
-        manager = get_random_db(5, 1, 10, max_n_products_per_r=10)
+        _ = get_random_db(5, 1, 10, 100, max_n_products_per_r=10)
     with pytest.raises(AssertionError):
-        manager = get_random_db(50, 50, 1)
+        _ = get_random_db(50, 50, 1, 100)

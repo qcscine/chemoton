@@ -31,7 +31,7 @@ def test_insert_initial_structure():
     rr = resources_root_path()
 
     # Fake model
-    model = db.Model("FAKE", "", "")
+    model = db.Model("FAKE", "FAKE", "F-AKE")
     # Insert structure from file with default settings
     water_path = os.path.join(rr, "water.xyz")
     struct, calc = insert_initial_structure(manager, water_path, 0, 1, model)

@@ -49,7 +49,7 @@ def test_bimol():
             structure.set_graph("masm_idx_map", graph["masm_idx_map"])
             structure.set_graph("masm_decision_list", str(i))
             compound.add_structure(structure.id())
-            structure.set_compound(compound.id())
+            structure.set_aggregate(compound.id())
 
     # Setup gear
     es_gear = BruteForceElementarySteps()
@@ -99,7 +99,7 @@ def test_unimol():
             structure.set_graph("masm_idx_map", graph["masm_idx_map"])
             structure.set_graph("masm_decision_list", str(i))
             compound.add_structure(structure.id())
-            structure.set_compound(compound.id())
+            structure.set_aggregate(compound.id())
 
     # Setup gear
     es_gear = BruteForceElementarySteps()
@@ -151,7 +151,7 @@ def test_unimol_bimol():
             structure.set_graph("masm_idx_map", graph["masm_idx_map"])
             structure.set_graph("masm_decision_list", str(i))
             compound.add_structure(structure.id())
-            structure.set_compound(compound.id())
+            structure.set_aggregate(compound.id())
 
     # Setup gear
     es_gear = BruteForceElementarySteps()

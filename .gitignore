@@ -1,12 +1,20 @@
+**/__pycache__
+openhaptics/build/
+openhaptics/scine_ui_haptic.*
+.hypothesis
+launch.sh
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
 
 # Distribution / packaging
+build/
 venv/
 *.egg-info/
 *.egg
+*whl
 
 # Unit test / coverage reports
 .coverage
@@ -14,6 +22,7 @@ venv/
 .cache
 coverage.xml
 pytest_report.xml
+htmlcov
 
 # Sphinx documentation
 docs/build/
@@ -36,3 +45,12 @@ docs/source/generated/
 
 #VSCode
 .vscode/
+
+#conda
+spec-file.txt
+
+mongo*
+Wired*
+*.wt
+*.tar.gz
+*.bson

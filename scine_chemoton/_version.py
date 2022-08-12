@@ -3,4 +3,4 @@ Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
 See LICENSE.txt for details.
 """
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"

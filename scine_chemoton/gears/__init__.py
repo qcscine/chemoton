@@ -6,6 +6,7 @@ See LICENSE.txt for details.
 """
 
 # Standard library imports
+from typing import List
 import signal
 import time
 
@@ -13,7 +14,46 @@ import time
 import scine_database as db
 
 
-class Gear:
+class HoldsCollections:
+
+    def __init__(self):
+        super().__init__()  # necessary for multiple inheritance
+        self._required_collections: List[str] = []
+        self._manager = None
+        self._calculations = None
+        self._compounds = None
+        self._elementary_steps = None
+        self._flasks = None
+        self._properties = None
+        self._reactions = None
+        self._structures = None
+
+    @staticmethod
+    def possible_attributes() -> List[str]:
+        return [
+            "manager",
+            "calculations",
+            "compounds",
+            "elementary_steps",
+            "flasks",
+            "properties",
+            "reactions",
+            "structures",
+        ]
+
+    def initialize_collections(self, manager: db.Manager) -> None:
+        for attr in self._required_collections:
+            if attr not in self.possible_attributes():
+                raise NotImplementedError(f"The initialization of member {attr} for class {self.__class__.__name__}, "
+                                          f"is not possible, we are only supporting {self.possible_attributes()}.")
+        for attr in self._required_collections:
+            if attr == "manager":
+                setattr(self, f"_{attr}", manager)
+            else:
+                setattr(self, f"_{attr}", manager.get_collection(attr))
+
+
+class Gear(HoldsCollections):
     """
     The base class for all Gears.
 
@@ -28,21 +68,17 @@ class Gear:
     """
 
     def __init__(self):
-        self._calculations = None
-        self._compounds = None
-        self._reactions = None
-        self._elementary_steps = None
-        self._structures = None
-        self._properties = None
+        super().__init__()
         self.name = 'Chemoton' + self.__class__.__name__ + 'Gear'
 
     class _DelayedKeyboardInterrupt:
         def __enter__(self):
-            self.signal_received = False
-            self.old_handler = signal.signal(signal.SIGINT, self.handler)
+            self.signal_received = False  # pylint: disable=attribute-defined-outside-init
+            self.old_handler = \
+                signal.signal(signal.SIGINT, self.handler)  # pylint: disable=attribute-defined-outside-init
 
         def handler(self, sig, frame):
-            self.signal_received = (sig, frame)
+            self.signal_received = (sig, frame)  # pylint: disable=attribute-defined-outside-init
 
         def __exit__(self, type, value, traceback):
             signal.signal(signal.SIGINT, self.old_handler)
@@ -70,35 +106,18 @@ class Gear:
         # Make sure cycle time exists
         sleep = getattr(getattr(self, "options"), "cycle_time")
 
-        # Prepare clean database
-        self.manager = db.Manager()
-        self.manager.set_credentials(credentials)
-        self.manager.connect()
-        time.sleep(1.0)
-        if not self.manager.has_collection("calculations"):
-            raise RuntimeError("Stopping Gear/Engine: database is missing collections.")
+        # Prepare database connection
+        if self._manager is None or self._manager.get_credentials() != credentials:
+            self._manager = db.Manager()
+            self._manager.set_credentials(credentials)
+            self._manager.connect()
+            time.sleep(1.0)
+            if not self._manager.has_collection("calculations"):
+                raise RuntimeError("Stopping Gear/Engine: database is missing collections.")
 
-        # Get required collections
-        if hasattr(self, "_calculations"):
-            if self._calculations:
-                self._calculations = self.manager.get_collection("calculations")
-        if hasattr(self, "_compounds"):
-            if self._compounds:
-                self._compounds = self.manager.get_collection("compounds")
-        if hasattr(self, "_reactions"):
-            if self._reactions:
-                self._reactions = self.manager.get_collection("reactions")
-        if hasattr(self, "_elementary_steps"):
-            if self._elementary_steps:
-                self._elementary_steps = self.manager.get_collection("elementary_steps")
-        if hasattr(self, "_structures"):
-            if self._structures:
-                self._structures = self.manager.get_collection("structures")
-        if hasattr(self, "_properties"):
-            if self._properties:
-                self._properties = self.manager.get_collection("properties")
-
-        self._propagate_db_manager(self.manager)
+            # Get required collections
+            self.initialize_collections(self._manager)
+            self._propagate_db_manager(self._manager)
 
         # Infinite loop with sleep
         last_cycle = time.time()

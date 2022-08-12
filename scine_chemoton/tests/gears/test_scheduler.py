@@ -39,7 +39,7 @@ def test_counts_and_priorities():
     }
 
     # Add fake calculations
-    model = db.Model("FAKE", "", "")
+    model = db.Model("FAKE", "FAKE", "F-AKE")
     calculations = manager.get_collection("calculations")
     for k, v in job_creation.items():
         job = db.Job(k)

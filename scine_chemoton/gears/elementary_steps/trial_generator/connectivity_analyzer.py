@@ -87,7 +87,7 @@ class ConnectivityAnalyzer:
             return True
         return False
 
-    def get_reaction_type(self, reactive_pair_list: List[Tuple[int]]) -> ReactionType:
+    def get_reaction_type(self, reactive_pair_list: List[Tuple[int, int]]) -> ReactionType:
         """
         Determines what kind of intrastructural reaction
         (associative, dissociative, disconnective) a reactive complex guess

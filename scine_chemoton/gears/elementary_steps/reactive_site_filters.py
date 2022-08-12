@@ -6,7 +6,7 @@ See LICENSE.txt for details.
 """
 
 # Standard library imports
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 # Third party imports
 import scine_database as db
@@ -14,46 +14,44 @@ import scine_molassembler as masm
 
 # Local application imports
 from ...utilities.masm import deserialize_molecules, distinct_atoms, get_atom_pairs
+from scine_chemoton.gears import HoldsCollections
 
 
-class ReactiveSiteFilter:
+class ReactiveSiteFilter(HoldsCollections):
     """
     The base and default class for all reactive site filters. The default is to
     allow/pass all given checks.
 
     ReactiveSiteFilter are optional barriers in Chemoton that allow the user to
     cut down the exponential growth of the combinatorial explosion. The
-    different sub-classes of this main ReactiveSiteFilter allow for a tailored
+    different subclasses of this main ReactiveSiteFilter allow for a tailored
     choice of which parts of a molecule to deem reactive.
 
-    The are some predefined filters that will be given in Chemoton, however,
+    There are some predefined filters that will be given in Chemoton, however,
     it should be simple to extend as needed even on a per-project basis.
     The key element when sub-classing this interface is to override the `filter`
     functions as defined here. When sub-classing please be aware that these
     filters are expected to be called often. Having each call do loops over
     entire collections is not wise.
 
-    For the latter reason, user defined sub-classes are intended to be more
+    For the latter reason, user defined subclasses are intended to be more
     complex, allowing for non-database stored/cached data across a run.
-    This can be a significant speed up and allow for more intricate filtering.
+    This can be a significant speed-up and allow for more intricate filtering.
 
     The different filter methods are applied in a subsequent matter, i.e.,
     only the atoms that pass the atom filter will be used to construct atom pairs,
     and only those of the atom pairs that pass the pair filter will be used to
     construct trial reaction coordinates in the TrialGenerators.
 
-    NOTE: Eventhough there is the possibility to apply a filter to many sites/
-    trial coordinates simultaneously there is no guarantee that all of them are
-    passed to it at the same time.
+    NOTE: Although there is the possibility to apply a filter to many sites /
+    trial coordinates simultaneously, there is no guarantee that all possible
+    sites / coordinates with the specified settings are passed at the same time.
     """
 
     def __init__(self):
-        self._calculations = None
-        self._structures = None
-        self._compounds = None
-        self._reactions = None
-        self._elementary_steps = None
-        self._properties = None
+        super().__init__()
+        self._required_collections = ["calculations", "compounds", "elementary_steps", "flasks",
+                                      "properties", "structures", "reactions"]
 
     def __and__(self, o):
         if not isinstance(o, ReactiveSiteFilter):
@@ -67,16 +65,16 @@ class ReactiveSiteFilter:
                             "(or derived class) to chain with.")
         return ReactiveSiteFilterOrArray([self, o])
 
-    def filter_atoms(self, structure_list: List[db.Structure], remaining: List[int]) -> List[int]:
+    def filter_atoms(self, _: List[db.Structure], atom_indices: List[int]) -> List[int]:
         """
         The blueprint for a filter function, checking  a list of atoms
         regarding their reactivity as defined by the filter.
 
         Parameters
         ----------
-        structure_list : List[db.Structure]
-            The structures to be checked.
-        remaining : [List[int]]
+        _ : List[db.Structure]
+            The structures to be checked. Unused in this function.
+        atom_indices : [List[int]]
             The list of atoms to consider. If several structures are listed
             atom indices are expected to refer to the entity of all structure
             in the order they are given in the structure list.
@@ -88,10 +86,10 @@ class ReactiveSiteFilter:
         result : List[int]
             The list of all relevant atom indices after applying the filter.
         """
-        return remaining
+        return atom_indices
 
     def filter_atom_pairs(
-        self, structure_list: List[db.Structure], remaining: List[Tuple[int, int]]
+            self, _: List[db.Structure], pairs: List[Tuple[int, int]]
     ) -> List[Tuple[int, int]]:
         """
         The blueprint for a filter function, checking a list of atom pairs
@@ -99,9 +97,9 @@ class ReactiveSiteFilter:
 
         Parameters
         ----------
-        structure_list : List[db.Structure]
-            The structures to be checked.
-        remaining : List[Tuple[int, int]]
+        _ : List[db.Structure]
+            The structures to be checked. Unused in this implementation.
+        pairs : List[Tuple[int, int]]
             The list of atom pairs to consider. If several structures are listed
             atom indices are expected to refer to the entity of all structure in
             the order they are given in the structure list.
@@ -114,11 +112,11 @@ class ReactiveSiteFilter:
             The list of all relevant reactive atom pairs (given as atom index
             pairs) after applying the filter.
         """
-        return remaining
+        return pairs
 
     def filter_reaction_coordinates(
-        self, structure_list: List[db.Structure], remaining: List[Tuple[Tuple[int, int]]]
-    ) -> List[Tuple[Tuple[int, int]]]:
+            self, _: List[db.Structure], coordinates: List[List[Tuple[int, int]]]
+    ) -> List[List[Tuple[int, int]]]:
         """
         The blueprint for a filter function, checking  a list of trial reaction
         coordinates each given as a tuple of reactive atom pairs for their
@@ -126,9 +124,9 @@ class ReactiveSiteFilter:
 
         Parameters
         ----------
-        structure_list : List[db.Structure]
-            The structures to be checked.
-        remaining : List[Tuple[Tuple[int, int]]]
+        _ : List[db.Structure]
+            The structures to be checked. Unused in this implementation.
+        coordinates : List[List[Tuple[int, int]]]
             The list of trial reaction coordinates to consider.
             If several structures are listed atom indices are expected to refer
             to the entity of all structure in the order they are given in the
@@ -138,11 +136,11 @@ class ReactiveSiteFilter:
 
         Returns
         -------
-        result :: List[Tuple[Tuple[int, int]]]
+        result :: List[List[Tuple[int, int]]]
             The list of all relevant reaction coordinates given as tuples of
             reactive atom pairs after applying the filter.
         """
-        return remaining
+        return coordinates
 
 
 class ReactiveSiteFilterAndArray(ReactiveSiteFilter):
@@ -155,35 +153,37 @@ class ReactiveSiteFilterAndArray(ReactiveSiteFilter):
         A list of filters to be combined.
     """
 
-    def __init__(self, filters: List[ReactiveSiteFilter] = []):
+    def __init__(self, filters: Optional[List[ReactiveSiteFilter]] = None):
         super().__init__()
+        if filters is None:
+            filters = []
         self.filters = filters
         for f in filters:
             if not isinstance(f, ReactiveSiteFilter):
                 raise TypeError("ReactiveSiteFilterAndArray expects ReactiveSiteFilter "
                                 "(or derived class) to chain with.")
 
-    def filter_atoms(self, structure_list: List[db.Structure], remaining: List[int]) -> List[int]:
-        distinct = remaining
+    def filter_atoms(self, structure_list: List[db.Structure], atom_indices: List[int]) -> List[int]:
+        distinct = atom_indices
         for filter in self.filters:
             distinct = filter.filter_atoms(structure_list, distinct)
 
         return distinct
 
     def filter_atom_pairs(
-        self, structure_list: List[db.Structure], remaining: List[Tuple[int, int]]
+            self, structure_list: List[db.Structure], pairs: List[Tuple[int, int]]
     ) -> List[Tuple[int, int]]:
-        distinct = remaining
+        distinct = pairs
         for filter in self.filters:
-            distinct = filter.filter_atom_pairs(structure_list, remaining=distinct)
+            distinct = filter.filter_atom_pairs(structure_list, pairs=distinct)
         return distinct
 
     def filter_reaction_coordinates(
-        self, structure_list: List[db.Structure], remaining: List[Tuple[Tuple[int, int]]]
-    ) -> List[Tuple[Tuple[int, int]]]:
-        distinct = remaining
+            self, structure_list: List[db.Structure], coordinates: List[List[Tuple[int, int]]]
+    ) -> List[List[Tuple[int, int]]]:
+        distinct = coordinates
         for filter in self.filters:
-            distinct = filter.filter_reaction_coordinates(structure_list, remaining=distinct)
+            distinct = filter.filter_reaction_coordinates(structure_list, coordinates=distinct)
         return distinct
 
 
@@ -197,36 +197,38 @@ class ReactiveSiteFilterOrArray(ReactiveSiteFilter):
         A list of filters to be combined.
     """
 
-    def __init__(self, filters: List[ReactiveSiteFilter] = []):
+    def __init__(self, filters: Optional[List[ReactiveSiteFilter]] = None):
         super().__init__()
+        if filters is None:
+            filters = []
         self.filters = filters
         for f in filters:
             if not isinstance(f, ReactiveSiteFilter):
                 raise TypeError("ReactiveSiteFilterOrArray expects ReactiveSiteFilter "
                                 "(or derived class) to chain with.")
 
-    def filter_atoms(self, structure_list: List[db.Structure], remaining: List[int]) -> List[int]:
+    def filter_atoms(self, structure_list: List[db.Structure], atom_indices: List[int]) -> List[int]:
         ret: List[int] = []
         for filter in self.filters:
-            distinct = filter.filter_atoms(structure_list, remaining)
+            distinct = filter.filter_atoms(structure_list, atom_indices)
             ret = list(set(ret) | set(distinct))
         return ret
 
     def filter_atom_pairs(
-        self, structure_list: List[db.Structure], remaining: List[Tuple[int, int]]
+            self, structure_list: List[db.Structure], pairs: List[Tuple[int, int]]
     ) -> List[Tuple[int, int]]:
         ret: List[Tuple[int, int]] = []
         for filter in self.filters:
-            distinct = filter.filter_atom_pairs(structure_list, remaining=remaining)
+            distinct = filter.filter_atom_pairs(structure_list, pairs=pairs)
             ret = list(set(ret) | set(distinct))
         return ret
 
     def filter_reaction_coordinates(
-        self, structure_list: List[db.Structure], remaining: List[Tuple[Tuple[int, int]]]
-    ) -> List[Tuple[Tuple[int, int]]]:
-        ret: List[Tuple[Tuple[int, int]]] = []
+            self, structure_list: List[db.Structure], coordinates: List[List[Tuple[int, int]]]
+    ) -> List[List[Tuple[int, int]]]:
+        ret: List[List[Tuple[int, int]]] = []
         for filter in self.filters:
-            distinct = filter.filter_reaction_coordinates(structure_list, remaining=remaining)
+            distinct = filter.filter_reaction_coordinates(structure_list, coordinates=coordinates)
             ret = list(set(ret) | set(distinct))
         return ret
 
@@ -260,11 +262,11 @@ class MasmChemicalRankingFilter(ReactiveSiteFilter):
             msg = "Option for masm atom pruning invalid: {}"
             raise RuntimeError(msg.format(prune))
 
-    def filter_atoms(self, structure_list: List[db.Structure], remaining: List[int]) -> List[int]:
+    def filter_atoms(self, structure_list: List[db.Structure], atom_indices: List[int]) -> List[int]:
         import ast
 
         if self.prune == "None":
-            return remaining
+            return atom_indices
         distinct = []
         idx_shift = 0  # To account for the shifting of indices in structures further down the structure_list
         for structure in structure_list:
@@ -276,7 +278,7 @@ class MasmChemicalRankingFilter(ReactiveSiteFilter):
                 distinct.extend(atom_distinct)
             idx_shift += structure.get_atoms().size()
 
-        return list(set(remaining) & set(distinct))
+        return list(set(atom_indices) & set(distinct))
 
 
 class SimpleRankingFilter(ReactiveSiteFilter):
@@ -314,7 +316,7 @@ class SimpleRankingFilter(ReactiveSiteFilter):
         self.pair_threshold = pair_threshold
         self.coordinate_threshold = coordinate_threshold
 
-    def filter_atoms(self, structure_list: db.Structure, remaining: List[int]) -> List[int]:
+    def filter_atoms(self, structure_list: List[db.Structure], atom_indices: List[int]) -> List[int]:
         idx_shift = 0  # To account for the shifting of indices in structures further down the structure_list
         above_threshold = []
         for structure in structure_list:
@@ -329,10 +331,10 @@ class SimpleRankingFilter(ReactiveSiteFilter):
                     above_threshold.append(i + idx_shift)
             idx_shift += structure.get_atoms().size()
 
-        return list(set(remaining) & set(above_threshold))
+        return list(set(atom_indices) & set(above_threshold))
 
     def filter_atom_pairs(
-        self, structure_list: List[db.Structure], remaining: List[Tuple[int, int]]
+            self, structure_list: List[db.Structure], pairs: List[Tuple[int, int]]
     ) -> List[Tuple[int, int]]:
         all_atom_ranks = []  # Concatenated atom ranks in the order of the structures
         for structure in structure_list:
@@ -346,15 +348,15 @@ class SimpleRankingFilter(ReactiveSiteFilter):
             all_atom_ranks += atom_ranks
 
         above_threshold = []
-        for i, j in remaining:
+        for i, j in pairs:
             if (all_atom_ranks[i] + all_atom_ranks[j]) > self.pair_threshold:
                 above_threshold.append((i, j))
 
         return above_threshold
 
     def filter_reaction_coordinates(
-        self, structure_list: List[db.Structure], remaining: List[Tuple[Tuple[int, int]]]
-    ) -> List[Tuple[Tuple[int, int]]]:
+            self, structure_list: List[db.Structure], coordinates: List[List[Tuple[int, int]]]
+    ) -> List[List[Tuple[int, int]]]:
         all_atom_ranks = []  # Concatenated atom ranks in the order of the structures
         for structure in structure_list:
             neighbors = get_atom_pairs(structure, (1, 1), "None")
@@ -367,7 +369,7 @@ class SimpleRankingFilter(ReactiveSiteFilter):
             all_atom_ranks += atom_ranks
 
         above_threshold = []
-        for coord in remaining:
+        for coord in coordinates:
             if sum((all_atom_ranks[pair[0]] + all_atom_ranks[pair[1]]) for pair in coord) > self.coordinate_threshold:
                 above_threshold.append(coord)
 
@@ -415,7 +417,7 @@ class AtomRuleBasedFilter(ReactiveSiteFilter):
         super().__init__()
         self._rules = rules
 
-    def filter_atoms(self, structure_list: db.Structure, remaining: List[int]) -> List[int]:
+    def filter_atoms(self, structure_list: List[db.Structure], atom_indices: List[int]) -> List[int]:
         import ast
         reactive_atom_indices = []
         idx_shift = 0
@@ -440,7 +442,7 @@ class AtomRuleBasedFilter(ReactiveSiteFilter):
                 if rule_set:
                     reactive_atom_indices.append(i + idx_shift)
             idx_shift += structure.get_atoms().size()
-        return list(set(remaining) & set(reactive_atom_indices))
+        return list(set(atom_indices) & set(reactive_atom_indices))
 
     class ReactiveRuleFilterAndArray:
         """
@@ -454,7 +456,9 @@ class AtomRuleBasedFilter(ReactiveSiteFilter):
             to be allowed to react.
         """
 
-        def __init__(self, primitive_rules: List[Tuple[str, int]] = []):
+        def __init__(self, primitive_rules: Optional[List[Tuple[str, int]]] = None):
+            if primitive_rules is None:
+                primitive_rules = []
             self._primitive_rules = primitive_rules
 
         def filter_by_rule(self, molecules: List[masm.Molecule], idx_map: List[Tuple[int, int]], elements: List[str],
@@ -466,7 +470,7 @@ class AtomRuleBasedFilter(ReactiveSiteFilter):
                 element_key = rule[0]
                 rule_fulfilled = False
                 for j, e in enumerate(elements):
-                    if e == element_key and distances[idx_map[j][1]] <= max_distance:
+                    if e == element_key and distances[idx_map[j][1]] == max_distance:
                         rule_fulfilled = True
                         break
                 # All rules have to be fulfilled. Stop if one is not given.
@@ -482,11 +486,13 @@ class AtomRuleBasedFilter(ReactiveSiteFilter):
         ----------
         primitive_rules : List[Tuple[str, int]]
             A list of bond distance based rules of which at least one has to be fulfilled.
-            Syntax example: ('O', 2) -> An oxygen atom has to be within two bonds distance of the current atom for it
+            Syntax example: ('O', 2) -> An oxygen atom has to be at a distance of two bonds of the current atom for it
             to be allowed to react.
         """
 
-        def __init__(self, primitive_rules: List[Tuple[str, int]] = []):
+        def __init__(self, primitive_rules: Optional[List[Tuple[str, int]]] = None):
+            if primitive_rules is None:
+                primitive_rules = []
             self._primitive_rules = primitive_rules
 
         def filter_by_rule(self, molecules: List[masm.Molecule], idx_map: List[Tuple[int, int]], elements: List[str],
@@ -497,7 +503,7 @@ class AtomRuleBasedFilter(ReactiveSiteFilter):
                 max_distance = rule[1]
                 element_key = rule[0]
                 for j, e in enumerate(elements):
-                    if e == element_key and distances[idx_map[j][1]] <= max_distance:
+                    if e == element_key and distances[idx_map[j][1]] == max_distance:
                         return True
             return False
 
@@ -548,7 +554,7 @@ class AtomRuleBasedFilter(ReactiveSiteFilter):
                     n_close_to_j = 0
                     n_hetero_atoms_found = 0
                     for atom_k, e_k in enumerate(elements):
-                        mol_kdx, k = idx_map[atom_k]
+                        _, k = idx_map[atom_k]
                         if distances_j[k] == 1:
                             n_close_to_j += 1
                             if e_k in self._hetero_atoms:
@@ -578,7 +584,7 @@ class ElementWiseReactionCoordinateFilter(ReactiveSiteFilter):
         The dictionary containing the rules (vide supra).
     reactive_if_rules_apply : bool
         The mode to operate the filter in. If true, only reaction coordinates in the given rule set pass.
-        If false, no reaction coordinate in the given rule set pass.
+        If false, no reaction coordinate in the given rule set pass. By default, false.
     """
 
     def __init__(self, rules: dict, reactive_if_rules_apply: bool = False):
@@ -587,8 +593,8 @@ class ElementWiseReactionCoordinateFilter(ReactiveSiteFilter):
         self._reactive_if_rules_apply = reactive_if_rules_apply
 
     def filter_reaction_coordinates(
-        self, structure_list: List[db.Structure], remaining: List[Tuple[Tuple[int, int]]]
-    ) -> List[Tuple[Tuple[int, int]]]:
+            self, structure_list: List[db.Structure], coordinates: List[List[Tuple[int, int]]]
+    ) -> List[List[Tuple[int, int]]]:
         all_element_symbols = []
         for structure in structure_list:
             atoms = structure.get_atoms()
@@ -596,7 +602,7 @@ class ElementWiseReactionCoordinateFilter(ReactiveSiteFilter):
             all_element_symbols += elements
 
         valid_coordinates = []
-        for coord in remaining:
+        for coord in coordinates:
             skip = False
             for pair in coord:
                 element_0 = all_element_symbols[pair[0]]
@@ -611,10 +617,151 @@ class ElementWiseReactionCoordinateFilter(ReactiveSiteFilter):
                 # have to be true to skip the coordinate.
                 # If the rules are meant to include reaction coordinates, both of e_0_in_rule and e_1_in_rule have to
                 # be false to skip it.
-                if (not self._reactive_if_rules_apply and (e_0_in_rule or e_1_in_rule))\
+                if (not self._reactive_if_rules_apply and (e_0_in_rule or e_1_in_rule)) \
                         or (self._reactive_if_rules_apply and not (e_0_in_rule or e_1_in_rule)):
                     skip = True
                     break
             if not skip:
                 valid_coordinates.append(coord)
         return valid_coordinates
+
+
+class HeuristicPolarizationReactionCoordinateFilter(ReactiveSiteFilter):
+    """
+    A filter that assigns polarizations (+, -, or +-) to each atom. Reaction coordinates are only allowed
+    that combine + and - or +- with either + or -.
+    Example rules:
+    rules = {
+    'H': [PaulingElectronegativityRule(), FunctionalGroupRule("+", 2, ['N', 'O'], 'C', 3, 1)],
+    'C': [PaulingElectronegativityRule()],
+    'N': [PaulingElectronegativityRule()],
+    'O': [PaulingElectronegativityRule()]
+    }
+
+    Attributes
+    ----------
+    rules : dict
+        The dictionary containing the rules. The rule object must implement a function called string_from_rule(...).
+    """
+
+    def __init__(self, rules: dict):
+        super().__init__()
+        self._rules = rules
+
+    class PaulingElectronegativityRule:
+        """
+        Polarization rule for the Pauli electronegativity scalar.
+
+        Attributes
+        ----------
+        min_difference : dict
+            The minimum difference in electronegativities to assign a polarization.
+        """
+
+        def __init__(self, min_difference: float = 0.4):
+            super().__init__()
+            self._min_difference = min_difference
+
+        def string_from_rule(self, molecules: List[masm.Molecule], idx_map: List[Tuple[int, int]], elements: List[str],
+                             atom_index: int) -> str:
+            """
+            Return '+' if the atom is electron poor, '-' if it is electron rich, some combination thereof if the
+            atom is neighbouring elements with significantly higher and lower electronegativity, and '' if it is
+            neighbouring neither.
+            """
+            from scine_utilities import ElementInfo
+            mol_idx, i = idx_map[atom_index]
+            distances_i = masm.distance(i, molecules[mol_idx].graph)
+            return_str = ''
+            for j, distance in enumerate(distances_i):
+                if distance == 1:
+                    atom_j = idx_map.index((mol_idx, j))
+                    element_i = ElementInfo.element_from_symbol(elements[atom_index])
+                    element_j = ElementInfo.element_from_symbol(elements[atom_j])
+                    electronegativity_i = ElementInfo.pauling_electronegativity(element_i)
+                    electronegativity_j = ElementInfo.pauling_electronegativity(element_j)
+                    difference = electronegativity_i - electronegativity_j
+                    if abs(difference) < self._min_difference:
+                        continue
+                    if difference <= 0.0:
+                        return_str += '+'
+                    else:
+                        # i > j
+                        return_str += '-'
+            return return_str
+
+    class FunctionalGroupRule:
+        """
+        Polarization rule for functional groups.
+        The functional group is encoded in terms of a central atom type, a
+        list of hetero atoms, the number of bonds to the central atom and the
+        number of hetero atoms bonded to the central atom.\n
+        carbonyle_group_d2 = FunctionalGroupRule('+' ,2, ['O'], 'C', 3, 1)
+        imine_group_d0 = FunctionalGroupRule('+' ,0, ['N'], 'C', 3, 1)
+        acetal_group_d1 =  FunctionalGroupRule('+', 0, ['O'], 'C', 4, 2)
+        acetal_like_group_d1   =  FunctionalGroupRule('+', 0, ['O, N'], 'C', 4, 2)
+
+        Attributes
+        ----------
+        character : str
+            The polarization character (+ or -) to assign if the rule applies.
+        distance : int
+            The bond distance to the functional group that must be matched.
+        hetero_atoms : List[str]
+            The list of atoms that are considered hetero atoms for this group.
+        central_atom : str
+            The central atom element symbol (default 'C')
+        n_bonds : int
+            The number of bonds to the central atom.
+        n_hetero_atoms : int
+            The number of hetero atoms that must bond to the central atom to constitute the group.
+        """
+
+        def __init__(self, character: str, distance: int, hetero_atoms: List[str], central_atom: str = 'C',
+                     n_bonds: int = 3, n_hetero_atoms: int = 1):
+            self._character = character
+            self._rule = AtomRuleBasedFilter.FunctionalGroupRule(
+                distance, hetero_atoms, central_atom, n_bonds, n_hetero_atoms)
+
+        def string_from_rule(self, molecules: List[masm.Molecule], idx_map: List[Tuple[int, int]], elements: List[str],
+                             atom_index: int) -> str:
+            if self._rule.filter_by_rule(molecules, idx_map, elements, atom_index):
+                return self._character
+            else:
+                return ''
+
+    def filter_reaction_coordinates(
+            self, structure_list: List[db.Structure], coordinates: List[List[Tuple[int, int]]]
+    ) -> List[List[Tuple[int, int]]]:
+        all_polarization_characters = []
+        for structure in structure_list:
+            all_polarization_characters += self._get_characters_for_structure(structure)
+
+        valid_coordinates = []
+        for coord in coordinates:
+            skip = False
+            for pair in coord:
+                character_0 = all_polarization_characters[pair[0]]
+                character_1 = all_polarization_characters[pair[1]]
+                plus_minus = '+' in character_0 and '-' in character_1
+                minus_plus = '-' in character_0 and '+' in character_1
+                # All atom pairs must combine + and - signs.
+                if not (plus_minus or minus_plus):
+                    skip = True
+                    break
+            if not skip:
+                valid_coordinates.append(coord)
+        return valid_coordinates
+
+    def _get_characters_for_structure(self, structure: db.Structure):
+        import ast
+        atoms = structure.get_atoms()
+        n_atoms = len(atoms)
+        elements = [str(x) for x in atoms.elements]
+        molecules = deserialize_molecules(structure)
+        idx_map = ast.literal_eval(structure.get_graph("masm_idx_map"))
+        string_list = ['' for _ in range(n_atoms)]
+        for atom_index in range(n_atoms):
+            for rule in self._rules[elements[atom_index]]:
+                string_list[atom_index] += rule.string_from_rule(molecules, idx_map, elements, atom_index)
+        return string_list

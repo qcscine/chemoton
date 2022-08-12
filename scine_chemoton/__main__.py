@@ -6,6 +6,7 @@ See LICENSE.txt for details.
 """
 
 # Standard library imports
+import os
 import pkg_resources
 import time
 import sys
@@ -19,7 +20,7 @@ from scine_chemoton.utilities.insert_initial_structure import insert_initial_str
 from scine_chemoton.engine import Engine
 from scine_chemoton.gears.scheduler import Scheduler
 from scine_chemoton.gears.thermo import BasicThermoDataCompletion
-from scine_chemoton.gears.compound import BasicCompoundHousekeeping
+from scine_chemoton.gears.compound import BasicAggregateHousekeeping
 from scine_chemoton.gears.reaction import BasicReactionHousekeeping
 from scine_chemoton.gears.refinement import NetworkRefinement
 from scine_chemoton.gears.kinetics import (
@@ -29,13 +30,19 @@ from scine_chemoton.gears.kinetics import (
 from scine_chemoton.gears.conformers.brute_force import BruteForceConformers
 from scine_chemoton.gears.elementary_steps.minimal import MinimalElementarySteps
 from scine_chemoton.gears.elementary_steps.trial_generator.bond_based import BondBased
+from scine_chemoton.gears.elementary_steps.trial_generator.fast_dissociations import (
+    FastDissociations,
+    FurtherExplorationFilter
+)
 from scine_chemoton.gears.elementary_steps.compound_filters import CompoundFilter
 from scine_chemoton.gears.elementary_steps.reactive_site_filters import ReactiveSiteFilter
 
 # Prepare clean database
 manager = db.Manager()
 db_name = "default"
-credentials = db.Credentials("127.0.0.1", 27017, db_name)
+ip = os.environ.get('TEST_MONGO_DB_IP', '127.0.0.1')
+port = os.environ.get('TEST_MONGO_DB_PORT', '27017')
+credentials = db.Credentials(ip, int(port), db_name)
 manager.set_credentials(credentials)
 manager.connect()
 if not manager.has_collection("calculations"):
@@ -120,7 +127,7 @@ conformer_engine.set_gear(conformer_gear)
 conformer_engine.run()
 
 # 2) Compound generation and sorting
-compound_gear = BasicCompoundHousekeeping()
+compound_gear = BasicAggregateHousekeeping()
 compound_gear.options.model = model
 compound_engine = Engine(credentials)
 compound_engine.set_gear(compound_gear)
@@ -135,7 +142,6 @@ thermo_engine.set_gear(thermo_gear)
 thermo_engine.run()
 
 # 4) Reaction Exploration
-elementary_step_gear = MinimalElementarySteps()
 #  Set the settings for the elementary step exploration.
 #  These are the main settings for the general exploration
 # 4.1) Starting with the settings for the elementary step trial calculation (here an NT2 calculation)
@@ -200,6 +206,27 @@ nt_settings = utils.ValueCollection(
     }
 )
 # 4.2) Choose the reaction types to be probed
+dissociations_gear = MinimalElementarySteps()
+dissociations_gear.options.enable_unimolecular_trials = True
+dissociations_gear.options.enable_bimolecular_trials = False
+dissociations_gear.trial_generator = FastDissociations()
+dissociations_gear.trial_generator.options.model = model
+dissociations_gear.compound_filter = CompoundFilter()
+dissociations_gear.trial_generator.reactive_site_filter = ReactiveSiteFilter()
+dissociations_gear.trial_generator.options.cutting_job = db.Job("scine_dissociation_cut")
+dissociations_gear.trial_generator.options.cutting_job_settings = utils.ValueCollection({})
+dissociations_gear.trial_generator.options.min_bond_dissociations = 1
+dissociations_gear.trial_generator.options.max_bond_dissociations = 1
+dissociations_gear.trial_generator.options.enable_further_explorations = False
+dissociations_gear.trial_generator.options.always_further_explore_dissociative_reactions = True
+dissociations_gear.trial_generator.options.further_exploration_filter = FurtherExplorationFilter()
+dissociations_gear.trial_generator.options.further_job = nt_job
+dissociations_gear.trial_generator.options.further_job_settings = nt_settings
+dissociations_engine = Engine(credentials)
+dissociations_engine.set_gear(dissociations_gear)
+dissociations_engine.run()
+
+elementary_step_gear = MinimalElementarySteps()
 elementary_step_gear.trial_generator = BondBased()
 elementary_step_gear.trial_generator.options.model = model
 elementary_step_gear.options.enable_bimolecular_trials = True
@@ -237,7 +264,7 @@ elementary_step_gear.trial_generator.options.unimolecular.max_bond_modifications
 elementary_step_gear.trial_generator.options.unimolecular.min_bond_formations = 0
 elementary_step_gear.trial_generator.options.unimolecular.max_bond_formations = 1
 elementary_step_gear.trial_generator.options.unimolecular.min_bond_dissociations = 0
-elementary_step_gear.trial_generator.options.unimolecular.max_bond_dissociations = 1
+elementary_step_gear.trial_generator.options.unimolecular.max_bond_dissociations = 0
 # 4.3) Apply the basic calculation settings to all different reactions types in the gear
 #      Note: These settings could be different for different reaction types, resulting in better performance.
 elementary_step_gear.trial_generator.options.bimolecular.job = nt_job
@@ -277,7 +304,7 @@ refinement_gear.options.refinements = {
     "refine_single_ended_search": False,  # redo previously successful single ended reaction searches with new model
     "refine_structures_and_irc": False,  # redo irc and structure opt. from the old transition state.
 }
-pre_refinement_model = db.Model("PM6", "", "")
+pre_refinement_model = db.Model("PM6", "PM6", "")
 post_refinement_model = db.Model("DFT", "", "")
 refinement_gear.options.pre_refine_model = pre_refinement_model
 refinement_gear.options.post_refine_model = post_refinement_model
@@ -306,6 +333,7 @@ scheduling_gear.options.job_counts = {
     "scine_bond_orders": 500,
     "scine_hessian": 200,
     "scine_react_complex_nt2": 100,
+    "scine_dissociation_cut": 100,
     "conformers": 20,
     "final_conformer_deduplication": 20,
     "graph": 1000,

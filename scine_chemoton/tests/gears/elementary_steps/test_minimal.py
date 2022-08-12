@@ -50,7 +50,7 @@ def test_bimol():
             structure.set_graph("masm_idx_map", graph["masm_idx_map"])
             structure.set_graph("masm_decision_list", str(i))
             compound.add_structure(structure.id())
-            structure.set_compound(compound.id())
+            structure.set_aggregate(compound.id())
 
     # Setup gear
     es_gear = MinimalElementarySteps()
@@ -65,7 +65,7 @@ def test_bimol():
 
     # Expected numbers:
     # Unimolecular: 0
-    # Bimolecular: 2 choose 2 with repetion: 3 (H2O + H2O, H2O + H2O2, H2O2)
+    # Bimolecular: 2 choose 2 with repetition: 3 (H2O + H2O, H2O + H2O2, H2O2)
     assert es_gear.trial_generator.unimol_counter == 0
     assert es_gear.trial_generator.bimol_counter == 3
 
@@ -101,7 +101,7 @@ def test_unimol():
             structure.set_graph("masm_idx_map", graph["masm_idx_map"])
             structure.set_graph("masm_decision_list", str(i))
             compound.add_structure(structure.id())
-            structure.set_compound(compound.id())
+            structure.set_aggregate(compound.id())
 
     # Setup gear
     es_gear = MinimalElementarySteps()
@@ -153,7 +153,7 @@ def test_unimol_bimol():
             structure.set_graph("masm_idx_map", graph["masm_idx_map"])
             structure.set_graph("masm_decision_list", str(i))
             compound.add_structure(structure.id())
-            structure.set_compound(compound.id())
+            structure.set_aggregate(compound.id())
 
     # Setup gear
     es_gear = MinimalElementarySteps()

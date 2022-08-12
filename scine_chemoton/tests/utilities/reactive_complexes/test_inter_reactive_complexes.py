@@ -680,3 +680,5 @@ def test_pair_on_pair_generate_reactive_complexes():
     angle = np.arccos(v1.dot(v2) / (np.linalg.norm(v1) * np.linalg.norm(v2)))
     # 180 degrees - 0.1 rad distortion
     assert abs(utils.PI - 0.1 - angle) < 1e-6
+    # Cleaning
+    manager.wipe()

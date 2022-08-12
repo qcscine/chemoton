@@ -31,13 +31,13 @@ def test_hessian_calculation():
     calculations = manager.get_collection("calculations")
 
     # Add structure data
-    model = db.Model("FAKE", "", "")
+    model = db.Model("FAKE", "FAKE", "F-AKE")
     rr = resources_root_path()
     structure = db.Structure()
     structure.link(structures)
     structure.create(os.path.join(rr, "water.xyz"), 0, 1)
     structure.set_label(db.Label.USER_OPTIMIZED)
-    structure.set_compound(db.ID())
+    structure.set_aggregate(db.ID())
 
     # Setup gear
     thermo_gear = BasicThermoDataCompletion()
@@ -90,19 +90,53 @@ def test_hessian_skip():
     properties = manager.get_collection("properties")
 
     # Add structure data
-    model = db.Model("FAKE", "", "")
+    model = db.Model("FAKE", "FAKE", "F-AKE")
     rr = resources_root_path()
     structure = db.Structure()
     structure.link(structures)
     structure.create(os.path.join(rr, "water.xyz"), 0, 1)
     structure.set_label(db.Label.MINIMUM_OPTIMIZED)
-    structure.set_compound(db.ID())
+    structure.set_aggregate(db.ID())
 
     # Add property
     gibbs_energy_correction = db.NumberProperty()
     gibbs_energy_correction.link(properties)
     gibbs_energy_correction.create(model, "gibbs_energy_correction", 13.37)
     structure.add_property("gibbs_energy_correction", gibbs_energy_correction.id())
+
+    # Setup gear
+    thermo_gear = BasicThermoDataCompletion()
+    thermo_gear.options.model = model
+    thermo_engine = Engine(manager.get_credentials(), fork=False)
+    thermo_engine.set_gear(thermo_gear)
+
+    # Run a single loop
+    thermo_engine.run(single=True)
+
+    # Checks
+    hits = calculations.query_calculations(dumps({}))
+    assert len(hits) == 0
+
+    # Cleaning
+    manager.wipe()
+
+
+def test_hessian_skip_no_aggregate():
+    # Connect to test DB
+    manager = db_setup.get_clean_db("chemoton_hessian_skip")
+
+    # Get collections
+    structures = manager.get_collection("structures")
+    calculations = manager.get_collection("calculations")
+
+    # Add structure data
+    model = db.Model("FAKE", "", "")
+    rr = resources_root_path()
+    structure = db.Structure()
+    structure.link(structures)
+    structure.create(os.path.join(rr, "water.xyz"), 0, 1)
+    structure.set_label(db.Label.MINIMUM_OPTIMIZED)
+    # no aggregate set
 
     # Setup gear
     thermo_gear = BasicThermoDataCompletion()

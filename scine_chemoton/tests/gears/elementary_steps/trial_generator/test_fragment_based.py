@@ -34,7 +34,7 @@ def test_bimol_associations():
     structure_list = []
 
     # Add fake data
-    model = db.Model("FAKE", "", "")
+    model = db.Model("FAKE", "FAKE", "F-AKE")
     rr = resources_root_path()
     for mol in ["hydrogenperoxide", "water"]:
         compound = db.Compound()
@@ -48,7 +48,7 @@ def test_bimol_associations():
         structure.set_graph("masm_cbor_graph", graph["masm_cbor_graph"])
         structure.set_graph("masm_idx_map", graph["masm_idx_map"])
         compound.add_structure(structure.id())
-        structure.set_compound(compound.id())
+        structure.set_aggregate(compound.id())
         structure_list.append(structure)
 
     # Set up trial generator
@@ -127,12 +127,12 @@ def test_bimol_associations():
         atoms with only H atoms regarded as reactive.
         """
 
-        def filter_atoms(self, structure_list: List[db.Structure], remaining: List[int]) -> List[int]:
+        def filter_atoms(self, structure_list: List[db.Structure], atom_indices: List[int]) -> List[int]:
             reactive_atoms = []
             elements = []
             for struct in structure_list:
                 elements += struct.get_atoms().elements
-            for i in remaining:
+            for i in atom_indices:
                 if elements[i] == utils.ElementType.H:
                     reactive_atoms.append(i)
             return reactive_atoms
@@ -167,13 +167,13 @@ def test_bimol_associations():
         """
 
         def filter_atom_pairs(
-            self, structure_list: List[db.Structure], remaining: List[Tuple[int, int]]
+            self, structure_list: List[db.Structure], pairs: List[Tuple[int, int]]
         ) -> List[Tuple[int, int]]:
             reactive_pairs = []
             elements = []
             for struct in structure_list:
                 elements += struct.get_atoms().elements
-            for i, j in remaining:
+            for i, j in pairs:
                 if elements[i] == utils.ElementType.O and elements[j] == utils.ElementType.O:
                     reactive_pairs.append((i, j))
             return reactive_pairs
@@ -210,13 +210,13 @@ def test_bimol_associations():
         """
 
         def filter_reaction_coordinates(
-            self, structure_list: List[db.Structure], remaining: List[Tuple[Tuple[int, int]]]
-        ) -> List[Tuple[Tuple[int, int]]]:
+            self, structure_list: List[db.Structure], coordinates: List[List[Tuple[int, int]]]
+        ) -> List[List[Tuple[int, int]]]:
             reactive_coords = []
             elements = []
             for struct in structure_list:
                 elements += struct.get_atoms().elements
-            for coord in remaining:
+            for coord in coordinates:
                 if len(coord) != 2:
                     # Two reactive pairs wanted
                     continue
@@ -258,24 +258,24 @@ def test_bimol_associations():
         generated.
         """
 
-        def filter_atoms(self, structure_list: List[db.Structure], remaining: List[int]) -> List[int]:
+        def filter_atoms(self, structure_list: List[db.Structure], atom_indices: List[int]) -> List[int]:
             reactive_atoms = []
             elements = []
             for struct in structure_list:
                 elements += struct.get_atoms().elements
-            for i in remaining:
+            for i in atom_indices:
                 if elements[i] == utils.ElementType.H:
                     reactive_atoms.append(i)
             return reactive_atoms
 
         def filter_atom_pairs(
-            self, structure_list: List[db.Structure], remaining: List[Tuple[int, int]]
+            self, structure_list: List[db.Structure], pairs: List[Tuple[int, int]]
         ) -> List[Tuple[int, int]]:
             reactive_pairs = []
             elements = []
             for struct in structure_list:
                 elements += struct.get_atoms().elements
-            for i, j in remaining:
+            for i, j in pairs:
                 if elements[i] == utils.ElementType.O and elements[j] == utils.ElementType.O:
                     reactive_pairs.append((i, j))
             return reactive_pairs
@@ -301,7 +301,7 @@ def test_unimol_dissociations():
     calculations = manager.get_collection("calculations")
 
     # Add fake data
-    model = db.Model("FAKE", "", "")
+    model = db.Model("FAKE", "FAKE", "F-AKE")
     rr = resources_root_path()
     for mol in ["cyclohexene"]:
         compound = db.Compound()
@@ -316,7 +316,7 @@ def test_unimol_dissociations():
         structure.set_graph("masm_idx_map", graph["masm_idx_map"])
         structure.set_graph("masm_decision_list", graph["masm_decision_list"])
         compound.add_structure(structure.id())
-        structure.set_compound(compound.id())
+        structure.set_aggregate(compound.id())
 
     # Set up trial generator
     trial_generator = FragmentBased()
@@ -361,12 +361,12 @@ def test_unimol_dissociations():
         A reactive site filter allowing only carbon atoms to be reactive
         """
 
-        def filter_atoms(self, structure_list: List[db.Structure], remaining: List[int]) -> List[int]:
+        def filter_atoms(self, structure_list: List[db.Structure], atom_indices: List[int]) -> List[int]:
             reactive_atoms = []
             elements = []
             for struct in structure_list:
                 elements += struct.get_atoms().elements
-            for i in remaining:
+            for i in atom_indices:
                 if elements[i] == utils.ElementType.C:
                     reactive_atoms.append(i)
             return reactive_atoms
@@ -398,13 +398,13 @@ def test_unimol_dissociations():
         """
 
         def filter_atom_pairs(
-            self, structure_list: List[db.Structure], remaining: List[Tuple[int, int]]
+            self, structure_list: List[db.Structure], pairs: List[Tuple[int, int]]
         ) -> List[Tuple[int, int]]:
             reactive_pairs = []
             elements = []
             for struct in structure_list:
                 elements += struct.get_atoms().elements
-            for i, j in remaining:
+            for i, j in pairs:
                 if elements[i] == utils.ElementType.C and elements[j] == utils.ElementType.C:
                     reactive_pairs.append((i, j))
             return reactive_pairs
@@ -438,13 +438,13 @@ def test_unimol_dissociations():
         """
 
         def filter_reaction_coordinates(
-            self, structure_list: List[db.Structure], remaining: List[Tuple[Tuple[int, int]]]
-        ) -> List[Tuple[Tuple[int, int]]]:
+            self, structure_list: List[db.Structure], coordinates: List[List[Tuple[int, int]]]
+        ) -> List[List[Tuple[int, int]]]:
             reactive_coords = []
             elements = []
             for struct in structure_list:
                 elements += struct.get_atoms().elements
-            for coord in remaining:
+            for coord in coordinates:
                 pair_elements = (elements[coord[0][0]], elements[coord[0][1]])
                 if utils.ElementType.H in pair_elements and utils.ElementType.C in pair_elements:
                     reactive_coords.append(coord)
@@ -475,24 +475,24 @@ def test_unimol_dissociations():
         A reactive site filter allowing for C atoms and C-C bonds to be reactive
         """
 
-        def filter_atoms(self, structure_list: List[db.Structure], remaining: List[int]) -> List[int]:
+        def filter_atoms(self, structure_list: List[db.Structure], atom_indices: List[int]) -> List[int]:
             reactive_atoms = []
             elements = []
             for struct in structure_list:
                 elements += struct.get_atoms().elements
-            for i in remaining:
+            for i in atom_indices:
                 if elements[i] == utils.ElementType.C:
                     reactive_atoms.append(i)
             return reactive_atoms
 
         def filter_atom_pairs(
-            self, structure_list: List[db.Structure], remaining: List[Tuple[int, int]]
+            self, structure_list: List[db.Structure], pairs: List[Tuple[int, int]]
         ) -> List[Tuple[int, int]]:
             reactive_pairs = []
             elements = []
             for struct in structure_list:
                 elements += struct.get_atoms().elements
-            for i, j in remaining:
+            for i, j in pairs:
                 if elements[i] == utils.ElementType.C and elements[j] == utils.ElementType.C:
                     reactive_pairs.append((i, j))
             return reactive_pairs
@@ -537,7 +537,7 @@ def test_unimol_associations_atom_on_atom():
     calculations = manager.get_collection("calculations")
 
     # Add fake data
-    model = db.Model("FAKE", "", "")
+    model = db.Model("FAKE", "FAKE", "F-AKE")
     rr = resources_root_path()
     for mol in ["cyclohexene"]:
         compound = db.Compound()
@@ -552,7 +552,7 @@ def test_unimol_associations_atom_on_atom():
         structure.set_graph("masm_idx_map", graph["masm_idx_map"])
         structure.set_graph("masm_decision_list", graph["masm_decision_list"])
         compound.add_structure(structure.id())
-        structure.set_compound(compound.id())
+        structure.set_aggregate(compound.id())
 
     # Set up trial generator
     trial_generator = FragmentBased()
@@ -614,7 +614,7 @@ def test_unimol_associations():
     calculations = manager.get_collection("calculations")
 
     # Add fake data
-    model = db.Model("FAKE", "", "")
+    model = db.Model("FAKE", "FAKE", "F-AKE")
     rr = resources_root_path()
     for mol in ["hydrogenperoxide"]:
         compound = db.Compound()
@@ -629,7 +629,7 @@ def test_unimol_associations():
         structure.set_graph("masm_idx_map", graph["masm_idx_map"])
         structure.set_graph("masm_decision_list", graph["masm_decision_list"])
         compound.add_structure(structure.id())
-        structure.set_compound(compound.id())
+        structure.set_aggregate(compound.id())
 
     # Set up trial generator
     trial_generator = FragmentBased()
@@ -686,12 +686,12 @@ def test_unimol_associations():
         A reactive site filter allowing only hydrogen atoms to be reactive
         """
 
-        def filter_atoms(self, structure_list: List[db.Structure], remaining: List[int]) -> List[int]:
+        def filter_atoms(self, structure_list: List[db.Structure], atom_indices: List[int]) -> List[int]:
             reactive_atoms = []
             elements = []
             for struct in structure_list:
                 elements += struct.get_atoms().elements
-            for i in remaining:
+            for i in atom_indices:
                 if elements[i] == utils.ElementType.H:
                     reactive_atoms.append(i)
             return reactive_atoms
@@ -725,13 +725,13 @@ def test_unimol_associations():
         """
 
         def filter_atom_pairs(
-            self, structure_list: List[db.Structure], remaining: List[Tuple[int, int]]
+            self, structure_list: List[db.Structure], pairs: List[Tuple[int, int]]
         ) -> List[Tuple[int, int]]:
             reactive_pairs = []
             elements = []
             for struct in structure_list:
                 elements += struct.get_atoms().elements
-            for pair in remaining:
+            for pair in pairs:
                 if utils.ElementType.O in (elements[pair[0]], elements[pair[1]]):
                     reactive_pairs.append(pair)
             return reactive_pairs
@@ -768,13 +768,13 @@ def test_unimol_associations():
         """
 
         def filter_reaction_coordinates(
-            self, structure_list: List[db.Structure], remaining: List[Tuple[int, int]]
-        ) -> List[Tuple[int, int]]:
+            self, structure_list: List[db.Structure], coordinates: List[List[Tuple[int, int]]]
+        ) -> List[List[Tuple[int, int]]]:
             reactive_coords = []
             elements = []
             for struct in structure_list:
                 elements += struct.get_atoms().elements
-            for coord in remaining:
+            for coord in coordinates:
                 involved_atoms = list(sum(coord, ()))  # flattens coordinate
                 if len(set(involved_atoms)) == 3:
                     # Atom on bond

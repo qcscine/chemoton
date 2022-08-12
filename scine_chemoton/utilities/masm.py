@@ -212,7 +212,8 @@ def pruned_atom_pairs(
         components = distinct_components(molecule, prune == "Hydrogen")
         for i in distinct:
             distances = masm.distance(i, molecule.graph)
-            local_components = distinguish_components(components, lambda x: distances[x])
+            local_components = distinguish_components(components,
+                                                      lambda x: distances[x])  # pylint: disable=cell-var-from-loop
             considered_components = set()
             for j, c in enumerate(local_components):
                 if c in considered_components or i == j:

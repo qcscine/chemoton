@@ -35,7 +35,7 @@ class BruteForceConformers(Gear):
     Conformer guesses are supposed to be the only 'minimum_guess' structures
     assigned to compounds as they are the only ones where the correct graph
     assignment should be possible.
-    If no confromer guesses are present they are generated and the associated
+    If no conformer guesses are present they are generated and the associated
     geometry optimizations are scheduled.
     """
 
@@ -51,6 +51,7 @@ class BruteForceConformers(Gear):
             "minimization_job",
             "conformer_settings",
             "minimization_settings",
+            "temperature"
         )
 
         def __init__(self):
@@ -94,13 +95,12 @@ class BruteForceConformers(Gear):
                 Additional settings passed to the geometry optimization
                 calculations. Empty by default.
             """
+            self.temperature = 298.15
 
     def __init__(self):
         super().__init__()
         self.options = self.Options()
-        self._calculations = "required"
-        self._structures = "required"
-        self._compounds = "required"
+        self._required_collections = ["calculations", "compounds", "properties", "structures"]
         # local cache variables
         self._completed = []
 
@@ -108,7 +108,6 @@ class BruteForceConformers(Gear):
         # Loop over all compounds
         for compound in stop_on_timeout(self._compounds.iterate_all_compounds()):
             compound.link(self._compounds)
-
             # Check for initial reasons to skip
             if not compound.explore():
                 continue
@@ -160,7 +159,7 @@ class BruteForceConformers(Gear):
                 conformer_guesses = results.get_structures()
                 if len(conformer_guesses) == 0:
                     # if there are no guesses then this compound is done
-                    self._completed.append(compound.id())
+                    self._complete_compound(compound)
                     continue
                 for guess in conformer_guesses:
                     model = self.options.model
@@ -199,4 +198,28 @@ class BruteForceConformers(Gear):
 
                 # If all optimizations are done mark this compound as complete
                 if optimized_structures == len(conformer_guesses):
-                    self._completed.append(compound.id())
+                    self._complete_compound(compound)
+
+    def _complete_compound(self, compound):
+        import math
+        beta = 1 / (utils.BOLTZMANN_CONSTANT / utils.JOULE_PER_HARTREE * self.options.temperature)
+        # Use the energy of the first structure as the energy 0-point. Otherwise, we likely have an overflow of the
+        # exponential factor below (exp(- beta * energy).
+        reference_energy = 0.0
+        for sid in compound.get_structures():
+            structure = db.Structure(sid, self._structures)
+            if not structure.has_property("electronic_energy"):
+                continue
+            energy_property = structure.query_properties("electronic_energy", self.options.model, self._properties)
+            prop = db.NumberProperty(energy_property[-1], self._properties)
+            energy = prop.get_data()
+            if reference_energy == 0.0:
+                reference_energy = energy
+            energy -= reference_energy
+            temperature_model = db.Model.__copy__(self.options.model)
+            temperature_model.temperature = self.options.temperature
+            boltzmann_property = db.NumberProperty.make("boltzmann_weight", self.options.model,
+                                                        math.exp(-beta * energy), self._properties)
+            boltzmann_property.set_comment("Energy 0-point: " + str(reference_energy))
+            structure.add_property("boltzmann_weight", boltzmann_property.id())
+        self._completed.append(compound.id())

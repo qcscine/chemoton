@@ -9,7 +9,7 @@ See LICENSE.txt for details.
 import time
 from copy import deepcopy
 from itertools import combinations, product
-from typing import List, Tuple, Optional
+from typing import Iterator, List, Tuple, Optional
 from json import dumps
 
 # Third party imports
@@ -18,6 +18,7 @@ import scine_utilities as utils
 
 # Local application imports
 from ....utilities.queries import model_query, select_calculation_by_structures
+from ....utilities.calculation_creation_helpers import finalize_calculation
 from ..reactive_site_filters import ReactiveSiteFilter
 from .connectivity_analyzer import ReactionType, ConnectivityAnalyzer
 from . import TrialGenerator
@@ -261,7 +262,6 @@ class FragmentBased(TrialGenerator):
         super().__init__()
         self.options = self.Options()
         self.reactive_site_filter = ReactiveSiteFilter()
-        self._calculations = "required"
 
     def bimolecular_reactions(self, structure_list: List[db.Structure]):
         """
@@ -316,7 +316,7 @@ class FragmentBased(TrialGenerator):
 
         # Generate reactive pair combinations across the two structures from reactive sites
         # Applies the reactive_site_filter's filter_atom_pair method
-        inter_coords = tuple(
+        inter_coords = list(
             self._generate_inter_reactive_coords(
                 structure_list, reactive_monoatomic1, reactive_monoatomic2, reactive_diatomic1, reactive_diatomic2
             )
@@ -391,8 +391,8 @@ class FragmentBased(TrialGenerator):
                 "$and": [
                     {"job.order": {"$eq": self.options.unimolecular_dissociation.job.order}},
                     {"structures": [{"$oid": structure_id.string()}]},
+                    *model_query(self.options.model)
                 ]
-                + model_query(self.options.model)
             }
             if self._calculations.get_one_calculation(dumps(selection)) is not None:
                 return
@@ -401,8 +401,8 @@ class FragmentBased(TrialGenerator):
                 "$and": [
                     {"job.order": {"$eq": self.options.unimolecular_association.job.order}},
                     {"structures": [{"$oid": structure_id.string()}]},
+                    *model_query(self.options.model)
                 ]
-                + model_query(self.options.model)
             }
             if self._calculations.get_one_calculation(dumps(selection)) is not None:
                 return
@@ -425,7 +425,7 @@ class FragmentBased(TrialGenerator):
             filtered_monoatomic_fragment_pairs = self.reactive_site_filter.filter_atom_pairs(
                 [structure], monoatomic_fragment_pairs
             )
-            atom_on_atom_coordinates = [(pair,) for pair in filtered_monoatomic_fragment_pairs]
+            atom_on_atom_coordinates = [[pair] for pair in filtered_monoatomic_fragment_pairs]
             for coord in self.reactive_site_filter.filter_reaction_coordinates([structure], atom_on_atom_coordinates):
                 if len(coord) != 1:
                     # Should not be reached
@@ -535,7 +535,7 @@ class FragmentBased(TrialGenerator):
             filtered_diss_pairs = self.reactive_site_filter.filter_atom_pairs([structure], diss_pairs)
             # Filter wrt coordinate filter
             filtered_coords = self.reactive_site_filter.filter_reaction_coordinates(
-                [structure], [(pair,) for pair in filtered_diss_pairs]
+                [structure], [[pair] for pair in filtered_diss_pairs]
             )
             for coord in filtered_coords:
                 # Dissociative coordinates only consist of one pair each
@@ -679,16 +679,16 @@ class FragmentBased(TrialGenerator):
                 self.options.bimolecular_association.minimal_spin_multiplicity
             )
         calculation.set_settings(deepcopy(settings))
-        calculation.set_status(db.Status.HOLD)
+        finalize_calculation(calculation, self._structures)
 
     def _generate_inter_reactive_coords(
         self,
         structure_list: List[db.Structure],
         reactive_monoatomic1: List[int],
         reactive_monoatomic2: List[int],
-        reactive_diatomic1: List[Tuple[int]],
-        reactive_diatomic2: List[Tuple[int]],
-    ):
+        reactive_diatomic1: List[Tuple[int, int]],
+        reactive_diatomic2: List[Tuple[int, int]],
+    ) -> Iterator[Tuple[Tuple[int, int], ...]]:
         """
         Enumerates all reactive coordinates with all pairs involving both
         structures arising from the given monoatomic and diatomic reactive
@@ -714,7 +714,7 @@ class FragmentBased(TrialGenerator):
 
         Yields
         -------
-        Tuple[Tuple[int]]
+        Tuple[Tuple[int, int], ...]
             The interstructural reactive coordinate expressed as lists of atom pairs with
             the first element of each pair referring to an atom within the first structure
             and the second to the second structure.
@@ -794,7 +794,7 @@ class FragmentBased(TrialGenerator):
 
     @staticmethod
     def _get_intrastructural_pairs(
-        connectivity_analyzer: ConnectivityAnalyzer, reactive_atoms: List[int], distance_bounds: Tuple[int]
+        connectivity_analyzer: ConnectivityAnalyzer, reactive_atoms: List[int], distance_bounds: Tuple[int, int]
     ):
         """
         Generate a list of pairs of the specified reactive atoms whose graph distance is within the given bounds.
@@ -810,7 +810,7 @@ class FragmentBased(TrialGenerator):
 
         Returns
         -------
-        List[Tuple[int]]
+        List[Tuple[int, int]]
             A list of pairs of the provided atoms
         """
         pairs = []
@@ -821,7 +821,8 @@ class FragmentBased(TrialGenerator):
 
     @staticmethod
     def _check_all_inter_fragment_distances(
-        connectivity_analyzer: ConnectivityAnalyzer, frag1: List[int], frag2: List[int], distance_bounds: Tuple[int]
+        connectivity_analyzer: ConnectivityAnalyzer, frag1: List[int], frag2: List[int],
+        distance_bounds: Tuple[int, int]
     ):
         """
         Checks whether all atom pairs arising between two reactive
@@ -853,21 +854,21 @@ class FragmentBased(TrialGenerator):
         return True
 
     @staticmethod
-    def _shift_reaction_coordinates(reaction_coordinates: List[Tuple[Tuple[int, int]]], shift: int):
+    def _shift_reaction_coordinates(reaction_coordinates: List[Tuple[Tuple[int, int], ...]], shift: int):
         """
         Shifts the second member of all reactive pairs of all reaction
         coordinates by the specified value.
 
         Parameters
         ----------
-        reaction_coordinatse : List[Tuple[Tuple[int, int]]]
+        reaction_coordinates : List[Tuple[Tuple[int, int], ...]]
             The reaction coordinates of interest.
         shift : int
             The shift to be applied
 
         Returns
         -------
-        List[Tuple[Tuple[int, int]]]
+        List[Tuple[Tuple[int, int], ...]]
             The shifted reaction coordinate.
         """
         shifted_coords = []

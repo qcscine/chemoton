@@ -1,6 +1,16 @@
 Changelog
 =========
 
+Release 2.1.0
+-------------
+New features
+ - Introduce Flasks to the reaction networks (aggregates of stable non-bonded complexes)
+ - Elementary-step gear that uses the current minimum-energy conformer for reaction trial generation.
+ - Added a gear that sets up kinetic modeling jobs.
+ - Allow the refinement of a subset of elementary steps per reaction. The subset is given through an energy cut-off
+   above the lowest lying transition state.
+ - Introduce possibility to efficiently explore barrierless dissociations.
+
 Release 2.0.0
 -------------
 

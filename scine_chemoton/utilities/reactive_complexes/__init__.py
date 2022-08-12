@@ -25,13 +25,6 @@ class ReactiveComplexes:
         def __init__(self):
             raise NotImplementedError
 
-    def generate_reactive_complexes(self):
-        """
-        Main generator function to be implemented in all derived reactive
-        complex generators
-        """
-        raise NotImplementedError
-
     def set_options(self, option_dict):
         """
         Sets the options for the ReactiveComplexes from a dictionary.

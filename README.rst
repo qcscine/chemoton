@@ -133,7 +133,8 @@ How to Cite
 -----------
 
 When publishing results obtained with Chemoton, please cite the corresponding
-release as archived on Zenodo (please use the DOI of the respective release).
+release as archived on `Zenodo <https://doi.org/10.5281/zenodo.6695583>`_ (DOI
+10.5281/zenodo.6695583; please use the DOI of the respective release).
 
 In addition, we kindly request you to cite the following article when using Chemoton:
 

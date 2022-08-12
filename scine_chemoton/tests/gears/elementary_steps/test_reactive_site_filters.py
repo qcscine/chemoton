@@ -26,7 +26,8 @@ from ....gears.elementary_steps.reactive_site_filters import (
     ReactiveSiteFilterOrArray,
     ReactiveSiteFilterAndArray,
     AtomRuleBasedFilter,
-    ElementWiseReactionCoordinateFilter
+    ElementWiseReactionCoordinateFilter,
+    HeuristicPolarizationReactionCoordinateFilter
 )
 from ....gears.elementary_steps.compound_filters import (
     CompoundFilter
@@ -51,7 +52,7 @@ class ReactiveSiteFiltersTests(unittest.TestCase):
         structure.set_label(db.Label.MINIMUM_OPTIMIZED)
         structure.set_graph("masm_cbor_graph", cyclohexene["masm_cbor_graph"])
         structure.set_graph("masm_idx_map", cyclohexene["masm_idx_map"])
-        structure.set_compound(db.ID())
+        structure.set_aggregate(db.ID())
 
         # Setup filter
         f = ReactiveSiteFilter()
@@ -110,6 +111,90 @@ class ReactiveSiteFiltersTests(unittest.TestCase):
         assert isinstance(r2, ReactiveSiteFilterAndArray)
         assert isinstance(r2, ReactiveSiteFilter)
 
+    def test_empty_and(self):
+        manager = db_setup.get_clean_db("chemoton_test_empty_and")
+
+        # Get collections
+        structures = manager.get_collection("structures")
+
+        # Add structure data
+        rr = resources_root_path()
+        cyclohexene = json.load(open(os.path.join(rr, "cyclohexene.json"), "r"))
+        structure = db.Structure()
+        structure.link(structures)
+        structure.create(os.path.join(rr, "cyclohexene.xyz"), 0, 1)
+        structure.set_label(db.Label.MINIMUM_OPTIMIZED)
+        structure.set_graph("masm_cbor_graph", cyclohexene["masm_cbor_graph"])
+        structure.set_graph("masm_idx_map", cyclohexene["masm_idx_map"])
+        structure.set_aggregate(db.ID())
+
+        water = json.load(open(os.path.join(rr, "water.json"), "r"))
+        structure1 = db.Structure()
+        structure1.link(structures)
+        structure1.create(os.path.join(rr, "water.xyz"), 0, 1)
+        structure1.set_label(db.Label.MINIMUM_OPTIMIZED)
+        structure1.set_graph("masm_cbor_graph", water["masm_cbor_graph"])
+        structure1.set_graph("masm_idx_map", water["masm_idx_map"])
+        structure1.set_aggregate(db.ID())
+
+        # Setup filter
+        noneFilter = ReactiveSiteFilterAndArray()
+
+        # Filter and check pruning no atoms
+        allowed_atoms = noneFilter.filter_atoms([structure], list(range(16)))
+        assert len(allowed_atoms) == 16
+        pairs = [(0, 1), (2, 3), (13, 14)]
+        allowed_pairs = noneFilter.filter_atom_pairs([structure, structure1], pairs)
+        assert len(allowed_pairs) == 3
+        coords = [((0, 1),), ((2, 3), (4, 5))]
+        allowed_coordinates = noneFilter.filter_reaction_coordinates([structure], coords)
+        assert len(allowed_coordinates) == 2
+        assert [] == noneFilter.filter_atoms([structure], [])
+        assert [] == noneFilter.filter_atom_pairs([structure], [])
+        assert [] == noneFilter.filter_reaction_coordinates([structure], [])
+
+    def test_empty_or(self):
+        manager = db_setup.get_clean_db("chemoton_test_empty_or")
+
+        # Get collections
+        structures = manager.get_collection("structures")
+
+        # Add structure data
+        rr = resources_root_path()
+        cyclohexene = json.load(open(os.path.join(rr, "cyclohexene.json"), "r"))
+        structure = db.Structure()
+        structure.link(structures)
+        structure.create(os.path.join(rr, "cyclohexene.xyz"), 0, 1)
+        structure.set_label(db.Label.MINIMUM_OPTIMIZED)
+        structure.set_graph("masm_cbor_graph", cyclohexene["masm_cbor_graph"])
+        structure.set_graph("masm_idx_map", cyclohexene["masm_idx_map"])
+        structure.set_aggregate(db.ID())
+
+        water = json.load(open(os.path.join(rr, "water.json"), "r"))
+        structure1 = db.Structure()
+        structure1.link(structures)
+        structure1.create(os.path.join(rr, "water.xyz"), 0, 1)
+        structure1.set_label(db.Label.MINIMUM_OPTIMIZED)
+        structure1.set_graph("masm_cbor_graph", water["masm_cbor_graph"])
+        structure1.set_graph("masm_idx_map", water["masm_idx_map"])
+        structure1.set_aggregate(db.ID())
+
+        # Setup filter
+        noneFilter = ReactiveSiteFilterOrArray()
+
+        # Filter and check pruning of everything
+        allowed_atoms = noneFilter.filter_atoms([structure], list(range(16)))
+        assert len(allowed_atoms) == 0
+        pairs = [(0, 1), (2, 3), (13, 14)]
+        allowed_pairs = noneFilter.filter_atom_pairs([structure, structure1], pairs)
+        assert len(allowed_pairs) == 0
+        coords = [((0, 1),), ((2, 3), (4, 5))]
+        allowed_coordinates = noneFilter.filter_reaction_coordinates([structure], coords)
+        assert len(allowed_coordinates) == 0
+        assert [] == noneFilter.filter_atoms([structure], [])
+        assert [] == noneFilter.filter_atom_pairs([structure], [])
+        assert [] == noneFilter.filter_reaction_coordinates([structure], [])
+
     def test_masm_ranking_filter(self):
         # Connect to test DB
         manager = db_setup.get_clean_db("chemoton_test_symmetry_filter")
@@ -126,7 +211,7 @@ class ReactiveSiteFiltersTests(unittest.TestCase):
         structure.set_label(db.Label.MINIMUM_OPTIMIZED)
         structure.set_graph("masm_cbor_graph", cyclohexene["masm_cbor_graph"])
         structure.set_graph("masm_idx_map", cyclohexene["masm_idx_map"])
-        structure.set_compound(db.ID())
+        structure.set_aggregate(db.ID())
 
         water = json.load(open(os.path.join(rr, "water.json"), "r"))
         structure1 = db.Structure()
@@ -135,7 +220,7 @@ class ReactiveSiteFiltersTests(unittest.TestCase):
         structure1.set_label(db.Label.MINIMUM_OPTIMIZED)
         structure1.set_graph("masm_cbor_graph", water["masm_cbor_graph"])
         structure1.set_graph("masm_idx_map", water["masm_idx_map"])
-        structure1.set_compound(db.ID())
+        structure1.set_aggregate(db.ID())
 
         # Setup filter
         noneFilter = MasmChemicalRankingFilter(prune="None")
@@ -201,7 +286,7 @@ class ReactiveSiteFiltersTests(unittest.TestCase):
         structure.set_label(db.Label.MINIMUM_OPTIMIZED)
         structure.set_graph("masm_cbor_graph", cyclohexene["masm_cbor_graph"])
         structure.set_graph("masm_idx_map", cyclohexene["masm_idx_map"])
-        structure.set_compound(db.ID())
+        structure.set_aggregate(db.ID())
 
         water = json.load(open(os.path.join(rr, "water.json"), "r"))
         structure1 = db.Structure()
@@ -210,7 +295,7 @@ class ReactiveSiteFiltersTests(unittest.TestCase):
         structure1.set_label(db.Label.MINIMUM_OPTIMIZED)
         structure1.set_graph("masm_cbor_graph", water["masm_cbor_graph"])
         structure1.set_graph("masm_idx_map", water["masm_idx_map"])
-        structure1.set_compound(db.ID())
+        structure1.set_aggregate(db.ID())
 
         # Setup filter
         f = SimpleRankingFilter(atom_threshold=1, pair_threshold=5, coordinate_threshold=4)
@@ -259,7 +344,7 @@ class ReactiveSiteFiltersTests(unittest.TestCase):
         structure.set_label(db.Label.MINIMUM_OPTIMIZED)
         structure.set_graph("masm_cbor_graph", cyclohexene["masm_cbor_graph"])
         structure.set_graph("masm_idx_map", cyclohexene["masm_idx_map"])
-        structure.set_compound(db.ID())
+        structure.set_aggregate(db.ID())
 
         water = json.load(open(os.path.join(rr, "water.json"), "r"))
         structure1 = db.Structure()
@@ -268,7 +353,7 @@ class ReactiveSiteFiltersTests(unittest.TestCase):
         structure1.set_label(db.Label.MINIMUM_OPTIMIZED)
         structure1.set_graph("masm_cbor_graph", water["masm_cbor_graph"])
         structure1.set_graph("masm_idx_map", water["masm_idx_map"])
-        structure1.set_compound(db.ID())
+        structure1.set_aggregate(db.ID())
 
         # Setup filter
         f = SimpleRankingFilter(
@@ -314,7 +399,7 @@ class ReactiveSiteFiltersTests(unittest.TestCase):
         structure.set_label(db.Label.MINIMUM_OPTIMIZED)
         structure.set_graph("masm_cbor_graph", cyclohexene["masm_cbor_graph"])
         structure.set_graph("masm_idx_map", cyclohexene["masm_idx_map"])
-        structure.set_compound(db.ID())
+        structure.set_aggregate(db.ID())
 
         water = json.load(open(os.path.join(rr, "water.json"), "r"))
         structure1 = db.Structure()
@@ -323,7 +408,7 @@ class ReactiveSiteFiltersTests(unittest.TestCase):
         structure1.set_label(db.Label.MINIMUM_OPTIMIZED)
         structure1.set_graph("masm_cbor_graph", water["masm_cbor_graph"])
         structure1.set_graph("masm_idx_map", water["masm_idx_map"])
-        structure1.set_compound(db.ID())
+        structure1.set_aggregate(db.ID())
 
         # Setup filter
         f = SimpleRankingFilter(atom_threshold=1, pair_threshold=5, coordinate_threshold=4) & MasmChemicalRankingFilter(
@@ -511,5 +596,99 @@ class ReactiveSiteFiltersTests(unittest.TestCase):
         for ref in reference:
             assert ref in reference
 
+        # Cleaning
+        manager.wipe()
+
+    def test_heuristic_polarization_coordinate_filter(self):
+        # Connect to test DB
+        manager = db_setup.get_clean_db("chemoton_test_polarization_coordinate_filter")
+
+        # Get collections
+        structures = manager.get_collection("structures")
+
+        # Add structure data
+        rr = resources_root_path()
+        proline_propanal_adduct = json.load(open(os.path.join(rr, "proline_propanal_adduct.json"), "r"))
+        structure = db.Structure()
+        structure.link(structures)
+        structure.create(os.path.join(rr, "proline_propanal_adduct.xyz"), 0, 1)
+        structure.set_label(db.Label.MINIMUM_OPTIMIZED)
+        structure.set_graph("masm_cbor_graph", proline_propanal_adduct["masm_cbor_graph"])
+        structure.set_graph("masm_idx_map", proline_propanal_adduct["masm_idx_map"])
+        structure.set_compound(db.ID())
+
+        water = json.load(open(os.path.join(rr, "water.json"), "r"))
+        structure1 = db.Structure()
+        structure1.link(structures)
+        structure1.create(os.path.join(rr, "water.xyz"), 0, 1)
+        structure1.set_label(db.Label.MINIMUM_OPTIMIZED)
+        structure1.set_graph("masm_cbor_graph", water["masm_cbor_graph"])
+        structure1.set_graph("masm_idx_map", water["masm_idx_map"])
+        structure1.set_compound(db.ID())
+
+        # trivial checks
+        coords = list()
+        for i in range(27):
+            for j in range(i):
+                coords.append(((i, j),))
+        rules = {
+            'H': [],
+            'C': [],
+            'N': [],
+            'O': []
+        }
+        f = HeuristicPolarizationReactionCoordinateFilter(rules=rules)
+        allowed_coordinates = f.filter_reaction_coordinates([structure, structure1], coords)
+        assert len(allowed_coordinates) == 0
+
+        rules = {
+            'H': [HeuristicPolarizationReactionCoordinateFilter.PaulingElectronegativityRule()],
+            'C': [HeuristicPolarizationReactionCoordinateFilter.PaulingElectronegativityRule()],
+            'N': [HeuristicPolarizationReactionCoordinateFilter.PaulingElectronegativityRule()],
+            'O': [HeuristicPolarizationReactionCoordinateFilter.PaulingElectronegativityRule()]
+        }
+        f = HeuristicPolarizationReactionCoordinateFilter(rules=rules)
+        allowed_coordinates = f.filter_reaction_coordinates([structure, structure1], coords)
+        reference = [((3, 2),), ((4, 2),), ((5, 3),), ((5, 4),), ((8, 3),), ((8, 4),), ((15, 3),), ((15, 4),),
+                     ((24, 3),), ((24, 4),), ((25, 3),), ((25, 4),), ((26, 2),), ((26, 5),), ((26, 8),), ((26, 15),),
+                     ((26, 24),), ((26, 25),)]
+        assert len(allowed_coordinates) == len(reference)
+        for ref in reference:
+            assert ref in allowed_coordinates
+
+        rules = {
+            'H': [HeuristicPolarizationReactionCoordinateFilter.PaulingElectronegativityRule(),
+                  HeuristicPolarizationReactionCoordinateFilter.FunctionalGroupRule("+", 1, ['N', 'O'], 'C', 4, 1),
+                  HeuristicPolarizationReactionCoordinateFilter.FunctionalGroupRule("+", 1, ['N', 'O'], 'C', 4, 2)],
+            'C': [HeuristicPolarizationReactionCoordinateFilter.PaulingElectronegativityRule()],
+            'N': [HeuristicPolarizationReactionCoordinateFilter.PaulingElectronegativityRule()],
+            'O': [HeuristicPolarizationReactionCoordinateFilter.PaulingElectronegativityRule()]
+        }
+        f = HeuristicPolarizationReactionCoordinateFilter(rules=rules)
+        allowed_coordinates = f.filter_reaction_coordinates([structure, structure1], coords)
+        reference = [((3, 2),), ((4, 2),), ((5, 3),), ((5, 4),), ((8, 3),), ((8, 4),), ((14, 3),), ((14, 4),),
+                     ((15, 3),), ((15, 4),), ((16, 3),), ((16, 4),), ((17, 3),), ((17, 4),), ((22, 3),), ((22, 4),),
+                     ((23, 3),), ((23, 4),), ((24, 3),), ((24, 4),), ((25, 3),), ((25, 4),), ((26, 2),), ((26, 5),),
+                     ((26, 8),), ((26, 14),), ((26, 15),), ((26, 16),), ((26, 17),), ((26, 22),), ((26, 23),),
+                     ((26, 24),), ((26, 25),)]
+        assert len(allowed_coordinates) == len(reference)
+        for ref in reference:
+            assert ref in allowed_coordinates
+
+        rules = {
+            'H': [HeuristicPolarizationReactionCoordinateFilter.PaulingElectronegativityRule(),
+                  HeuristicPolarizationReactionCoordinateFilter.FunctionalGroupRule("+", 2, ['N', 'O'], 'C', 3, 1)],
+            'C': [HeuristicPolarizationReactionCoordinateFilter.PaulingElectronegativityRule()],
+            'N': [HeuristicPolarizationReactionCoordinateFilter.PaulingElectronegativityRule()],
+            'O': [HeuristicPolarizationReactionCoordinateFilter.PaulingElectronegativityRule()]
+        }
+        f = HeuristicPolarizationReactionCoordinateFilter(rules=rules)
+        allowed_coordinates = f.filter_reaction_coordinates([structure, structure1], coords)
+        reference = [((3, 2),), ((4, 2),), ((5, 3),), ((5, 4),), ((8, 3),), ((8, 4),), ((15, 3),), ((15, 4),),
+                     ((24, 3),), ((24, 4),), ((25, 3),), ((25, 4),), ((26, 2),), ((26, 5),), ((26, 8),), ((26, 15),),
+                     ((26, 24),), ((26, 25),)]
+        assert len(allowed_coordinates) == len(reference)
+        for ref in reference:
+            assert ref in allowed_coordinates
         # Cleaning
         manager.wipe()

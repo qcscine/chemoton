@@ -2,7 +2,6 @@ from os import path
 from setuptools import setup, find_packages
 import sys
 
-
 # NOTE: This file must remain Python 2 compatible for the foreseeable future,
 # to ensure that we error out properly for people with outdated setuptools
 # and/or pip.
@@ -64,7 +63,7 @@ setup(
     classifiers=[
         "Programming Language :: Python",
         "Programming Language :: C++",
-        "Development Status :: 2 - Pre-Alpha",
+        "Development Status :: 5 - Production/Stable",
         "Intended Audience :: Science/Research",
         "License :: OSI Approved :: BSD License",
         "Natural Language :: English",

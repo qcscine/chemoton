@@ -6,15 +6,14 @@ See LICENSE.txt for details.
 """
 
 # Standard library imports
-from json import dumps
+from typing import List
+from warnings import warn
 
 # Third party imports
 import scine_database as db
 
 # Local application imports
 from . import ElementaryStepGear
-from ...utilities.queries import stop_on_timeout
-from .trial_generator.bond_based import BondBased
 
 
 class MinimalElementarySteps(ElementaryStepGear):
@@ -27,6 +26,9 @@ class MinimalElementarySteps(ElementaryStepGear):
 
     For each combination multiple arrangements (possible Elementary Steps) will
     be tested.
+
+    This Gear does not consider Flasks/Complexes as reactive, they are not probed
+    for elementary steps.
 
     Attributes
     ----------
@@ -46,59 +48,19 @@ class MinimalElementarySteps(ElementaryStepGear):
     The need for elementary step guesses is tested by:
 
     a. for bimolecular reactions: checking whether there is already a
-        calculation to search for an bimolecular reaction of the same
+        calculation to search for a bimolecular reaction of the same
         structures with the same job order
     b. for unimolecular reactions: checking whether there is already a
         calculation to search for an intramolecular reaction of the same
         structure  with the same job order
     """
 
-    def __init__(self):
-        super().__init__()
-        self._calculations = "required"
-        self._structures = "required"
-        self._compounds = "required"
-        self._reactions = "required"
-        self._properties = "required"
-        self.trial_generator = BondBased()
-
-    def _propagate_db_manager(self, manager: db.Manager):
-        self.trial_generator.initialize_collections(manager)
-
-    def _loop_impl(self):
-
-        self._sanity_check_configuration()
-
-        # Loop over all compounds
-        selection = {"exploration_disabled": {"$ne": True}}
-        for compound_one in stop_on_timeout(self._compounds.iterate_compounds(dumps(selection))):
-            compound_one.link(self._compounds)
-            if self.compound_filter.filter(compound_one):
-                centroid_one = db.Structure(compound_one.get_centroid())
-                centroid_one.link(self._structures)
-                # Do intramolecular reaction
-                if self.options.enable_unimolecular_trials:
-                    self.trial_generator.unimolecular_reactions(centroid_one)
-
-            # Get intermolecular reaction partners
-            if not self.options.enable_bimolecular_trials:
-                continue
-            selection = {"exploration_disabled": {"$ne": True}}
-            for compound_two in stop_on_timeout(self._compounds.iterate_compounds(dumps(selection))):
-                compound_two.link(self._compounds)
-                centroid_one = db.Structure(compound_one.get_centroid())
-                centroid_one.link(self._structures)
-                centroid_two = db.Structure(compound_two.get_centroid())
-                centroid_two.link(self._structures)
-                # Make this loop run lower triangular + diagonal only
-                id_one = compound_one.id().string()
-                id_two = compound_two.id().string()
-                sorted_ids = sorted([id_one, id_two])
-                # Second criterion needed to not exclude diagonal
-                if sorted_ids[0] == id_two and id_one != id_two:
-                    continue
-                # Filter
-                if not self.compound_filter.filter(compound_one, compound_two):
-                    continue
-                # Do intermolecular reactions
-                self.trial_generator.bimolecular_reactions([centroid_one, centroid_two])
+    def _get_eligible_structures(self, compound: db.Compound) -> List[db.ID]:
+        centroid = db.Structure(compound.get_centroid(), self._structures)
+        if not centroid.explore() or centroid.get_label() not in [
+            db.Label.MINIMUM_OPTIMIZED,
+            db.Label.USER_OPTIMIZED,
+        ]:
+            warn(f"{self.name} picked centroid {centroid.id()} for compound {compound.id()}, but this is actually not "
+                 f"a valid structure.")
+        return [centroid.id()]
