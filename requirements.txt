@@ -1,5 +1,6 @@
 # List required packages in this file, one per line.
 numpy
+networkx
 scine_database
 scine_utilities
 scine_molassembler

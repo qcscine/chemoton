@@ -1,6 +1,12 @@
 Changelog
 =========
 
+Release 2.2.0
+-------------
+New features
+ - Introduce Pathfinder, a graph-based approach to analyze how compounds are connected via reactions while considering
+   kinetic and stoichiometric constraints.
+
 Release 2.1.0
 -------------
 New features

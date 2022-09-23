@@ -7,9 +7,59 @@ See LICENSE.txt for details.
 
 # Standard library imports
 from typing import Union, Tuple
+import numpy as np
 # Third party imports
 import scine_database as db
 import scine_utilities as utils
+
+
+def get_elementery_step_with_min_ts_energy(reaction: db.Reaction, energy_type: str, model: db.Model,
+                                           elementary_steps: db.Collection, structures: db.Collection,
+                                           properties: db.Collection) -> Union[db.ID, None]:
+    """
+    Gets the elementary step ID with the lowest energy of the corresponding transition state of a reaction.
+
+
+    Parameters
+    ----------
+    reaction : db.Reaction
+        _description_
+    energy_type : str
+        The name of the energy property such as 'electronic_energy' or 'gibbs_free_energy'
+    model : scine_database.Model
+        The model used to calculate the energies.
+    elementary_steps : db.Collection
+        The elementary step collection.
+    structures : scine_database.Collection
+        The structure collection.
+    properties : scine_database.Collection
+        The property collection.
+
+    Returns
+    -------
+    Union[db.ID, None]
+        _description_
+    """
+    lowest_ts_energy = np.inf
+    es_id_with_lowest_ts = None
+    # # # Loop over elementary steps
+    for es_id in reaction.get_elementary_steps():
+        es = db.ElementaryStep(es_id, elementary_steps)
+        # # # Type check elementary step and break if barrierless
+        if es.get_type() == db.ElementaryStepType.BARRIERLESS:
+            es_id_with_lowest_ts = es_id
+            break
+        ts = db.Structure(es.get_transition_state())
+        ts_energy = get_energy_for_structure(
+            ts, energy_type, model, structures, properties)
+        if ts_energy is None:
+            continue
+        assert ts_energy
+        if ts_energy < lowest_ts_energy:
+            es_id_with_lowest_ts = es_id
+            lowest_ts_energy = ts_energy
+
+    return es_id_with_lowest_ts
 
 
 def get_energy_sum_of_elementary_step_side(step: db.ElementaryStep, side: db.Side, energy_type: str, model: db.Model,
@@ -130,7 +180,7 @@ def get_energy_for_structure(structure: db.Structure, prop_name: str, model: db.
 
 def rate_constant_from_barrier(barrier: float, temperature: float) -> float:
     """
-    Calculate a rate constant from its energy and temperature according to transition state theory:
+    Calculate a rate constant from its energy [kJ / mol] and temperature according to transition state theory:
     rate-constant = k_B T / h exp[-barrier/(R T)]
 
     Parameters
@@ -144,10 +194,9 @@ def rate_constant_from_barrier(barrier: float, temperature: float) -> float:
     -------
     The rate constant.
     """
-    from math import exp
     barrier_j_per_mol = 1e+3 * barrier
     kbt_in_j = utils.BOLTZMANN_CONSTANT * temperature  # k_B T
     factor = kbt_in_j / utils.PLANCK_CONSTANT  # k_B T / h
     rt_in_j_per_mol = utils.MOLAR_GAS_CONSTANT * temperature  # R T
     beta_in_mol_per_j = 1.0 / rt_in_j_per_mol  # 1 / (R T)
-    return factor * exp(- beta_in_mol_per_j * barrier_j_per_mol)
+    return factor * np.exp(- beta_in_mol_per_j * barrier_j_per_mol)

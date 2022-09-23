@@ -250,7 +250,7 @@ def _insert_flask(
     complex.set_label(db.Label.COMPLEX_OPTIMIZED)
     complex.set_aggregate(flask.get_id())
     complex.set_model(db.Model("FAKE", "FAKE", "F-AKE"))
-    add_random_energy(complex, (-10000.0, -1000.0), properties)
+    add_random_energy(complex, (-30.0, -25.0), properties)
     flask.add_structure(complex.get_id())
     # Update original reaction and elementary steps
     reaction = db.Reaction(rid)
@@ -312,12 +312,13 @@ def _create_compound(
     compounds: db.Collection,
     structures: db.Collection,
     user_input: bool = False,
+    energy_limits: Tuple[float, float] = (-20.0, -10.0)
 ):
     c = db.Compound(db.ID())
     c.link(compounds)
     c.create([])
     for _ in range(random.randint(1, max_structures)):
-        c.add_structure(_fake_structure(c, structures, properties, user_input))
+        c.add_structure(_fake_structure(c, structures, properties, user_input, energy_limits))
     c.disable_exploration()
 
     return c.get_id()
@@ -328,6 +329,7 @@ def _fake_structure(
     structures: db.Collection,
     properties: db.Collection,
     user_input: bool,
+    energy_limits: Tuple[float, float] = (-20.0, -10.0)
 ):
     # Add structure data
     structure = db.Structure()
@@ -339,7 +341,7 @@ def _fake_structure(
         structure.set_label(db.Label.MINIMUM_OPTIMIZED)
     structure.set_aggregate(compound.get_id())
     structure.set_model(db.Model("FAKE", "FAKE", "F-AKE"))
-    add_random_energy(structure, (-20.0, -10.0), properties)
+    add_random_energy(structure, energy_limits, properties)
 
     return structure.get_id()
 
@@ -359,8 +361,10 @@ def _create_reaction(
     elementary_steps: db.Collection,
 ):
     success = False
+
     while not success:
-        n_educts = random.randint(1, max_n_educts_per_r)
+        current_n_compounds = compounds.count("{}")
+        n_educts = random.randint(1, min(max_n_educts_per_r, current_n_compounds - 1))
         verified_educts: List[db.ID] = []
         while not verified_educts:
             educt_objects = compounds.random_select_compounds(n_educts)
@@ -370,8 +374,7 @@ def _create_reaction(
                     verified_educts.append(e.get_id())
         educts = verified_educts
 
-        n_products = random.randint(1, max_n_products_per_r)
-        current_n_compounds = compounds.count("{}")
+        n_products = random.randint(1, min(max_n_products_per_r, n_compounds - current_n_compounds))
         # pick existing compounds in database based on probability that existing would be picked from all planned
         # compounds
         n_existing_pick = int(round(n_products * current_n_compounds / n_compounds))

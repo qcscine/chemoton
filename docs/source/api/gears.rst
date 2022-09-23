@@ -39,6 +39,10 @@ Kinetics
 ~~~~~~~~
 .. automodule:: scine_chemoton.gears.kinetics
 
+Pathfinder
+~~~~~~~~~~
+.. automodule:: scine_chemoton.gears.pathfinder
+
 Reaction Sorting
 ~~~~~~~~~~~~~~~~~~~~~~~
 .. automodule:: scine_chemoton.gears.reaction
