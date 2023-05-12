@@ -9,6 +9,7 @@ See LICENSE.txt for details.
 from json import dumps
 from typing import Union, Tuple, Dict, List
 from warnings import warn
+from copy import copy
 
 # Third party imports
 import scine_database as db
@@ -19,6 +20,7 @@ import scine_molassembler as masm
 from . import Gear
 from ..utilities.queries import stop_on_timeout, calculation_exists_in_structure
 from ..utilities.calculation_creation_helpers import finalize_calculation
+from ..utilities.masm import mol_from_cbor
 
 
 class BasicAggregateHousekeeping(Gear):
@@ -43,7 +45,6 @@ class BasicAggregateHousekeeping(Gear):
 
     def __init__(self):
         super().__init__()
-        self.options = self.Options()
         self._required_collections = ["calculations", "compounds", "flasks",
                                       "properties", "structures", "reactions"]
         self._compound_map: Dict[int, Dict[Tuple[int, int, int], List[db.ID]]] = dict()
@@ -59,14 +60,13 @@ class BasicAggregateHousekeeping(Gear):
         Caching map from compound id to list of structure ids and decision lists.
         """
 
-    class Options:
+    class Options(Gear.Options):
         """
-        The options for the BasicAggregateHouseKeeping Gear.
+        The options for the BasicAggregateHousekeeping Gear.
         """
 
         __slots__ = [
             "cycle_time",
-            "model",
             "bond_order_job",
             "bond_order_settings",
             "graph_job",
@@ -75,6 +75,7 @@ class BasicAggregateHousekeeping(Gear):
         ]
 
         def __init__(self):
+            super().__init__()
             self.cycle_time = 10
             """
             int
@@ -82,12 +83,6 @@ class BasicAggregateHousekeeping(Gear):
                 Cycles are finished independent of this option, thus if a cycle
                 takes longer than the cycle_time will effectively lead to longer
                 cycle times and not cause multiple cycles of the same Gear.
-            """
-            self.model: db.Model = db.Model("PM6", "PM6", "")
-            """
-            db.Model (Scine::Database::Model)
-                The Model used for the bond order calculations.
-                The default is: PM6 using Sparrow.
             """
             self.bond_order_job: db.Job = db.Job("scine_bond_orders")
             """
@@ -132,8 +127,7 @@ class BasicAggregateHousekeeping(Gear):
                     continue
                 self._unique_structures[key].append((s_id, structure.get_graph("masm_decision_list")))
 
-    def _add_to_unique_structures(self, structure: db.Structure):
-        key = structure.get_aggregate().string()
+    def _add_to_unique_structures(self, key: str, structure: db.Structure):
         if key in self._unique_structures:
             self._unique_structures[key].append((structure.id(), structure.get_graph("masm_decision_list")))
         else:
@@ -150,32 +144,41 @@ class BasicAggregateHousekeeping(Gear):
             self._add_to_map(flask, self._flask_map)
 
     def _add_to_map(self, aggregate: Union[db.Compound, db.Flask], cache_map: Dict):
-        n_atoms, n_molecules, charge, multiplicity, graph = self._get_aggregate_info(aggregate)
+        sum_formula, n_molecules, charge, multiplicity, mols = self._get_aggregate_info(aggregate)
         key = (n_molecules, charge, multiplicity)
-        if n_atoms in cache_map:
-            if key in cache_map[n_atoms]:
-                cache_map[n_atoms][key].append((aggregate.id(), graph))
+        if sum_formula in cache_map:
+            if key in cache_map[sum_formula]:
+                if (aggregate.id(), mols) in cache_map[sum_formula][key]:
+                    return
+                cache_map[sum_formula][key].append((aggregate.id(), mols))
                 return
             else:
-                cache_map[n_atoms][key] = [(aggregate.id(), graph)]
+                cache_map[sum_formula][key] = [(aggregate.id(), mols)]
                 return
-        cache_map[n_atoms] = {key: [(aggregate.id(), graph)]}
+        cache_map[sum_formula] = {key: [(aggregate.id(), mols)]}
 
-    def _get_aggregate_info(self, aggregate: Union[db.Compound, db.Flask]) -> Tuple[int, int, int, int, str]:
-        # We could even think about adding the graph here too ...
-        centroid = db.Structure(aggregate.get_centroid(), self._structures)
-        graph = centroid.get_graph("masm_cbor_graph")
-        return len(centroid.get_atoms()), len(graph.split(";")), centroid.get_charge(), centroid.get_multiplicity(),\
-            graph
+    def _get_sum_formula(self, mols: List[masm.Molecule]) -> str:
+        sum_formulas = []
+        for m in mols:
+            sum_formulas.append(m.graph.__repr__().split()[-1])
+        sum_formulas.sort()
+        return ','.join(sum_formulas)
 
     @staticmethod
-    def _get_aggregate_from_map(n_atoms: int, n_molecules: int, charge: int, multiplicity: int, graph,
+    def _get_aggregate_from_map(sum_formula: str, n_molecules: int, charge: int, multiplicity: int, mols,
                                 cache_map: Dict) -> Union[db.ID, None]:
-        if n_atoms in cache_map:
+        if sum_formula in cache_map:
             key = (n_molecules, charge, multiplicity)
-            if key in cache_map[n_atoms]:
-                for a_id, ref_graph in cache_map[n_atoms][key]:
-                    if masm.JsonSerialization.equal_molecules(ref_graph, graph):
+            if key in cache_map[sum_formula]:
+                for a_id, ref_mols in cache_map[sum_formula][key]:
+                    remaining_mols = copy(ref_mols)
+                    for m in mols:
+                        idx = remaining_mols.index(m) if m in remaining_mols else None
+                        if idx is not None:
+                            remaining_mols.pop(idx)
+                        else:
+                            break
+                    else:
                         return a_id
         return None
 
@@ -187,42 +190,6 @@ class BasicAggregateHousekeeping(Gear):
         if not self._unique_structures:
             self._create_unique_structure_map()
         self._check_for_aggregates()
-        self._check_compounds_in_flasks()
-
-    def _check_compounds_in_flasks(self):
-        """
-        Check for Flasks without Compounds.
-        Complete them if ALL sub-structures are assigned a Compound.
-        """
-        # Check for flasks without compounds
-        selection = {
-            "compounds": {"$size": 0}
-        }
-        for flask in stop_on_timeout(self._flasks.iterate_flasks(dumps(selection))):
-            flask.link(self._flasks)
-            flask_centroid = db.Structure(flask.get_centroid(), self._structures)
-            if not flask_centroid.has_graph("masm_cbor_graph") or not flask_centroid.has_graph("masm_idx_map"):
-                warn(f"Centroid {str(flask_centroid.id())} of flask {str(flask.id())} is missing a graph")
-                continue
-            graphs = flask_centroid.get_graph("masm_cbor_graph").split(';')
-            compounds = []
-            n_atoms_per_molecule = self.get_n_atoms(flask_centroid)
-            n_graphs_missing = len(n_atoms_per_molecule)
-            for i, n_atoms in enumerate(n_atoms_per_molecule):
-                if n_atoms not in self._compound_map:
-                    break
-                for key in self._compound_map[n_atoms]:
-                    compound_list = self._compound_map[n_atoms][key]
-                    for c_id, current in compound_list:
-                        # we are looping in reverse, so we can pop the element if identical while looping
-                        # we loop through because one compound could be part of flask multiple times
-                        # e.g. solute with 2 water molecules
-                        if masm.JsonSerialization.equal_molecules(graphs[i], current):
-                            compounds.append(c_id)
-                            n_graphs_missing -= 1
-                        if n_graphs_missing == 0:
-                            flask.set_compounds(compounds)
-                            break
 
     def _check_for_aggregates(self):
         # Setup query for optimized structures without aggregate
@@ -242,6 +209,8 @@ class BasicAggregateHousekeeping(Gear):
         # Loop over all results
         for structure in stop_on_timeout(self._structures.iterate_structures(dumps(selection))):
             structure.link(self._structures)
+            if self.stop_at_next_break_point:
+                return
             if structure.has_graph("masm_cbor_graph"):
                 # Check if graph exists
                 graph = structure.get_graph("masm_cbor_graph")
@@ -265,20 +234,23 @@ class BasicAggregateHousekeeping(Gear):
             # or append the structure to an existing compound
             matching_aggregate = self._get_matching_aggregate(structure)
             if matching_aggregate is not None:
-                structure.set_aggregate(matching_aggregate.id())
-                matching_aggregate.add_structure(structure.id())
                 # Check if duplicate in same aggregate
                 duplicate = self._query_duplicate(structure, matching_aggregate)
                 if duplicate is not None:
                     structure.set_label(db.Label.DUPLICATE)
                     structure.set_comment("Structure is a duplicate of {:s}.".format(str(duplicate.id())))
-                    structure.set_as_duplicate_of(duplicate.id())
+                    structure.set_original(duplicate.id())
+                else:
+                    # only add aggregate info for non-duplicates
+                    structure.set_aggregate(matching_aggregate.id())
+                    matching_aggregate.add_structure(structure.id())
             else:
                 # Create a new aggregate but only if the structure is not a misguided conformer optimization
                 # TODO this query may become a bottleneck for huge databases.
                 #      avoiding a query into the calculations would be much preferred
                 selection = {
                     "$and": [
+                        {"status": {"$in": ["complete", "failed", "analyzed"]}},
                         {"results.structures": {"$oid": structure.id().string()}},
                         {"results.elementary_steps": {"$size": 0}},
                     ]
@@ -341,6 +313,17 @@ class BasicAggregateHousekeeping(Gear):
             calculation.set_settings(self.options.graph_settings)
         finalize_calculation(calculation, self._structures)
 
+    def _get_aggregate_info(
+        self, aggregate: Union[db.Compound, db.Flask]
+    ) -> Tuple[str, int, int, int, List[masm.Molecule]]:
+        # We could even think about adding the graph here too ...
+        centroid = db.Structure(aggregate.get_centroid(), self._structures)
+        graph = centroid.get_graph("masm_cbor_graph")
+        mols = [mol_from_cbor(m) for m in graph.split(";")]
+        sum_formula = self._get_sum_formula(mols)
+        return sum_formula, len(graph.split(";")), centroid.get_charge(), centroid.get_multiplicity(),\
+            mols
+
     def _get_matching_aggregate(self, structure: db.Structure) -> Union[db.Compound, db.Flask, None]:
         """
         Queries database for matching aggregate of the given structure based on:
@@ -350,16 +333,21 @@ class BasicAggregateHousekeeping(Gear):
         Returns None if no matching aggregate in DB yet
         """
         graph = structure.get_graph("masm_cbor_graph")
+        mols = [mol_from_cbor(m) for m in graph.split(";")]
         charge = structure.get_charge()
         multiplicity = structure.get_multiplicity()
-        n_atoms = len(structure.get_atoms())
-        n_molecules = len(graph.split(";"))
+        sum_formula = self._get_sum_formula(mols)
+        n_molecules = len(mols)
         if n_molecules > 1:
-            f_id = self._get_aggregate_from_map(n_atoms, n_molecules, charge, multiplicity, graph, self._flask_map)
+            f_id = self._get_aggregate_from_map(
+                sum_formula, n_molecules, charge, multiplicity, mols, self._flask_map
+            )
             if f_id:
                 return db.Flask(f_id, self._flasks)
         else:
-            c_id = self._get_aggregate_from_map(n_atoms, n_molecules, charge, multiplicity, graph, self._compound_map)
+            c_id = self._get_aggregate_from_map(
+                sum_formula, n_molecules, charge, multiplicity, mols, self._compound_map
+            )
             if c_id:
                 return db.Compound(c_id, self._compounds)
         return None
@@ -373,18 +361,19 @@ class BasicAggregateHousekeeping(Gear):
         if isinstance(aggregate, db.Flask):
             # currently not possible
             return None
-        decision_list = structure.get_graph("masm_decision_list")
         key = aggregate.id().string()
         if key in self._unique_structures:
             similar_structures = self._unique_structures[key]
+            decision_list = structure.get_graph("masm_decision_list")
+            model = structure.get_model()
             for sid, ref_decision_list in similar_structures:
                 if not masm.JsonSerialization.equal_decision_lists(decision_list, ref_decision_list):
                     continue
                 similar_structure = db.Structure(sid, self._structures)
-                if similar_structure.get_model() == structure.get_model():
+                if similar_structure.get_model() == model:
                     return similar_structure
 
-        self._add_to_unique_structures(structure)
+        self._add_to_unique_structures(key, structure)
         return None
 
     @staticmethod

@@ -55,11 +55,11 @@ def test_bimol_associations():
     trial_generator = FragmentBased()
     trial_generator.initialize_collections(manager)
     trial_generator.options.model = model
-    trial_generator.options.bimolecular_association.complex_generator.options.number_rotamers = 1
-    trial_generator.options.bimolecular_association.complex_generator.options.number_rotamers_two_on_two = 1
-    trial_generator.options.bimolecular_association.complex_generator.options.multiple_attack_points = False
-    trial_generator.options.bimolecular_association.consider_diatomic_fragments = True
-    trial_generator.options.bimolecular_association.max_within_fragment_graph_distance = 1
+    trial_generator.options.bimolecular_association_options.complex_generator.options.number_rotamers = 1
+    trial_generator.options.bimolecular_association_options.complex_generator.options.number_rotamers_two_on_two = 1
+    trial_generator.options.bimolecular_association_options.complex_generator.options.multiple_attack_points = False
+    trial_generator.options.bimolecular_association_options.consider_diatomic_fragments = True
+    trial_generator.options.bimolecular_association_options.max_within_fragment_graph_distance = 1
     # Generate trials
     trial_generator.bimolecular_reactions(structure_list)
 
@@ -116,6 +116,8 @@ def test_bimol_associations():
         assert len(set(lhs)) == len(lhs)
         assert len(set(rhs)) == len(rhs)
         calculation.wipe()
+    for s in structure_list:
+        s.clear_calculations("scine_react_complex_nt")
 
     # Reset model
     trial_generator.options.model = model
@@ -159,6 +161,8 @@ def test_bimol_associations():
         assert len(set(lhs)) == len(lhs)
         assert len(set(rhs)) == len(rhs)
         calculation.wipe()
+    for s in structure_list:
+        s.clear_calculations("scine_react_complex_nt")
 
     class PairFilter(ReactiveSiteFilter):
         """
@@ -201,6 +205,8 @@ def test_bimol_associations():
         assert len(set(lhs)) == len(lhs)
         assert len(set(rhs)) == len(rhs)
         calculation.wipe()
+    for s in structure_list:
+        s.clear_calculations("scine_react_complex_nt")
 
     class CoordinateFilter(ReactiveSiteFilter):
         """
@@ -250,6 +256,8 @@ def test_bimol_associations():
         assert len(set(lhs)) == len(lhs)
         assert len(set(rhs)) == len(rhs)
         calculation.wipe()
+    for s in structure_list:
+        s.clear_calculations("scine_react_complex_nt")
 
     class ImpossibleFilter(ReactiveSiteFilter):
         """
@@ -322,8 +330,8 @@ def test_unimol_dissociations():
     trial_generator = FragmentBased()
     trial_generator.initialize_collections(manager)
     trial_generator.options.model = model
-    trial_generator.options.unimolecular_dissociation.enabled = True
-    trial_generator.options.unimolecular_association.enabled = False
+    trial_generator.options.unimolecular_dissociation_options.enabled = True
+    trial_generator.options.unimolecular_association_options.enabled = False
 
     # Generate trials
     trial_generator.unimolecular_reactions(structure)
@@ -353,6 +361,7 @@ def test_unimol_dissociations():
         assert len(rhs) == 1
         assert len(set(lhs + rhs)) == len(rhs) + len(lhs)
         calculation.wipe()
+    structure.clear_calculations("scine_react_complex_nt")
 
     # Test with filter
 
@@ -391,6 +400,7 @@ def test_unimol_dissociations():
         assert len(rhs) == 1
         assert len(set(lhs + rhs)) == len(rhs) + len(lhs)
         calculation.wipe()
+    structure.clear_calculations("scine_react_complex_nt")
 
     class PairFilter(ReactiveSiteFilter):
         """
@@ -429,6 +439,7 @@ def test_unimol_dissociations():
         assert len(rhs) == 1
         assert len(set(lhs + rhs)) == len(rhs) + len(lhs)
         calculation.wipe()
+    structure.clear_calculations("scine_react_complex_nt")
 
     class CoordinateFilter(ReactiveSiteFilter):
         """
@@ -469,6 +480,7 @@ def test_unimol_dissociations():
         assert len(rhs) == 1
         assert len(set(lhs + rhs)) == len(rhs) + len(lhs)
         calculation.wipe()
+    structure.clear_calculations("scine_react_complex_nt")
 
     class CombinedFilter(ReactiveSiteFilter):
         """
@@ -558,9 +570,9 @@ def test_unimol_associations_atom_on_atom():
     trial_generator = FragmentBased()
     trial_generator.initialize_collections(manager)
     trial_generator.options.model = model
-    trial_generator.options.unimolecular_dissociation.enabled = False
-    trial_generator.options.unimolecular_association.enabled = True
-    trial_generator.options.unimolecular_association.consider_diatomic_fragments = False
+    trial_generator.options.unimolecular_dissociation_options.enabled = False
+    trial_generator.options.unimolecular_association_options.enabled = True
+    trial_generator.options.unimolecular_association_options.consider_diatomic_fragments = False
 
     # Generate trials
     trial_generator.unimolecular_reactions(structure)
@@ -635,13 +647,13 @@ def test_unimol_associations():
     trial_generator = FragmentBased()
     trial_generator.initialize_collections(manager)
     trial_generator.options.model = model
-    trial_generator.options.unimolecular_dissociation.enabled = False
-    trial_generator.options.unimolecular_association.enabled = True
-    trial_generator.options.unimolecular_association.min_inter_fragment_graph_distance = 2
-    trial_generator.options.unimolecular_association.max_inter_fragment_graph_distance = 999
+    trial_generator.options.unimolecular_dissociation_options.enabled = False
+    trial_generator.options.unimolecular_association_options.enabled = True
+    trial_generator.options.unimolecular_association_options.min_inter_fragment_graph_distance = 2
+    trial_generator.options.unimolecular_association_options.max_inter_fragment_graph_distance = 999
     # Enable bond on bond
-    trial_generator.options.unimolecular_association.consider_diatomic_fragments = True
-    trial_generator.options.unimolecular_association.max_within_fragment_graph_distance = 1
+    trial_generator.options.unimolecular_association_options.consider_diatomic_fragments = True
+    trial_generator.options.unimolecular_association_options.max_within_fragment_graph_distance = 1
 
     # Generate trials
     trial_generator.unimolecular_reactions(structure)
@@ -679,6 +691,7 @@ def test_unimol_associations():
         assert len(rhs) in (1, 2)
         assert len(set(lhs + rhs)) == len(rhs) + len(lhs)
         calculation.wipe()
+    structure.clear_calculations("scine_react_complex_nt")
 
     # Test with filter
     class AtomFilter(ReactiveSiteFilter):
@@ -697,9 +710,7 @@ def test_unimol_associations():
             return reactive_atoms
 
     trial_generator.reactive_site_filter = AtomFilter()
-
     trial_generator.unimolecular_reactions(structure)
-    hits = calculations.query_calculations(json.dumps({}))
 
     # Only H on H allowed
     hits = calculations.query_calculations(json.dumps({}))
@@ -717,6 +728,7 @@ def test_unimol_associations():
         assert len(rhs) == 1
         assert len(set(lhs + rhs)) == len(rhs) + len(lhs)
         calculation.wipe()
+    structure.clear_calculations("scine_react_complex_nt")
 
     class PairFilter(ReactiveSiteFilter):
         """
@@ -739,7 +751,6 @@ def test_unimol_associations():
     trial_generator.reactive_site_filter = PairFilter()
 
     trial_generator.unimolecular_reactions(structure)
-    hits = calculations.query_calculations(json.dumps({}))
     # Expected number of hits for H1-O1-O2-H2
     # atom on atom:  2 (H1 <-> O2, H2 <-> O1)
     # atom on bond:  0 (would be H on H-O in brute force approach i.e. there is always an H-H reactive pair)
@@ -760,6 +771,7 @@ def test_unimol_associations():
         assert len(rhs) == 1
         assert len(set(lhs + rhs)) == len(rhs) + len(lhs)
         calculation.wipe()
+    structure.clear_calculations("scine_react_complex_nt")
 
     class CoordinateFilter(ReactiveSiteFilter):
         """

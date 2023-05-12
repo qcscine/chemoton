@@ -6,6 +6,7 @@ See LICENSE.txt for details.
 """
 
 import os
+import json
 
 import unittest
 from scine_chemoton.gears import HoldsCollections
@@ -51,7 +52,7 @@ class GetMolecularFormulaTest(unittest.TestCase, HoldsCollections):
     def test_get_molecular_formula_of_compound(self):
         manager = db_setup.get_clean_db("chemoton_test_get_molecular_formula_of_compound")
         self.custom_setup(manager)
-        compound_id, _ = db_setup.insert_single_empty_structure_compound(manager, db.Label.MINIMUM_OPTIMIZED)
+        compound_id, _ = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.MINIMUM_OPTIMIZED)
 
         assert get_molecular_formula_of_compound(compound_id, self._compounds, self._structures) == "H2O(c:0, m:1)"
 
@@ -69,17 +70,16 @@ class GetMolecularFormulaTest(unittest.TestCase, HoldsCollections):
         flask_structure.create(os.path.join(resources_root_path(), "h4o2.xyz"), 0, 1)
         flask_structure.set_label(db.Label.COMPLEX_OPTIMIZED)
         flask_structure.set_aggregate(flask.get_id())
+        graph = json.load(open(os.path.join(resources_root_path(), "water" + ".json"), "r"))
+        flask_structure.set_graph("masm_cbor_graph", ";".join([graph['masm_cbor_graph']] * 2))
         flask.add_structure(flask_structure.get_id())
 
-        water_1, _ = db_setup.insert_single_empty_structure_compound(manager, db.Label.MINIMUM_OPTIMIZED)
-        water_2, _ = db_setup.insert_single_empty_structure_compound(manager, db.Label.MINIMUM_OPTIMIZED)
-        flask.set_compounds([water_1, water_2])
+        water, _ = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.MINIMUM_OPTIMIZED)
 
-        ref_flask_string = "H4O2(c:0, m:1) [H2O(c:0, m:1)|H2O(c:0, m:1)]"
-        assert get_molecular_formula_of_flask(flask.id(), self._flasks,
-                                              self._compounds, self._structures) == ref_flask_string
+        ref_flask_string = "H4O2(c:0, m:1) [H2O | H2O]"
+        assert get_molecular_formula_of_flask(flask.id(), self._flasks, self._structures) == ref_flask_string
 
-        assert get_molecular_formula_of_aggregate(water_1, db.CompoundOrFlask.COMPOUND,
+        assert get_molecular_formula_of_aggregate(water, db.CompoundOrFlask.COMPOUND,
                                                   self._compounds, self._flasks, self._structures) == "H2O(c:0, m:1)"
         assert get_molecular_formula_of_aggregate(flask.id(), db.CompoundOrFlask.FLASK,
                                                   self._compounds, self._flasks, self._structures) == ref_flask_string

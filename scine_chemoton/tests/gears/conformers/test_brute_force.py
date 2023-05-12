@@ -18,6 +18,7 @@ from ...resources import resources_root_path
 
 # Local application imports
 from ....engine import Engine
+from ....gears import _initialize_a_gear_to_a_db
 from ....gears.conformers.brute_force import BruteForceConformers
 
 
@@ -51,12 +52,22 @@ def test_conformer_job_setup():
     conformer_engine = Engine(manager.get_credentials(), fork=False)
     conformer_engine.set_gear(conformer_gear)
 
+    _initialize_a_gear_to_a_db(conformer_gear, manager.get_credentials())
+    assert len(conformer_gear.valid_compounds()) == 1
     # Run a single loop
     conformer_engine.run(single=True)
 
     # Checks
     hits = calculations.query_calculations(dumps({}))
     assert len(hits) == 1
+
+    # does not change with multiple runs
+    conformer_engine.run(single=True)
+    assert len(calculations.query_calculations(dumps({}))) == 1
+    conformer_gear.clear_cache()
+    conformer_engine.set_gear(conformer_gear)
+    conformer_engine.run(single=True)
+    assert len(calculations.query_calculations(dumps({}))) == 1
 
     calculation = db.Calculation(hits[0].id())
     calculation.link(calculations)
@@ -140,6 +151,9 @@ def test_optimization_job_setup():
         assert len(calculation.get_structures()) == 1
         assert calculation.get_status() == db.Status.HOLD
         assert calculation.get_job().order == "fake_opt"
+        guess_structure = db.Structure(calculation.get_structures()[0])
+        guess_structure.link(structures)
+        assert guess_structure.get_calculations("geometry_optimization")[0] == calculation.get_id()
 
     # Run a second loop
     conformer_engine.run(single=True)

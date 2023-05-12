@@ -6,7 +6,7 @@ See LICENSE.txt for details.
 """
 
 # Standard library imports
-from typing import List, Tuple
+from typing import List, Tuple, Union
 from json import dumps
 import os
 import random
@@ -18,6 +18,11 @@ import scine_utilities as utils
 # local imports
 from .resources import resources_root_path
 from ..utilities.queries import identical_reaction
+from ..utilities.energy_query_functions import get_energy_for_structure
+
+
+def get_fake_model() -> db.Model:
+    return db.Model("FAKE", "FAKE", "F-AKE")
 
 
 def get_test_db_credentials(name: str = "chemoton_unittests") -> db.Credentials:
@@ -129,7 +134,7 @@ def get_random_db(
     assert n_compounds > max_n_products_per_r + max_n_educts_per_r
     # at least 2 compounds per reaction -> maximum allowed number of reactions
     assert 0.5 * n_compounds * max_r_per_c > n_reactions
-    # worst case all reactions are biggest possible reaction
+    # worst case all reactions are the biggest possible reaction
     assert n_compounds * max_r_per_c > n_reactions * (max_n_products_per_r + max_n_educts_per_r)
 
     manager = get_clean_db(name)
@@ -158,7 +163,6 @@ def get_random_db(
             structures,
             elementary_steps,
         )
-
     # not guaranteed to have all necessary compounds yet
     # create missing ones and add them as products on reactions where we still have space for them
     n_missing_compounds = n_compounds - compounds.count("{}")
@@ -187,13 +191,14 @@ def get_random_db(
             random_reaction.link(reactions)
             products = random_reaction.get_reactants(db.Side.RHS)[1]
             for product_id in products:
+                compound_or_flask = random_reaction.get_reactant_type(product_id)
                 selection = {"rhs": {"$elemMatch": {"id": {"$oid": str(product_id)}}}}
                 if reactions.count(dumps(selection)) > 1:
                     multiple_product = db.Compound(product_id)
                     multiple_product.link(compounds)
                     multiple_product.remove_reaction(random_reaction.get_id())
                     random_reaction.remove_reactant(product_id, db.Side.RHS)
-                    random_reaction.add_reactant(compound.get_id(), db.Side.RHS, db.CompoundOrFlask.COMPOUND)
+                    random_reaction.add_reactant(compound.get_id(), db.Side.RHS, compound_or_flask)
                     _redo_elementary_steps(
                         random_reaction,
                         max_steps_per_r,
@@ -312,13 +317,14 @@ def _create_compound(
     compounds: db.Collection,
     structures: db.Collection,
     user_input: bool = False,
-    energy_limits: Tuple[float, float] = (-20.0, -10.0)
+    energy_limits: Tuple[float, float] = (-20.0, -10.0),
+    model: db.Model = db.Model("FAKE", "FAKE", "F-AKE")
 ):
     c = db.Compound(db.ID())
     c.link(compounds)
     c.create([])
     for _ in range(random.randint(1, max_structures)):
-        c.add_structure(_fake_structure(c, structures, properties, user_input, energy_limits))
+        c.add_structure(_fake_structure(c, structures, properties, user_input, energy_limits, model))
     c.disable_exploration()
 
     return c.get_id()
@@ -329,7 +335,8 @@ def _fake_structure(
     structures: db.Collection,
     properties: db.Collection,
     user_input: bool,
-    energy_limits: Tuple[float, float] = (-20.0, -10.0)
+    energy_limits: Tuple[float, float] = (-20.0, -10.0),
+    model: db.Model = db.Model("FAKE", "FAKE", "F-AKE")
 ):
     # Add structure data
     structure = db.Structure()
@@ -340,8 +347,8 @@ def _fake_structure(
     else:
         structure.set_label(db.Label.MINIMUM_OPTIMIZED)
     structure.set_aggregate(compound.get_id())
-    structure.set_model(db.Model("FAKE", "FAKE", "F-AKE"))
-    add_random_energy(structure, energy_limits, properties)
+    structure.set_model(model)
+    add_random_energy(structure, energy_limits, properties, model)
 
     return structure.get_id()
 
@@ -443,10 +450,10 @@ def _add_step(
     structures: db.Collection,
     elementary_steps: db.Collection,
     properties: db.Collection,
+    model: db.Model = db.Model("FAKE", "FAKE", "F-AKE")
 ) -> db.ID:
     step = db.ElementaryStep()
     step.link(elementary_steps)
-    model = db.Model("FAKE", "FAKE", "F-AKE")
     compound_sides = reaction.get_reactants(db.Side.BOTH)
     # pick random structure for each compound
     step_structures = []
@@ -455,7 +462,9 @@ def _add_step(
         for c_id in side:
             c = db.Compound(c_id)
             c.link(compounds)
-            side_structures.append(random.choice(c.get_structures()))
+            selected_structures = [s_id for s_id in c.get_structures() if get_energy_for_structure(
+                db.Structure(s_id, structures), "electronic_energy", model, structures, properties) is not None]
+            side_structures.append(random.choice(selected_structures))
         step_structures.append(side_structures)
     step.create(*step_structures)
     reactant_energies = sum(
@@ -490,6 +499,7 @@ def add_random_energy(
     structure: db.Structure,
     energy_limits: Tuple[float, float],
     properties: db.Collection,
+    model: db.Model = db.Model("FAKE", "FAKE", "F-AKE")
 ):
     """
     Adds a random electronic energy property to the given structure within the given limits.
@@ -502,10 +512,12 @@ def add_random_energy(
         The lowest and highest possible energy in kJ/mol
     properties :: db.Collection
         The properties collection of the database
+    model :: db.Model
+        The model for the energy.
     """
     prop = db.NumberProperty()
     prop.link(properties)
-    prop.create(db.Model("FAKE", "FAKE", "F-AKE"), "electronic_energy",
+    prop.create(model, "electronic_energy",
                 random.uniform(*energy_limits) * utils.HARTREE_PER_KJPERMOL)
     structure.add_property(prop.get_property_name(), prop.get_id())
 
@@ -528,7 +540,50 @@ def _get_electronic_energy(
     return prop.get_data() * utils.KJPERMOL_PER_HARTREE
 
 
-def insert_single_empty_structure_compound(manager: db.Manager, label: db.Label) -> Tuple[db.ID, db.ID]:
+def insert_single_empty_structure_aggregate(manager: db.Manager, label: db.Label) -> Tuple[db.ID, db.ID]:
+    """
+    Adds a structure and corresponding compound or flask to the database, only use for testing!
+    A flask is added if a complex is requested.
+
+    Parameters
+    ----------
+    manager :: db.Manager
+        The database manager
+    label :: db.Label
+        The label for the structure of the compound
+
+    Returns
+    -------
+    aggregate, structure :: Tuple[db.ID, db.ID]
+        The IDs of the inserted compound/flask and structure.
+    """
+    build_flask = label in [db.Label.COMPLEX_GUESS, db.Label.COMPLEX_OPTIMIZED]
+    structures = manager.get_collection("structures")
+    structure_xyz = "water.xyz"
+    aggregates = manager.get_collection("compounds")
+    aggregate: Union[db.Compound, db.Flask] = db.Compound()
+    if build_flask:
+        aggregates = manager.get_collection("flasks")
+        aggregate = db.Flask()  # type: ignore
+        structure_xyz = "proline_propanal_complex.xyz"
+    structure = db.Structure()
+    structure.link(structures)
+    rr = resources_root_path()
+    structure.create(os.path.join(rr, structure_xyz), 0, 1)
+    aggregate.link(aggregates)
+    if build_flask:
+        aggregate.create([structure.get_id()], [])  # type: ignore
+    else:
+        aggregate.create([structure.get_id()])  # type: ignore
+    aggregate.disable_exploration()
+    structure.set_aggregate(aggregate.get_id())
+    structure.set_label(label)
+    structure.set_model(db.Model("FAKE", "FAKE", "F-AKE"))
+
+    return aggregate.get_id(), structure.get_id()
+
+
+def insert_single_empty_structure_flask(manager: db.Manager, label: db.Label) -> Tuple[db.ID, db.ID]:
     """
     Adds a structure and corresponding compound to the database, only use for testing!
 
@@ -539,23 +594,24 @@ def insert_single_empty_structure_compound(manager: db.Manager, label: db.Label)
     label :: db.Label
         The label for the structure of the compound
     -------
-    compound, structure :: Tuple[db.ID, db.ID]
+    flask, structure :: Tuple[db.ID, db.ID]
         The IDs of the inserted compound and structure
     """
     structures = manager.get_collection("structures")
-    compounds = manager.get_collection("compounds")
+    flasks = manager.get_collection("flasks")
     structure = db.Structure()
     structure.link(structures)
     rr = resources_root_path()
-    structure.create(os.path.join(rr, "water.xyz"), 0, 1)
-    compound = db.Compound()
-    compound.link(compounds)
-    compound.create([structure.get_id()])
-    compound.disable_exploration()
-    structure.set_aggregate(compound.get_id())
+    structure.create(os.path.join(rr, "h4o2.xyz"), 0, 1)
+    flask = db.Flask()
+    flask.link(flasks)
+    flask.create([structure.get_id()], [])
+    flask.disable_exploration()
+    structure.set_aggregate(flask.get_id())
     structure.set_label(label)
+    structure.set_model(db.Model("FAKE", "FAKE", "F-AKE"))
 
-    return compound.get_id(), structure.get_id()
+    return flask.get_id(), structure.get_id()
 
 
 def test_random_db():

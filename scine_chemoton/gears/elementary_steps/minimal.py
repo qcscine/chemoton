@@ -34,7 +34,7 @@ class MinimalElementarySteps(ElementaryStepGear):
     ----------
     options :: MinimalElementarySteps.Options
         The options for the MinimalElementarySteps Gear.
-    compound_filter :: scine_chemoton.gears.elementary_steps.compound_filters.CompoundFilter
+    aggregate_filter :: scine_chemoton.gears.elementary_steps.aggregate_filters.AggregateFilter
         A filter for allowed reaction combinations, per default everything
         is permitted, no filter is applied.
     trial_generator :: TrialGenerator

@@ -7,6 +7,9 @@
 #
 # needs_sphinx = '1.0'
 
+import sphinx_rtd_theme
+import scine_chemoton
+
 # The suffix(es) of source filenames.
 # You can specify multiple suffix as a list of string:
 source_suffix = ['.rst', '.md']
@@ -26,15 +29,6 @@ extensions = [
     'matplotlib.sphinxext.plot_directive',
     'numpydoc',
     'sphinx_copybutton',
-]
-
-# Mock C++ based dependecies
-autodoc_mock_imports = [
-    "scine_database",
-    "scine_utilities",
-    "scine_readuct",
-    "rdkit",
-    "scine_molassembler"
 ]
 
 # Configuration options for plot_directive. See:
@@ -61,7 +55,6 @@ author = "Reiher Group"
 # |version| and |release|, also used in various other places throughout the
 # built documents.
 #
-import scine_chemoton
 
 # The short X.Y version.
 version = scine_chemoton.__version__
@@ -93,7 +86,6 @@ todo_include_todos = False
 # a list of builtin themes.
 #
 html_theme = "sphinx_rtd_theme"
-import sphinx_rtd_theme
 
 html_theme_path = [sphinx_rtd_theme.get_html_theme_path()]
 

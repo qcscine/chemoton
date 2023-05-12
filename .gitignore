@@ -54,3 +54,7 @@ Wired*
 *.wt
 *.tar.gz
 *.bson
+
+#cache files
+.chemoton*.pickle
+.chemoton*.pkl

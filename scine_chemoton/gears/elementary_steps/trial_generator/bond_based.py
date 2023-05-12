@@ -7,21 +7,21 @@ See LICENSE.txt for details.
 
 # Standard library imports
 import time
-from copy import deepcopy
+from collections import defaultdict
 from typing import List, Optional, Tuple, Union, Dict
 from itertools import combinations, product
 from scipy.special import comb
 
 # Third party imports
+from numpy import ndarray
 import scine_database as db
 import scine_utilities as utils
 import scine_molassembler as masm
 
 # Local application imports
 from ....utilities.queries import calculation_exists_in_structure, get_calculation_id
-from ..reactive_site_filters import ReactiveSiteFilter
 from .connectivity_analyzer import ReactionType, ConnectivityAnalyzer
-from . import TrialGenerator
+from . import TrialGenerator, _sanity_check_wrapper
 
 
 class BondBased(TrialGenerator):
@@ -37,12 +37,12 @@ class BondBased(TrialGenerator):
         reaction coordinates.
     """
 
-    class Options:
+    class Options(TrialGenerator.Options):
         """
         The options for bond-based reactive complex enumeration.
         """
 
-        __slots__ = ("model", "unimolecular", "bimolecular")
+        __slots__ = ("unimolecular_options", "bimolecular_options")
 
         class BimolOptions:
             """
@@ -254,74 +254,48 @@ class BondBased(TrialGenerator):
                     Empty by default.
                 """
 
-        def __init__(self):
-            self.model: db.Model = db.Model("PM6", "PM6", "")
-            """
-            db.Model (Scine::Database::Model)
-                The Model used to evaluate the possible reactions.
-                The default is: PM6 using Sparrow.
-            """
-            self.unimolecular = self.UnimolOptions()
+        def __init__(self, parent: Optional[TrialGenerator] = None):
+            super().__init__(parent)
+            self.unimolecular_options = self.UnimolOptions()
             """
             UnimolOptions
                 The options for reactions involving a single molecule.
             """
-            self.bimolecular = self.BimolOptions()
+            self.bimolecular_options = self.BimolOptions()
             """
             BimolOptions
                 The options for reactions involving two molecules, that are set up
                 to be associative in nature.
             """
 
-    def __init__(self):
-        super().__init__()
-        self.options = self.Options()
-        self.reactive_site_filter: ReactiveSiteFilter = ReactiveSiteFilter()
+    def clear_cache(self):
+        pass
 
-    def _sanity_check_configuration(self):
-        if not isinstance(self.reactive_site_filter, ReactiveSiteFilter):
-            raise TypeError("Expected a ReactiveSiteFilter (or a class derived "
-                            "from it) in BondBased.reactive_site_filter.")
+    @_sanity_check_wrapper
+    def bimolecular_coordinates(self, structure_list: List[db.Structure], with_exact_settings_check: bool = False) \
+            -> Dict[
+        Tuple[List[Tuple[int, int]], int],
+        List[Tuple[ndarray, ndarray, float, float]]
+    ]:
 
-    def bimolecular_reactions(self, structure_list: List[db.Structure]):
-        """
-        Creates reactive complex calculations corresponding to the bimolecular
-        reactions between the structures if there is not already a calculation
-        to search for a reaction of the same structures with the same job order.
-
-        Parameters
-        ----------
-        structure_list :: List[db.Structure]
-            List of the two structures to be considered.
-            The Structures have to be linked to a database.
-        """
-        self._sanity_check_configuration()
-        # Check number of compounds
-        if len(structure_list) != 2:
-            raise RuntimeError("Exactly two structures are needed for setting up a bimolecular reaction.")
-
-        structure_id_list = [s.id() for s in structure_list]
-
-        # If there is a reactive complex calculation for the same structures, return
-        if calculation_exists_in_structure(self.options.bimolecular.job.order, structure_id_list, self.options.model,
-                                           self._structures, self._calculations):
-            return
+        if self._quick_bimolecular_already_exists(structure_list, do_fast_query=not with_exact_settings_check):
+            return {}
 
         # Get reactive atoms
-        reactive_atoms1 = self.reactive_site_filter.filter_atoms(
-            [structure_list[0]], list(range(structure_list[0].get_atoms().size()))
-        )
-        reactive_atoms2 = self.reactive_site_filter.filter_atoms(
-            [structure_list[1]], list(range(structure_list[1].get_atoms().size()))
-        )
-
         n_atoms1 = structure_list[0].get_atoms().size()
+        n_atoms2 = structure_list[1].get_atoms().size()
+        reactive_atoms = self.reactive_site_filter.filter_atoms(
+            structure_list, list(range(n_atoms1)) + [i + n_atoms1 for i in range(n_atoms2)]
+        )
+        reactive_atoms1 = [i for i in reactive_atoms if i < n_atoms1]
+        reactive_atoms2 = [i - n_atoms1 for i in reactive_atoms if i >= n_atoms1]
+
         # If needed get reactive intrastructural coordinates for both structures
         # split into formation and dissociation
-        allows_intra_reactions = (self.options.bimolecular.max_intra_bond_formations > 0 or
-                                  self.options.bimolecular.max_bond_dissociations > 0)
-        will_probe_intra_reactions = (self.options.bimolecular.max_bond_modifications >
-                                      self.options.bimolecular.min_inter_bond_formations)
+        allows_intra_reactions = (self.options.bimolecular_options.max_intra_bond_formations > 0 or
+                                  self.options.bimolecular_options.max_bond_dissociations > 0)
+        will_probe_intra_reactions = (self.options.bimolecular_options.max_bond_modifications >
+                                      self.options.bimolecular_options.min_inter_bond_formations)
         if allows_intra_reactions and will_probe_intra_reactions:
             filtered_form_pairs1, filtered_diss_pairs1 = self._get_filtered_intraform_and_diss(
                 structure_list[0], reactive_atoms1
@@ -345,58 +319,46 @@ class BondBased(TrialGenerator):
             structure_list, shifted_inter_pairs)
         filtered_unshifted_inter_pairs = [(pair[0], pair[1] - n_atoms1) for pair in filtered_shifted_inter_pairs]
         # Loop through all allowed combinations of inter/intra bond formations and dissociations
-        true_max_inter_bond_formations = min(self.options.bimolecular.max_inter_bond_formations,
-                                             self.options.bimolecular.max_bond_modifications)
-        true_max_intra_bond_formations = min(self.options.bimolecular.max_intra_bond_formations,
-                                             self.options.bimolecular.max_bond_modifications)
-        true_max_bond_dissociations = min(self.options.bimolecular.max_bond_dissociations,
-                                          self.options.bimolecular.max_bond_modifications)
-        range_inter = range(self.options.bimolecular.min_inter_bond_formations, true_max_inter_bond_formations + 1)
-        range_intra = range(self.options.bimolecular.min_intra_bond_formations, true_max_intra_bond_formations + 1)
-        range_diss = range(self.options.bimolecular.min_bond_dissociations, true_max_bond_dissociations + 1)
+        true_max_inter_bond_formations = min(self.options.bimolecular_options.max_inter_bond_formations,
+                                             self.options.bimolecular_options.max_bond_modifications)
+        true_max_intra_bond_formations = min(self.options.bimolecular_options.max_intra_bond_formations,
+                                             self.options.bimolecular_options.max_bond_modifications)
+        true_max_bond_dissociations = min(self.options.bimolecular_options.max_bond_dissociations,
+                                          self.options.bimolecular_options.max_bond_modifications)
+        range_inter = range(
+            self.options.bimolecular_options.min_inter_bond_formations,
+            true_max_inter_bond_formations + 1)
+        range_intra = range(
+            self.options.bimolecular_options.min_intra_bond_formations,
+            true_max_intra_bond_formations + 1)
+        range_diss = range(self.options.bimolecular_options.min_bond_dissociations,
+                           true_max_bond_dissociations + 1)
+
+        result: Dict[
+            Tuple[List[Tuple[int, int]], int],
+            List[Tuple[ndarray, ndarray, float, float]]
+        ] = {}
         for n_inter_form, n_intra_form, n_diss in product(range_inter, range_intra, range_diss):
             s = n_inter_form + n_intra_form + n_diss
-            if s > self.options.bimolecular.max_bond_modifications:
+            if s > self.options.bimolecular_options.max_bond_modifications:
                 continue
-            elif s < self.options.bimolecular.min_bond_modifications:
+            elif s < self.options.bimolecular_options.min_bond_modifications:
                 continue
 
             # Batch all trials before doing a final filter run and adding
             #  the remaining trials. This reduces the number of filter calls
             #  and thus the number of DB look-ups.
-            batch: Dict[tuple, List[tuple]] = {}
 
-            def work_batch(self, n_diss):
-                nonlocal structure_list, structure_id_list
-                nonlocal batch
-                filter_result = self.reactive_site_filter.filter_reaction_coordinates(
-                    structure_list,
-                    batch.keys()
-                )
-                new_calculation_ids = []
-                for pairs in filter_result:
-                    for align1, align2, rot, spread in batch[pairs]:
-                        cid = self._add_reactive_complex_calculation(
-                            structure_id_list,
-                            pairs[:len(pairs) - n_diss],
-                            pairs[len(pairs) - n_diss:],
-                            self.options.bimolecular.job,
-                            self.options.bimolecular.job_settings,
-                            list(align1),
-                            list(align2),
-                            rot,
-                            spread,
-                            0.0,
-                        )
-                        if cid is not None:
-                            new_calculation_ids.append(cid)
-                if new_calculation_ids:
-                    for s in structure_list:
-                        s.add_calculations(self.options.bimolecular.job.order, [new_calculation_ids[0]])
+            # keys: List of pairs
+            # values: information required to build different reactive complexes
+            batch: Dict[
+                Tuple[Tuple[int, int], ...],
+                List[Tuple[ndarray, ndarray, float, float]]
+            ] = defaultdict(list)
 
             reactive_inter_coords = list(combinations(filtered_unshifted_inter_pairs, n_inter_form))
             for (inter_coord, align1, align2, rot, spread, ) in \
-                    self.options.bimolecular.complex_generator.generate_reactive_complexes(
+                    self.options.bimolecular_options.complex_generator.generate_reactive_complexes(
                         structure_list[0], structure_list[1], reactive_inter_coords):
 
                 # Shift to complex indexing
@@ -407,20 +369,65 @@ class BondBased(TrialGenerator):
 
                         form_pairs = shifted_inter_coord + intra_form_pairs
                         key = form_pairs + diss_pairs
-                        if key in batch:
-                            batch[key].append((align1, align2, rot, spread))
-                        else:
-                            batch[key] = [(align1, align2, rot, spread)]
-                        if len(batch) > 9999:
-                            work_batch(self, n_diss)
-                            batch = {}
+                        batch[key].append((align1, align2, rot, spread))
 
-            # Add remaining batched trials to DB
-            work_batch(self, n_diss)
-            batch = {}
-        return
+            filter_result = self.reactive_site_filter.filter_reaction_coordinates(
+                structure_list,
+                list(batch.keys())
+            )
+            for filtered in filter_result:
+                result[(filtered, n_diss)] = batch[filtered]
+        return result
 
-    def unimolecular_reactions(self, structure: db.Structure):
+    @_sanity_check_wrapper
+    def bimolecular_reactions(self, structure_list: List[db.Structure], with_exact_settings_check: bool = False):
+        """
+        Creates reactive complex calculations corresponding to the bimolecular
+        reactions between the structures if there is not already a calculation
+        to search for a reaction of the same structures with the same job order.
+
+        Parameters
+        ----------
+        structure_list :: List[db.Structure]
+            List of the two structures to be considered.
+            The Structures have to be linked to a database.
+        with_exact_settings_check :: bool
+            If True, more expensive queries are carried out to check if the settings of the
+            calculations are exactly the same as the settings of the trial generator. This allows to add more
+            inclusive additional reaction trials but the queries are less efficient, therefore this option
+            should be only toggled if necessary.
+        """
+        # already includes quick check for existing calculation
+        coordinate_complex_build_info = self.bimolecular_coordinates(structure_list, with_exact_settings_check)
+        if not coordinate_complex_build_info:
+            return
+        structure_id_list = [s.id() for s in structure_list]
+        new_calculation_ids = []
+        for (pairs, n_diss), complexes in coordinate_complex_build_info.items():
+            for align1, align2, rot, spread in complexes:
+                cid = self._add_reactive_complex_calculation(
+                    structure_id_list,
+                    pairs[:len(pairs) - n_diss],
+                    pairs[len(pairs) - n_diss:],
+                    self.options.bimolecular_options.job,
+                    self.options.bimolecular_options.job_settings,
+                    list(align1),
+                    list(align2),
+                    rot,
+                    spread,
+                    0.0,
+                    check_for_existing=with_exact_settings_check
+                )
+                if cid is not None:
+                    new_calculation_ids.append(cid)
+                else:
+                    print("No new calculation added")
+        if new_calculation_ids:
+            for s in structure_list:
+                s.add_calculations(self.options.bimolecular_options.job.order, [new_calculation_ids[0]])
+
+    @_sanity_check_wrapper
+    def unimolecular_reactions(self, structure: db.Structure, with_exact_settings_check: bool = False):
         """
         Creates reactive complex calculations corresponding to the unimolecular
         reactions of the structure if there is not already a calculation to
@@ -431,22 +438,78 @@ class BondBased(TrialGenerator):
         structure :: db.Structure
             The structure to be considered. The Structure has to
             be linked to a database.
+        with_exact_settings_check :: bool
+            If True, more expensive queries are carried out to check if the settings of the
+            calculations are exactly the same as the settings of the trial generator. This allows to add more
+            inclusive additional reaction trials but the queries are less efficient, therefore this option
+            should be only toggled if necessary.
         """
-        self._sanity_check_configuration()
+        # already includes quick check for existing calculation
+        filtered_coordinates_per_ndiss = self.unimolecular_coordinates(structure, with_exact_settings_check)
+        if not filtered_coordinates_per_ndiss:
+            return
+        structure_id = structure.id()
+        connectivity_analyzer = ConnectivityAnalyzer(structure)
+        new_calculation_ids = []
+        for filter_result, n_diss in filtered_coordinates_per_ndiss:
+            for pairs in filter_result:
+                # Get reaction type:
+                reaction_type = connectivity_analyzer.get_reaction_type(pairs)
+                # Set up reactive complex calculation
+                if reaction_type in (ReactionType.Associative, ReactionType.Mixed):
+                    settings = self.options.unimolecular_options.job_settings_associative
+                elif reaction_type == ReactionType.Dissociative:
+                    settings = self.options.unimolecular_options.job_settings_dissociative
+                elif reaction_type == ReactionType.Disconnective:
+                    settings = self.options.unimolecular_options.job_settings_disconnective
+                else:
+                    raise RuntimeError(f"Unknown reaction type {reaction_type}")
+
+                cid = self._add_reactive_complex_calculation(
+                    [structure_id],
+                    pairs[:len(pairs) - n_diss],
+                    pairs[len(pairs) - n_diss:],
+                    self.options.unimolecular_options.job,
+                    settings,
+                    check_for_existing=with_exact_settings_check
+                )
+                if cid is not None:
+                    new_calculation_ids.append(cid)
+        if new_calculation_ids:
+            structure.add_calculations(self.options.unimolecular_options.job.order, [new_calculation_ids[0]])
+
+    def _quick_unimolecular_already_exists(self, structure: db.Structure, do_fast_query: bool) -> bool:
         # Rule out compounds too small for intramolecular reactions right away
         atoms = structure.get_atoms()
-        structure_id = structure.id()
-        # No intramolecular reactions for monoatomic compounds
         if atoms.size() == 1:
-            return
-        if atoms.size() == 2 and self.options.unimolecular.max_bond_dissociations < 1:
-            return
+            return False
+        if atoms.size() == 2 and self.options.unimolecular_options.max_bond_dissociations < 1:
+            return False
+        return do_fast_query and calculation_exists_in_structure(
+            self.options.unimolecular_options.job.order,
+            [structure.id()],
+            self.options.model,
+            self._structures,
+            self._calculations)
 
-        # Check whether there is a reactive complex calculation for the same structure already
-        if calculation_exists_in_structure(self.options.unimolecular.job.order, [structure_id], self.options.model,
-                                           self._structures, self._calculations):
-            return
+    def _quick_bimolecular_already_exists(self, structure_list: List[db.Structure], do_fast_query: bool) -> bool:
+        # Check number of compounds
+        if len(structure_list) != 2:
+            raise RuntimeError("Exactly two structures are needed for setting up a bimolecular reaction.")
+        return do_fast_query and calculation_exists_in_structure(
+            self.options.bimolecular_options.job.order,
+            [s.id() for s in structure_list],
+            self.options.model,
+            self._structures,
+            self._calculations)
 
+    @_sanity_check_wrapper
+    def unimolecular_coordinates(self, structure: db.Structure, with_exact_settings_check: bool = False) \
+            -> List[Tuple[List[List[Tuple[int, int]]], int]]:
+        if self._quick_unimolecular_already_exists(structure, do_fast_query=not with_exact_settings_check):
+            return []
+
+        atoms = structure.get_atoms()
         # Get all reactive atoms
         reactive_atoms = self.reactive_site_filter.filter_atoms([structure], list(range(atoms.size())))
         # Get all ordered pairs of reactive atoms
@@ -456,82 +519,40 @@ class BondBased(TrialGenerator):
         )
 
         # Loop over all allowed combinations of association and dissociation counts
-        true_max_bond_formations = min(self.options.unimolecular.max_bond_formations,
-                                       self.options.unimolecular.max_bond_modifications)
-        true_max_bond_dissociations = min(self.options.unimolecular.max_bond_dissociations,
-                                          self.options.unimolecular.max_bond_modifications)
-        range_asso = range(self.options.unimolecular.min_bond_formations, true_max_bond_formations + 1)
-        range_diss = range(self.options.unimolecular.min_bond_dissociations, true_max_bond_dissociations + 1)
+        true_max_bond_formations = min(self.options.unimolecular_options.max_bond_formations,
+                                       self.options.unimolecular_options.max_bond_modifications)
+        true_max_bond_dissociations = min(self.options.unimolecular_options.max_bond_dissociations,
+                                          self.options.unimolecular_options.max_bond_modifications)
+        range_asso = range(self.options.unimolecular_options.min_bond_formations, true_max_bond_formations + 1)
+        range_diss = range(self.options.unimolecular_options.min_bond_dissociations,
+                           true_max_bond_dissociations + 1)
+
+        result = []
         for n_asso, n_diss in product(range_asso, range_diss):
             s = n_asso + n_diss
-            if s > self.options.unimolecular.max_bond_modifications:
+            if s > self.options.unimolecular_options.max_bond_modifications:
                 continue
-            elif s < self.options.unimolecular.min_bond_modifications:
+            elif s < self.options.unimolecular_options.min_bond_modifications:
                 continue
 
             # Batch all trials before doing a final filter run and adding the
             #  remaining trials. This reduces the number of filter calls and
             #  thus the number of DB look-ups.
             batch: List[tuple] = []
-
-            def work_batch(self, n_diss):
-                nonlocal structure, structure_id, connectivity_analyzer, batch
-                # Filter current pairs combinations
-                filter_result = self.reactive_site_filter.filter_reaction_coordinates(
-                    [structure],
-                    batch
-                )
-                new_calculation_ids = []
-                for pairs in filter_result:
-                    # Get reaction type:
-                    reaction_type = connectivity_analyzer.get_reaction_type(pairs)
-                    # Set up reactive complex calculation
-                    if reaction_type in (ReactionType.Associative, ReactionType.Mixed):
-                        cid = self._add_reactive_complex_calculation(
-                            [structure_id],
-                            pairs[:len(pairs) - n_diss],
-                            pairs[len(pairs) - n_diss:],
-                            self.options.unimolecular.job,
-                            self.options.unimolecular.job_settings_associative,
-                        )
-                        if cid is not None:
-                            new_calculation_ids.append(cid)
-                    elif reaction_type == ReactionType.Dissociative:
-                        cid = self._add_reactive_complex_calculation(
-                            [structure_id],
-                            pairs[:len(pairs) - n_diss],
-                            pairs[len(pairs) - n_diss:],
-                            self.options.unimolecular.job,
-                            self.options.unimolecular.job_settings_dissociative,
-                        )
-                        if cid is not None:
-                            new_calculation_ids.append(cid)
-                    elif reaction_type == ReactionType.Disconnective:
-                        cid = self._add_reactive_complex_calculation(
-                            [structure_id],
-                            pairs[:len(pairs) - n_diss],
-                            pairs[len(pairs) - n_diss:],
-                            self.options.unimolecular.job,
-                            self.options.unimolecular.job_settings_disconnective,
-                        )
-                        if cid is not None:
-                            new_calculation_ids.append(cid)
-                if new_calculation_ids:
-                    structure.add_calculations(self.options.unimolecular.job.order, [new_calculation_ids[0]])
-
             # Loop over all allowed combinations of reaction coordinates within
             #  the current count of associations and dissociations
             for asso_pairs in combinations(filtered_form_pairs, n_asso):
                 for diss_pairs in combinations(filtered_diss_pairs, n_diss):
                     batch += [asso_pairs + diss_pairs]
-                    if len(batch) > 9999:
-                        work_batch(self, n_diss)
-                        batch = []
-            work_batch(self, n_diss)
-            batch = []
+            filter_result = self.reactive_site_filter.filter_reaction_coordinates(
+                [structure],
+                batch
+            )
+            result.append((filter_result, n_diss))
 
-        return
+        return result
 
+    @_sanity_check_wrapper
     def estimate_n_unimolecular_trials(
         self, structure_file: str, n_reactive_bound_pairs: int = -1, n_reactive_unbound_pairs: int = -1
     ):
@@ -565,7 +586,6 @@ class BondBased(TrialGenerator):
             The number of reactive trial coordinates expected to arise from this
             structure.
         """
-        self._sanity_check_configuration()
         # Read in atom collection and interpret connectivity from interatomic distances
         atoms = utils.io.read(structure_file)[0]
         n_unbound_pairs, n_bound_pairs = self._get_bound_unbound_pairs_from_atoms(
@@ -576,15 +596,17 @@ class BondBased(TrialGenerator):
         # and add the associated number of trials
         n_trials = 0
         for n_form in range(
-            self.options.unimolecular.min_bond_formations, self.options.unimolecular.max_bond_formations + 1
+            self.options.unimolecular_options.min_bond_formations,
+                self.options.unimolecular_options.max_bond_formations + 1
         ):
             for n_diss in range(
-                self.options.unimolecular.min_bond_dissociations, self.options.unimolecular.max_bond_dissociations + 1
+                self.options.unimolecular_options.min_bond_dissociations,
+                    self.options.unimolecular_options.max_bond_dissociations + 1
             ):
                 if not (
-                    self.options.unimolecular.min_bond_modifications
+                    self.options.unimolecular_options.min_bond_modifications
                     <= n_form + n_diss
-                    <= self.options.unimolecular.max_bond_modifications
+                    <= self.options.unimolecular_options.max_bond_modifications
                 ):
                     continue
                 n_form_combis = comb(n_unbound_pairs, n_form)
@@ -594,6 +616,7 @@ class BondBased(TrialGenerator):
 
         return n_trials
 
+    @_sanity_check_wrapper
     def estimate_n_bimolecular_trials(
         self,
         structure_file1: str,
@@ -668,7 +691,6 @@ class BondBased(TrialGenerator):
             The number of reactive trial coordinates expected to arise from this
             structure.
         """
-        self._sanity_check_configuration()
         # Read in atom collections and get intramolecular bound and unbound pairs
         atoms1 = utils.io.read(structure_file1)[0]
         n_unbound_pairs1, n_bound_pairs1 = self._get_bound_unbound_pairs_from_atoms(
@@ -686,23 +708,25 @@ class BondBased(TrialGenerator):
         # and add the associated number of trials
         n_trials = 0
         # At least on intermolecular coord required
-        if self.options.bimolecular.max_inter_bond_formations < 1:
+        if self.options.bimolecular_options.max_inter_bond_formations < 1:
             return 0
 
         for n_inter in range(
-            self.options.bimolecular.min_inter_bond_formations, self.options.bimolecular.max_inter_bond_formations + 1
+            self.options.bimolecular_options.min_inter_bond_formations,
+                self.options.bimolecular_options.max_inter_bond_formations + 1
         ):
             for n_form in range(
-                self.options.bimolecular.min_intra_bond_formations,
-                self.options.bimolecular.max_intra_bond_formations + 1,
+                self.options.bimolecular_options.min_intra_bond_formations,
+                    self.options.bimolecular_options.max_intra_bond_formations + 1,
             ):
                 for n_diss in range(
-                    self.options.bimolecular.min_bond_dissociations, self.options.bimolecular.max_bond_dissociations + 1
+                    self.options.bimolecular_options.min_bond_dissociations,
+                        self.options.bimolecular_options.max_bond_dissociations + 1
                 ):
                     if not (
-                        self.options.bimolecular.min_bond_modifications
+                        self.options.bimolecular_options.min_bond_modifications
                         <= n_form + n_diss + n_inter
-                        <= self.options.bimolecular.max_bond_modifications
+                        <= self.options.bimolecular_options.max_bond_modifications
                     ):
                         continue
                     n_inter_combis = comb(n_inter_pairs, n_inter)
@@ -712,19 +736,19 @@ class BondBased(TrialGenerator):
 
                     # Add rotamers
                     if n_inter == 1:
-                        n_form_diss_combis *= self.options.bimolecular.complex_generator.options.number_rotamers
+                        n_form_diss_combis *= self.options.bimolecular_options.complex_generator.options.number_rotamers
                     # There can be two intermolecular coordinates involving the same atom twice (e.g. "atom on bond")
                     # These are weighted with number_rotamers in the real enumeration but with
                     # number_rotamers_two_on_two here
                     elif n_inter == 2:
                         n_form_diss_combis *= (
-                            self.options.bimolecular.complex_generator.options.number_rotamers_two_on_two
+                            self.options.bimolecular_options.complex_generator.options.number_rotamers_two_on_two
                         )
 
                     n_trials += n_form_diss_combis
 
         # Take into account estimate of attack points per site
-        if self.options.bimolecular.complex_generator.options.multiple_attack_points:
+        if self.options.bimolecular_options.complex_generator.options.multiple_attack_points:
             n_trials *= attack_points_per_site * attack_points_per_site
         return n_trials
 
@@ -807,43 +831,45 @@ class BondBased(TrialGenerator):
         calculation :: scine_database.ID
             A calculation that is on hold.
         """
+        this_settings = self._get_settings(settings)
         if lhs_alignment is not None:
-            settings["rc_x_alignment_0"] = lhs_alignment
+            this_settings["rc_x_alignment_0"] = lhs_alignment
         if rhs_alignment is not None:
-            settings["rc_x_alignment_1"] = rhs_alignment
+            this_settings["rc_x_alignment_1"] = rhs_alignment
         if x_rotation is not None:
-            settings["rc_x_rotation"] = x_rotation
+            this_settings["rc_x_rotation"] = x_rotation
         if spread is not None:
-            settings["rc_x_spread"] = spread
+            this_settings["rc_x_spread"] = spread
         if displacement is not None:
-            settings["rc_displacement"] = displacement
+            this_settings["rc_displacement"] = displacement
         if multiplicity is not None:
-            settings["rc_spin_multiplicity"] = multiplicity
+            this_settings["rc_spin_multiplicity"] = multiplicity
         if charge is not None:
-            settings["rc_molecular_charge"] = charge
+            this_settings["rc_molecular_charge"] = charge
 
         if job.order == "scine_react_complex_nt2":
             # nt2 job takes lists of integer where elements 0/1, 2/3 ... N-1, N are combined with each other
             # Flatten pair lists
-            settings["nt_nt_associations"] = [idx for idx_pair in association_pairs for idx in idx_pair]
-            settings["nt_nt_dissociations"] = [idx for idx_pair in dissociation_pairs for idx in idx_pair]
+            this_settings["nt_nt_associations"] = [idx for idx_pair in association_pairs for idx in idx_pair]
+            this_settings["nt_nt_dissociations"] = [idx for idx_pair in dissociation_pairs for idx in idx_pair]
         else:
             raise RuntimeError(
                 "Only 'scine_react_complex_nt2' order supported for bond-based reactive complex calculations."
             )
 
         if len(reactive_structures) > 1:
-            settings["rc_minimal_spin_multiplicity"] = bool(self.options.bimolecular.minimal_spin_multiplicity)
+            this_settings["rc_minimal_spin_multiplicity"] = bool(
+                self.options.bimolecular_options.minimal_spin_multiplicity)
 
         if check_for_existing and get_calculation_id(job.order, reactive_structures, self.options.model,
-                                                     self._calculations, settings=settings) is not None:
+                                                     self._calculations, settings=this_settings) is not None:
             return None
         calculation = db.Calculation()
         calculation.link(self._calculations)
         calculation.create(self.options.model, job, reactive_structures)
         # Sleep a bit in order not to make the DB choke
         time.sleep(0.001)
-        calculation.set_settings(deepcopy(settings))
+        calculation.set_settings(this_settings)
         calculation.set_status(db.Status.HOLD)
         return calculation.id()
 
@@ -941,3 +967,9 @@ class BondBased(TrialGenerator):
         n_bound_pairs = graph.E if n_reactive_bound_pairs < 0 else n_reactive_bound_pairs
         n_unbound_pairs = n_pairs - graph.E if n_reactive_unbound_pairs < 0 else n_reactive_unbound_pairs
         return n_unbound_pairs, n_bound_pairs
+
+    def get_unimolecular_job_order(self) -> str:
+        return self.options.unimolecular_options.job.order
+
+    def get_bimolecular_job_order(self) -> str:
+        return self.options.bimolecular_options.job.order

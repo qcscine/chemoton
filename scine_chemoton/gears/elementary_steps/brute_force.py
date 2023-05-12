@@ -29,9 +29,12 @@ class BruteForceElementarySteps(ElementaryStepGear):
     ----------
     options :: BruteForceElementarySteps.Options
         The options for the BruteForceElementarySteps Gear.
-    filter :: scine_chemoton.gears.elementary_steps.compound_filter.CompoundFilter
+    aggregate_filter :: scine_chemoton.gears.elementary_steps.aggregate_filters.AggregateFilter
         A filter for allowed reaction combinations, per default everything
         is permitted, no filter is applied.
+    trial_generator :: TrialGenerator
+        The generator to set up elementary step trial calculations by enumerating
+        reactive complexes and trial reaction coordinates
 
     Notes
     -----

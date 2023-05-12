@@ -7,7 +7,7 @@ See LICENSE.txt for details.
 
 # Standard library imports
 from json import dumps
-from typing import List, Union
+from typing import List, Union, Optional, Tuple
 from warnings import warn
 import numpy as np
 from copy import copy
@@ -18,8 +18,9 @@ import scine_utilities as utils
 
 # Local application imports
 from . import Gear
-from ..utilities.queries import identical_reaction, stop_on_timeout, _verify_identical_reaction
+from ..utilities.queries import stop_on_timeout
 from ..utilities.energy_query_functions import get_energy_for_structure
+from ..utilities.compound_and_flask_creation import get_compound_or_flask
 
 
 class BasicReactionHousekeeping(Gear):
@@ -43,8 +44,9 @@ class BasicReactionHousekeeping(Gear):
         self.options = self.Options()
         self._required_collections = ["compounds", "elementary_steps", "flasks", "reactions", "properties",
                                       "structures"]
+        self._reaction_cache: Optional[dict] = None
 
-    class Options:
+    class Options(Gear.Options):
         """
         The options for the BasicReactionHousekeeping Gear.
         """
@@ -57,6 +59,7 @@ class BasicReactionHousekeeping(Gear):
                      "rmsd_tolerance")
 
         def __init__(self):
+            super().__init__()
             self.cycle_time = 10
             """
             int
@@ -117,6 +120,8 @@ class BasicReactionHousekeeping(Gear):
         for step in stop_on_timeout(self._elementary_steps.iterate_elementary_steps(dumps(selection))):
             step.link(self._elementary_steps)
             reactants = step.get_reactants(db.Side.BOTH)
+            if self.stop_at_next_break_point:
+                return
 
             # Determine structure types
             types = [[], []]
@@ -147,16 +152,14 @@ class BasicReactionHousekeeping(Gear):
 
             self._replace_duplicate_structures(step)
             # Check for a reactions with the same structures/compounds
-            true_hit = identical_reaction(aggregates[0], aggregates[1], types[0], types[1], self._reactions)
+            true_hit, is_parallel = self._check_cached_reactions(aggregates[0], aggregates[1])
             if true_hit is not None:
-                is_parallel = _verify_identical_reaction(aggregates[0], aggregates[1], true_hit)
                 if not is_parallel:
                     self._invert_elementary_step(step)
                 # Add elementary step to reaction if it is not duplicated.
                 if uses_elementary_step_deduplication and self._is_duplicate(step, true_hit):
                     step.disable_analysis()
                     step.disable_exploration()
-                    continue
                 reaction = true_hit
                 # check for regular vs barrierless
                 self._disable_barrierless_if_mixed_types_in_reaction(reaction, step)
@@ -169,6 +172,49 @@ class BasicReactionHousekeeping(Gear):
             reaction.add_elementary_step(step.id())
             step.set_reaction(reaction.id())
             self._add_reaction_to_aggregate(aggregates[0] + aggregates[1], types[0] + types[1], reaction.id())
+            self._add_to_cache(reaction, aggregates[0], aggregates[1])
+
+    def _check_cached_reactions(
+            self, lhs_aggregates: List[db.ID], rhs_aggregates: List[db.ID]
+    ) -> Tuple[Optional[db.Reaction], bool]:
+        self._rebuild_cache()
+        assert self._reaction_cache is not None
+        key = ','.join(sorted([x.string() for x in lhs_aggregates]))
+        key += '<->'
+        key += ','.join(sorted([x.string() for x in rhs_aggregates]))
+        if key in self._reaction_cache:
+            reaction = db.Reaction(db.ID(self._reaction_cache[key]))
+            reaction.link(self._reactions)
+            return reaction, True
+        key = ','.join(sorted([x.string() for x in rhs_aggregates]))
+        key += '<->'
+        key += ','.join(sorted([x.string() for x in lhs_aggregates]))
+        if key in self._reaction_cache:
+            reaction = db.Reaction(db.ID(self._reaction_cache[key]))
+            reaction.link(self._reactions)
+            return reaction, False
+        return None, True
+
+    def _rebuild_cache(self) -> None:
+        if self._reaction_cache is None:
+            self._reaction_cache = {}
+            for r in self._reactions.iterate_reactions('{}'):
+                r.link(self._reactions)
+                reactants = r.get_reactants(db.Side.BOTH)
+                key = ','.join(sorted([x.string() for x in reactants[0]]))
+                key += '<->'
+                key += ','.join(sorted([x.string() for x in reactants[1]]))
+                self._reaction_cache[key] = r.get_id().string()
+
+    def _add_to_cache(
+        self, reaction: db.Reaction, lhs_aggregates: List[db.ID], rhs_aggregates: List[db.ID]
+    ) -> None:
+        assert self._reaction_cache is not None
+        key = ','.join(sorted([x.string() for x in lhs_aggregates]))
+        key += '<->'
+        key += ','.join(sorted([x.string() for x in rhs_aggregates]))
+        assert key not in self._reaction_cache
+        self._reaction_cache[key] = reaction.get_id().string()
 
     def _replace_duplicate_structures(self, elementary_step: db.ElementaryStep):
         reactants = elementary_step.get_reactants(db.Side.BOTH)
@@ -182,7 +228,7 @@ class BasicReactionHousekeeping(Gear):
         for s_id in id_list:
             structure = db.Structure(s_id, self._structures)
             if structure.get_label() == db.Label.DUPLICATE:
-                unique_list.append(structure.is_duplicate_of())
+                unique_list.append(structure.get_original())
             else:
                 unique_list.append(s_id)
         return unique_list
@@ -251,14 +297,8 @@ class BasicReactionHousekeeping(Gear):
     def _add_reaction_to_aggregate(self, aggregates_to_change: List[db.ID], aggregate_types: List[db.CompoundOrFlask],
                                    reaction_id: db.ID):
         for aggregate_id, aggregate_type in zip(aggregates_to_change, aggregate_types):
-            if aggregate_type == db.CompoundOrFlask.COMPOUND:
-                compound = db.Compound(aggregate_id, self._compounds)
-                compound.add_reaction(reaction_id)
-            elif aggregate_type == db.CompoundOrFlask.FLASK:
-                flask = db.Flask(aggregate_id, self._flasks)
-                flask.add_reaction(reaction_id)
-            else:
-                raise RuntimeError(f"Requested aggregate type '{aggregate_type}' is not supported.")
+            flask_or_compound = get_compound_or_flask(aggregate_id, aggregate_type, self._compounds, self._flasks)
+            flask_or_compound.add_reaction(reaction_id)
 
     def _same_energy(self, ts_new_energy: Union[float, None], ts_old: db.Structure, model: db.Model) -> bool:
         ts_old_energy = get_energy_for_structure(ts_old, "electronic_energy", model, self._structures,
@@ -290,7 +330,8 @@ class BasicReactionHousekeeping(Gear):
             return False
         ts_new = db.Structure(elementary_step.get_transition_state(), self._structures)
         model = ts_new.model
-        ts_new_energy = get_energy_for_structure(ts_new, "electronic_energy", model, self._structures, self._properties)
+        ts_new_energy = get_energy_for_structure(
+            ts_new, "electronic_energy", model, self._structures, self._properties)
         ts_positions_new = ts_new.get_atoms().positions
         ts_elements = ts_new.get_atoms().elements
         for old_step_id in reaction.get_elementary_steps():

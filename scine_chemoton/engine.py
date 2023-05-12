@@ -8,7 +8,9 @@ See LICENSE.txt for details.
 
 # Standard library imports
 import multiprocessing
-from typing import Optional
+from typing import Any, Optional
+import signal
+import os
 
 # Third party imports
 import scine_database as db
@@ -41,6 +43,7 @@ class Engine:
         self._fork = fork
         self._gear: Optional[Gear] = None
         self._proc: Optional[multiprocessing.Process] = None
+        self._loop_count: Optional[Any] = multiprocessing.Value('i', 0)
 
     def set_gear(self, gear: Gear):
         """
@@ -68,15 +71,37 @@ class Engine:
         """
         if not self._gear:
             raise AttributeError
+        if self._loop_count is None:
+            self._loop_count = multiprocessing.Value('i', 0)
         if self._fork and self._gear is not None:
             self._proc = multiprocessing.Process(
-                target=self._gear, args=(self._credentials,), kwargs={"single": single}
+                target=self._gear, args=(self._credentials, self._loop_count), kwargs={"single": single}
             )
             self._proc.start()
         elif self._gear is not None:
-            self._gear(self._credentials, single=single)
+            self._gear(self._credentials, self._loop_count, single=single)  # type: ignore
 
     def stop(self):
+        """
+        In case of a forked job this will send an interrupt signal to the forked process, leading to a graceful exit.
+        """
+        if self._fork and self._proc:
+            self._gear.stop()
+            pid = self._proc.pid
+            if pid is not None:
+                os.kill(pid, signal.SIGINT)
+
+    def join(self, timeout: Optional[int] = None):
+        """
+        In case of a forked job this will wait for the graceful exit of the job.
+        If the process has not been signalled to stop, this will also initiate the stop.
+        """
+        if self._fork and self._proc:
+            if self._gear is not None and not self._gear.stop_at_next_break_point:
+                self.stop()
+        self._cleanup(timeout)
+
+    def terminate(self):
         """
         In case of a forked job this will terminate the forked process.
 
@@ -86,3 +111,17 @@ class Engine:
         """
         if self._fork and self._proc:
             self._proc.terminate()
+        self._cleanup()
+
+    def _cleanup(self, timeout: Optional[int] = None):
+        if self._proc is not None:
+            self._proc.join(timeout)
+            self._proc = None
+        self._loop_count = None
+
+    def get_number_of_gear_loops(self) -> int:
+        if self._gear is None:
+            raise AttributeError("Engine has not received a gear")
+        if self._loop_count is None:
+            return 0
+        return self._loop_count.value  # type: ignore

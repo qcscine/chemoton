@@ -27,8 +27,10 @@ Prerequisites
 The key requirements for Chemoton are the Python packages ``scine_utilities``,
 ``scine_database``, and ``scine_molassember``. These packages are available from
 PyPI and can be installed using ``pip``.
-However, these packages can also be compiled by hand. For the latter case please
-visit the repositories of each of the packages and follow their guidelines.
+However, these packages can also be compiled from sources. For the latter case please
+visit the repositories of each of the packages and follow their guidelines or
+bootstrap a `puffin <https://github.com/qcscine/puffin>`_ which will install the same
+dependencies.
 
 Installation
 ............
@@ -37,7 +39,7 @@ Chemoton can be installed using ``pip`` (``pip3``) once the repository has been 
 
 .. code-block:: bash
 
-   git clone <chemoton-repo> chemoton
+   git clone https://github.com/qcscine/chemoton.git
    cd chemoton
    pip install -r requirements.txt
    pip install .
@@ -90,9 +92,10 @@ to log and store the data.
 
 .. code-block:: bash
 
-   python3 -m puffin configure
+   pip install scine-puffin
+   python3 -m scine_puffin configure
    # Edit the generated puffin.yaml here
-   python3 -m puffin -c puffin.yaml bootstrap
+   python3 -m scine_puffin -c puffin.yaml bootstrap
 
 3. Source the ``puffin`` settings and tell it to listen to the correct DB.
 (Hostname and port should be the default ones.) Then start it.
@@ -101,7 +104,7 @@ to log and store the data.
 
    source puffin.sh
    export PUFFIN_DATABASE_NAME=default
-   python3 -m puffin -c puffin.yaml start
+   python3 -m scine_puffin -c puffin.yaml start
 
 4. Run the Chemoton exploration defined in the ``__main__`` function:
 
@@ -110,7 +113,7 @@ to log and store the data.
    python3 -m scine_chemoton wipe
 
 The optional ``wipe`` argument will start the example exploration with a clean
-``puffin_tests`` DB; giving the ``continue`` argument will reuse old data.
+``default`` DB; giving the ``continue`` argument will reuse old data.
 
 Expanding on the Minimal Example
 ................................
@@ -140,7 +143,7 @@ In addition, we kindly request you to cite the following article when using Chem
 
 J. P. Unsleber, S. A. Grimmel, M. Reiher,
 "Chemoton 2.0: Autonomous Exploration of Chemical Reaction Networks",
-*arXiv:2202.13011 [physics.chem-ph].*
+*J. Chem. Theory Comput.*, **2022**, *18*, 5393.
 
 Support and Contact
 -------------------

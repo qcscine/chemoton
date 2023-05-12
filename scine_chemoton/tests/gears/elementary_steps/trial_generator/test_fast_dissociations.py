@@ -111,6 +111,13 @@ def test_unimol_fast_dissociations():
     hits = calculations.query_calculations(json.dumps({}))
     assert len(hits) == 10
 
+    # Run a third time with exact settings check
+    trial_generator.unimolecular_reactions(structure, with_exact_settings_check=True)
+    # Check again
+    assert not structures.query_structures(json.dumps({"label": "reactive_complex_guess"}))
+    hits = calculations.query_calculations(json.dumps({}))
+    assert len(hits) == 10
+
     # with dissociative explorations
     trial_generator.options.always_further_explore_dissociative_reactions = True
     trial_generator.unimolecular_reactions(structure)
@@ -240,8 +247,6 @@ def test_unimol_fast_dissociations():
         n_diss = calculation.get_settings().get("dissociations")
         n_diss_nt = calculation.get_settings().get("nt_nt_dissociations")
         assert n_diss is None and len(n_diss_nt) == 4 or len(n_diss) == 4 and n_diss_nt is None
-        # Cleaning
-        calculation.wipe()
 
     """ 0-2 """
     trial_generator.options.always_further_explore_dissociative_reactions = False
@@ -250,19 +255,19 @@ def test_unimol_fast_dissociations():
     trial_generator.options.min_bond_dissociations = 0
     trial_generator.options.max_bond_dissociations = 2
     # Generate trials
-    trial_generator.unimolecular_reactions(structure)
+    trial_generator.unimolecular_reactions(structure, with_exact_settings_check=True)
 
     # Expected number of hits
     # Single dissociations = 10 C-H bonds
-    # Double dissociations = number of bonds choose 2 = 16 choose 2 = 120
-    # Sum: 130
+    # Double dissociations = number of bonds choose 2 = 16 choose 2 = 120, but already done
+    # Sum: 10 + 240 = 250
     trial_generator.unimolecular_reactions(structure)
     hits = calculations.query_calculations(json.dumps({}))
-    assert len(hits) == 130
+    assert len(hits) == 250
     # Run a second time
     trial_generator.unimolecular_reactions(structure)
     hits = calculations.query_calculations(json.dumps({}))
-    assert len(hits) == 130
+    assert len(hits) == 250
 
     # with dissociative explorations
     trial_generator.options.always_further_explore_dissociative_reactions = True
@@ -281,32 +286,14 @@ def test_unimol_fast_dissociations():
     trial_generator.unimolecular_reactions(structure)
     assert not structures.query_structures(json.dumps({"label": "reactive_complex_guess"}))
     most_hits = calculations.query_calculations(json.dumps({}))
-    assert len(most_hits) == len(hits) + len(more_hits)
+    # 10 new fast + 6 pure single dissociations
+    assert len(most_hits) == 250 + 10 + 6
     # Run a second time
     trial_generator.unimolecular_reactions(structure)
     most_hits = calculations.query_calculations(json.dumps({}))
-    assert len(most_hits) == len(hits) + len(more_hits)
+    assert len(most_hits) == 250 + 10 + 6
 
-    for hit in hits:
-        calculation = db.Calculation(hit.id(), calculations)
-        assert len(calculation.get_structures()) == 1
-        assert calculation.get_status() == db.Status.HOLD
-        assert calculation.get_model() == model
-        assert calculation.get_job().order == "scine_dissociation_cut"
-        n_diss = len(calculation.get_setting("dissociations"))
-        assert n_diss in (2, 4)
-
-    for hit in more_hits:
-        calculation = db.Calculation(hit.id(), calculations)
-        assert len(calculation.get_structures()) == 1
-        assert calculation.get_status() == db.Status.HOLD
-        assert calculation.get_job().order in ["scine_dissociation_cut", "scine_react_complex_nt2"]
-        assert calculation.get_model() == model
-        n_diss = calculation.get_settings().get("dissociations")
-        n_diss_nt = calculation.get_settings().get("nt_nt_dissociations")
-        assert n_diss is None and len(n_diss_nt) in (2, 4) or len(n_diss) in (2, 4) and n_diss_nt is None
-
-    for hit in most_hits:
+    for hit in hits + more_hits + most_hits:
         calculation = db.Calculation(hit.id(), calculations)
         assert len(calculation.get_structures()) == 1
         assert calculation.get_status() == db.Status.HOLD

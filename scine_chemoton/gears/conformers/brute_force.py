@@ -6,8 +6,10 @@ See LICENSE.txt for details.
 """
 
 # Standard library imports
-import time
 from json import dumps
+from typing import List
+import math
+import time
 
 # Third party imports
 import scine_database as db
@@ -15,6 +17,7 @@ import scine_utilities as utils
 
 # Local application imports
 from .. import Gear
+from ..elementary_steps.aggregate_filters import AggregateFilter
 from ...utilities.queries import model_query, stop_on_timeout
 
 
@@ -39,14 +42,13 @@ class BruteForceConformers(Gear):
     geometry optimizations are scheduled.
     """
 
-    class Options:
+    class Options(Gear.Options):
         """
         The options for the BruteForceConformers Gear.
         """
 
         __slots__ = (
             "cycle_time",
-            "model",
             "conformer_job",
             "minimization_job",
             "conformer_settings",
@@ -55,6 +57,7 @@ class BruteForceConformers(Gear):
         )
 
         def __init__(self):
+            super().__init__()
             self.cycle_time = 10
             """
             int
@@ -62,12 +65,6 @@ class BruteForceConformers(Gear):
                 Cycles are finished independent of this option, thus if a cycle
                 takes longer than the cycle_time will effectively lead to longer
                 cycle times and not cause multiple cycles of the same Gear.
-            """
-            self.model: db.Model = db.Model("PM6", "", "")
-            """
-            db.Model (Scine::Database::Model)
-                The Model used for the conformer generation.
-                The default is: PM6 using Sparrow.
             """
             self.conformer_job: db.Job = db.Job("conformers")
             """
@@ -96,22 +93,60 @@ class BruteForceConformers(Gear):
                 calculations. Empty by default.
             """
             self.temperature = 298.15
+            """
+            float
+                Temperature for Boltzmann evaluations
+            """
 
     def __init__(self):
         super().__init__()
-        self.options = self.Options()
+        self.aggregate_filter = AggregateFilter()
         self._required_collections = ["calculations", "compounds", "properties", "structures"]
         # local cache variables
-        self._completed = []
+        self._completed = set()
+
+    def _propagate_db_manager(self, manager: db.Manager):
+        self._sanity_check_configuration()
+        self.aggregate_filter.initialize_collections(manager)
+
+    def _sanity_check_configuration(self):
+        if not isinstance(self.aggregate_filter, AggregateFilter):
+            raise TypeError(f"Expected a AggregateFilter (or a class derived "
+                            f"from it) in {self.name}.aggregate_filter.")
+
+    def clear_cache(self):
+        self._completed = set()
+
+    def valid_compounds(self) -> List[db.ID]:
+        result: List[db.ID] = []
+        # Loop over all compounds
+        for compound in stop_on_timeout(self._compounds.iterate_all_compounds()):
+            compound.link(self._compounds)
+            if self.stop_at_next_break_point:
+                return result
+            # Check for initial reasons to skip
+            compound_id = compound.id()
+            if not compound.explore() or str(compound_id) in self._completed:
+                continue
+            if self.aggregate_filter.filter(compound):
+                result.append(compound_id)
+        return result
 
     def _loop_impl(self):
         # Loop over all compounds
         for compound in stop_on_timeout(self._compounds.iterate_all_compounds()):
             compound.link(self._compounds)
+            if self.stop_at_next_break_point:
+                return
             # Check for initial reasons to skip
             if not compound.explore():
                 continue
-            if compound.id().string() in self._completed:
+            compound_id = compound.id()
+            str_compound_id = str(compound_id)
+            if str_compound_id in self._completed:
+                continue
+            if not self.aggregate_filter.filter(compound):
+                self._completed.add(str_compound_id)  # add filtered out to completed to avoid many filter evaluations
                 continue
 
             # ============================== #
@@ -121,7 +156,7 @@ class BruteForceConformers(Gear):
             selection = {
                 "$and": [
                     {"job.order": self.options.conformer_job.order},
-                    {"auxiliaries": {"compound": {"$oid": compound.id().string()}}},
+                    {"auxiliaries": {"compound": {"$oid": str_compound_id}}},
                 ]
                 + model_query(self.options.model)
             }
@@ -143,7 +178,7 @@ class BruteForceConformers(Gear):
                 conformer_generation = db.Calculation()
                 conformer_generation.link(self._calculations)
                 conformer_generation.create(self.options.model, self.options.conformer_job, [centroid.id()])
-                conformer_generation.set_auxiliary("compound", compound.id())
+                conformer_generation.set_auxiliary("compound", compound_id)
                 if self.options.conformer_settings:
                     conformer_generation.set_settings(self.options.conformer_settings)
                 conformer_generation.set_status(db.Status.HOLD)
@@ -181,6 +216,9 @@ class BruteForceConformers(Gear):
                         if self.options.minimization_settings:
                             minimization.set_settings(self.options.minimization_settings)
                         minimization.set_status(db.Status.HOLD)
+                        guess_structure = db.Structure(guess)
+                        guess_structure.link(self._structures)
+                        guess_structure.add_calculation("geometry_optimization", minimization.get_id())
                         time.sleep(0.001)
                     else:
                         minimization = hit
@@ -200,26 +238,28 @@ class BruteForceConformers(Gear):
                 if optimized_structures == len(conformer_guesses):
                     self._complete_compound(compound)
 
-    def _complete_compound(self, compound):
-        import math
+    def _complete_compound(self, compound: db.Compound):
         beta = 1 / (utils.BOLTZMANN_CONSTANT / utils.JOULE_PER_HARTREE * self.options.temperature)
         # Use the energy of the first structure as the energy 0-point. Otherwise, we likely have an overflow of the
         # exponential factor below (exp(- beta * energy).
-        reference_energy = 0.0
+        reference_energy = None
         for sid in compound.get_structures():
             structure = db.Structure(sid, self._structures)
             if not structure.has_property("electronic_energy"):
                 continue
             energy_property = structure.query_properties("electronic_energy", self.options.model, self._properties)
+            if not energy_property:
+                raise RuntimeError(f"Could not find electronic energy for structure {sid}, "
+                                   f"something might be wrong with the model for {self.name}:\n{self.options.model}")
             prop = db.NumberProperty(energy_property[-1], self._properties)
             energy = prop.get_data()
-            if reference_energy == 0.0:
+            if reference_energy is None:
                 reference_energy = energy
             energy -= reference_energy
             temperature_model = db.Model.__copy__(self.options.model)
             temperature_model.temperature = self.options.temperature
-            boltzmann_property = db.NumberProperty.make("boltzmann_weight", self.options.model,
+            boltzmann_property = db.NumberProperty.make("boltzmann_weight", temperature_model,
                                                         math.exp(-beta * energy), self._properties)
             boltzmann_property.set_comment("Energy 0-point: " + str(reference_energy))
             structure.add_property("boltzmann_weight", boltzmann_property.id())
-        self._completed.append(compound.id())
+        self._completed.add(str(compound.id()))

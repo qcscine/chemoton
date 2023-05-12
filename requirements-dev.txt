@@ -13,3 +13,5 @@ pylint-exit
 mypy
 autopep8
 flake8
+autoflake
+types-setuptools

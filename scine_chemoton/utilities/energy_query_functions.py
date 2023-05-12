@@ -6,24 +6,27 @@ See LICENSE.txt for details.
 """
 
 # Standard library imports
-from typing import Union, Tuple
+from typing import Union, Tuple, List, Optional
 import numpy as np
 # Third party imports
 import scine_database as db
 import scine_utilities as utils
 
 
-def get_elementery_step_with_min_ts_energy(reaction: db.Reaction, energy_type: str, model: db.Model,
-                                           elementary_steps: db.Collection, structures: db.Collection,
-                                           properties: db.Collection) -> Union[db.ID, None]:
+def get_elementary_step_with_min_ts_energy(reaction: db.Reaction,
+                                           energy_type: str,
+                                           model: db.Model,
+                                           elementary_steps: db.Collection,
+                                           structures: db.Collection,
+                                           properties: db.Collection,
+                                           structure_model: Optional[db.Model] = None) -> Optional[db.ID]:
     """
     Gets the elementary step ID with the lowest energy of the corresponding transition state of a reaction.
-
 
     Parameters
     ----------
     reaction : db.Reaction
-        _description_
+        The reaction for which the elementary steps shall be analyzed.
     energy_type : str
         The name of the energy property such as 'electronic_energy' or 'gibbs_free_energy'
     model : scine_database.Model
@@ -34,11 +37,13 @@ def get_elementery_step_with_min_ts_energy(reaction: db.Reaction, energy_type: s
         The structure collection.
     properties : scine_database.Collection
         The property collection.
+    structure_model : Optional[db.Model]
+        The model of the transition state. If None, the model of the transition state is not checked.
 
     Returns
     -------
-    Union[db.ID, None]
-        _description_
+    Optional[db.ID]
+        The ID of the elementary step with the lowest TS energy.
     """
     lowest_ts_energy = np.inf
     es_id_with_lowest_ts = None
@@ -47,14 +52,27 @@ def get_elementery_step_with_min_ts_energy(reaction: db.Reaction, energy_type: s
         es = db.ElementaryStep(es_id, elementary_steps)
         # # # Type check elementary step and break if barrierless
         if es.get_type() == db.ElementaryStepType.BARRIERLESS:
+            first_structure_lhs = db.Structure(es.get_reactants()[0][0], structures)
+            if structure_model is not None and first_structure_lhs.get_model() != structure_model:
+                continue
+            # # # Energy Check for minima
+            first_structure_lhs_energy = get_energy_for_structure(first_structure_lhs, energy_type, model,
+                                                                  structures, properties)
+            if first_structure_lhs_energy is None:
+                continue
             es_id_with_lowest_ts = es_id
             break
-        ts = db.Structure(es.get_transition_state())
+        ts = db.Structure(es.get_transition_state(), structures)
+        if structure_model is not None and ts.get_model() != structure_model:
+            continue
+
+        # # # Costly safety check that barrier as well as ts_energy exist for this model and energy type
         ts_energy = get_energy_for_structure(
             ts, energy_type, model, structures, properties)
-        if ts_energy is None:
+        barriers = get_barriers_for_elementary_step_by_type(es, energy_type, model, structures, properties)
+        if None in barriers or ts_energy is None:
             continue
-        assert ts_energy
+        # # # Comparison with current lowest energy
         if ts_energy < lowest_ts_energy:
             es_id_with_lowest_ts = es_id
             lowest_ts_energy = ts_energy
@@ -63,7 +81,7 @@ def get_elementery_step_with_min_ts_energy(reaction: db.Reaction, energy_type: s
 
 
 def get_energy_sum_of_elementary_step_side(step: db.ElementaryStep, side: db.Side, energy_type: str, model: db.Model,
-                                           structures: db.Collection, properties: db.Collection) -> Union[float, None]:
+                                           structures: db.Collection, properties: db.Collection) -> Optional[float]:
     """
     Gives the total energy in atomic units of the given side of the step. Returns None if the energy type is
     not available.
@@ -85,7 +103,7 @@ def get_energy_sum_of_elementary_step_side(step: db.ElementaryStep, side: db.Sid
 
     Returns
     -------
-    Union[float, None]
+    Optional[float]
         Energy in hartree
     """
     if side == db.Side.BOTH:
@@ -200,3 +218,48 @@ def rate_constant_from_barrier(barrier: float, temperature: float) -> float:
     rt_in_j_per_mol = utils.MOLAR_GAS_CONSTANT * temperature  # R T
     beta_in_mol_per_j = 1.0 / rt_in_j_per_mol  # 1 / (R T)
     return factor * np.exp(- beta_in_mol_per_j * barrier_j_per_mol)
+
+
+def get_all_energies_for_aggregate(aggregate: Union[db.Compound, db.Flask], model: db.Model, energy_label: str,
+                                   structures: db.Collection, properties: db.Collection) -> List[Union[float, None]]:
+    all_energies = []
+    for s_id in aggregate.get_structures():
+        structure = db.Structure(s_id)
+        all_energies.append(get_energy_for_structure(structure, energy_label, model, structures, properties))
+    return all_energies
+
+
+def get_min_energy_for_aggregate(aggregate: Union[db.Compound, db.Flask], model: db.Model, energy_label: str,
+                                 structures: db.Collection, properties: db.Collection) -> Optional[float]:
+    all_energies = get_all_energies_for_aggregate(aggregate, model, energy_label, structures, properties)
+    if len(all_energies) < 1:
+        return None
+    non_none_energies = list()
+    for e in all_energies:
+        if e is not None:
+            non_none_energies.append(e)
+    if len(non_none_energies) < 1:
+        return None
+    return min(non_none_energies)
+
+
+def get_min_free_energy_for_aggregate(aggregate: Union[db.Compound, db.Flask], electronic_model: db.Model,
+                                      correction_model: db.Model, structures: db.Collection,
+                                      properties: db.Collection) -> Optional[float]:
+    equal_models = electronic_model == correction_model
+    if equal_models:
+        return get_min_energy_for_aggregate(aggregate, electronic_model, "gibbs_free_energy", structures, properties)
+    all_energies: List[float] = []
+    for s_id in aggregate.get_structures():
+        structure = db.Structure(s_id)
+        electronic_energy = get_energy_for_structure(structure, "electronic_energy", electronic_model, structures,
+                                                     properties)
+        free_energy_correction = get_energy_for_structure(structure, "gibbs_energy_correction", correction_model,
+                                                          structures, properties)
+        if electronic_energy is None or free_energy_correction is None:
+            continue
+        energy = electronic_energy + free_energy_correction
+        all_energies.append(energy)
+    if not all_energies:
+        return None
+    return min(all_energies)

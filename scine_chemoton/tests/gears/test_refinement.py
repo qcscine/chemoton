@@ -21,6 +21,7 @@ from .. import test_database_setup as db_setup
 from ...utilities.queries import identical_reaction, model_query
 from ...engine import Engine
 from ...gears.refinement import NetworkRefinement
+from ...utilities.compound_and_flask_creation import get_compound_or_flask
 
 
 def create_new_calculations(elementary_steps, calculations, pre_model, structures):
@@ -85,6 +86,7 @@ def create_fake_optimization_calculations(elementary_steps, post_model, sides, j
     return len(s_id_list)
 
 
+@pytest.mark.filterwarnings("ignore:.+is not implemented by default:UserWarning")
 def test_incorrect_refinement_input():
     manager = db_setup.get_clean_db("chemoton_test_incorrect_refinement_input")
     refinement_gear = NetworkRefinement()
@@ -136,11 +138,6 @@ def test_if_refinement_runs_deactivated():
     structures = manager.get_collection("structures")
     n_structures_before = structures.count(dumps({}))
 
-    # enable all compounds
-    for c in compounds.iterate_all_compounds():
-        c.link(compounds)
-        c.enable_exploration()
-
     # does nothing per default
     refinement_gear = NetworkRefinement()
     refinement_gear.options.pre_refine_model = db.Model("FAKE", "FAKE", "F-AKE")
@@ -156,6 +153,7 @@ def test_if_refinement_runs_deactivated():
     manager.wipe()
 
 
+@pytest.mark.filterwarnings("ignore:.+is not implemented by default:UserWarning")
 def test_refinement_with_wrong_model():
     n_compounds = 10
     n_flasks = 0
@@ -186,15 +184,9 @@ def test_refinement_with_wrong_model():
     elementary_steps = manager.get_collection("elementary_steps")
     n_structures_before = structures.count(dumps({}))
 
-    # enable all compounds
-    for c in compounds.iterate_all_compounds():
-        c.link(compounds)
-        c.enable_exploration()
-
-    added_calculations = create_new_calculations(
-        elementary_steps, calculations, db.Model(
-            "FAKE", "FAKE", "F-AKE"), structures)
-    pre_model = db.Model("NON_EXISTENT", "", "")
+    added_calculations = create_new_calculations(elementary_steps, calculations, db.Model("FAKE", "FAKE", "F-AKE"),
+                                                 structures)
+    pre_model = db.Model("NON_EXISTENT", "FAKE", "F-AKE")
     refine_model = db.Model("a", "b", "c", "d")
     refine_model.solvation = "something"
     refinement_gear = NetworkRefinement()
@@ -250,10 +242,6 @@ def test_sp_refinement():
     elementary_steps = manager.get_collection("elementary_steps")
     n_structures_before = structures.count(dumps({}))
 
-    # enable all compounds
-    for c in compounds.iterate_all_compounds():
-        c.link(compounds)
-        c.enable_exploration()
     structures_to_refine = []
     for e in elementary_steps.iterate_all_elementary_steps():
         e.link(elementary_steps)
@@ -329,11 +317,6 @@ def test_barrier_screening():
     elementary_steps = manager.get_collection("elementary_steps")
     n_structures_before = structures.count(dumps({}))
 
-    # enable all compounds
-    for c in compounds.iterate_all_compounds():
-        c.link(compounds)
-        c.enable_exploration()
-
     pre_model = db.Model("FAKE", "FAKE", "F-AKE")
     added_calculations = create_new_calculations(elementary_steps, calculations, pre_model, structures)
     refine_model = db.Model("a", "b", "c", "d")
@@ -364,6 +347,7 @@ def test_barrier_screening():
     manager.wipe()
 
 
+@pytest.mark.filterwarnings("ignore:.+is not implemented by default:UserWarning")
 def test_opt_refinement():
     n_compounds = 10
     n_flasks = 0
@@ -393,11 +377,6 @@ def test_opt_refinement():
     structures = manager.get_collection("structures")
     elementary_steps = manager.get_collection("elementary_steps")
     n_structures_before = structures.count(dumps({}))
-
-    # enable all compounds
-    for c in compounds.iterate_all_compounds():
-        c.link(compounds)
-        c.enable_exploration()
 
     structures_to_refine = []
     for e in elementary_steps.iterate_all_elementary_steps():
@@ -456,6 +435,7 @@ def test_opt_refinement():
     manager.wipe()
 
 
+@pytest.mark.filterwarnings("ignore:.+is not implemented by default:UserWarning")
 def test_sp_and_opt_refinement():
     n_compounds = 10
     n_flasks = 0
@@ -485,11 +465,6 @@ def test_sp_and_opt_refinement():
     structures = manager.get_collection("structures")
     elementary_steps = manager.get_collection("elementary_steps")
     n_structures_before = structures.count(dumps({}))
-
-    # enable all compounds
-    for c in compounds.iterate_all_compounds():
-        c.link(compounds)
-        c.enable_exploration()
 
     structures_to_refine = []
     for e in elementary_steps.iterate_all_elementary_steps():
@@ -538,77 +513,7 @@ def test_sp_and_opt_refinement():
     manager.wipe()
 
 
-def test_double_ended_refinement():
-    n_compounds = 10
-    n_flasks = 0
-    n_reactions = 5
-    max_r_per_c = 10
-    max_n_products_per_r = 3
-    max_n_educts_per_r = 2
-    max_s_per_c = 1
-    max_steps_per_r = 1  # must be kept to know the number of expected calculations
-    barrier_limits = (0.1, 100.0)
-    n_inserts = 3
-    manager = db_setup.get_random_db(
-        n_compounds,
-        n_flasks,
-        n_reactions,
-        max_r_per_c,
-        "chemoton_test_double_ended_refinement",
-        max_n_products_per_r,
-        max_n_educts_per_r,
-        max_s_per_c,
-        max_steps_per_r,
-        barrier_limits,
-        n_inserts,
-    )
-    compounds = manager.get_collection("compounds")
-    calculations = manager.get_collection("calculations")
-    structures = manager.get_collection("structures")
-    elementary_steps = manager.get_collection("elementary_steps")
-    n_structures_before = structures.count(dumps({}))
-
-    # enable all compounds
-    for c in compounds.iterate_all_compounds():
-        c.link(compounds)
-        c.enable_exploration()
-
-    # create calculation for each step
-    refinement_gear = NetworkRefinement()
-    pre_model = db.Model("FAKE", "FAKE", "F-AKE")
-    refine_model = db.Model("a", "b", "c", "d")
-    refine_model.solvation = "something"
-    added_calculations = create_new_calculations(elementary_steps, calculations, pre_model, structures)
-    n_opt_calculations = create_fake_optimization_calculations(elementary_steps, refine_model, db.Side.BOTH,
-                                                               refinement_gear.options.opt_job,
-                                                               refinement_gear.options.opt_job_settings,
-                                                               calculations, structures)
-    refinement_gear.options.pre_refine_model = pre_model
-    refinement_gear.options.post_refine_model = refine_model
-    refinement_gear.options.refinements = {
-        "refine_single_points": False,
-        "refine_optimizations": False,
-        "double_ended_refinement": True,
-        "double_ended_new_connections": False,
-        "refine_single_ended_search": False,
-        "refine_structures_and_irc": False,
-    }
-    refinement_gear.options.max_barrier = 2001.0
-    refinement_engine = Engine(manager.get_credentials(), fork=False)
-    refinement_engine.set_gear(refinement_gear)
-    for _ in range(5):
-        refinement_engine.run(single=True)
-
-    assert compounds.count(dumps({})) == n_compounds
-    assert structures.count(dumps({})) == n_structures_before
-    # random db does not have calculations, made calculation for every step, now should have double the calculations
-    assert max_steps_per_r == 1
-    assert calculations.count(dumps({"$and": model_query(refine_model)})) == n_reactions + n_opt_calculations
-    assert calculations.count(dumps({})) == n_reactions + added_calculations + n_opt_calculations
-    # Cleaning
-    manager.wipe()
-
-
+@pytest.mark.filterwarnings("ignore:.+is not implemented by default:UserWarning")
 def test_double_ended_new():
     n_compounds = 10
     n_flasks = 0
@@ -638,11 +543,6 @@ def test_double_ended_new():
     structures = manager.get_collection("structures")
     reactions = manager.get_collection("reactions")
     n_structures_before = structures.count(dumps({}))
-
-    # enable all compounds
-    for c in compounds.iterate_all_compounds():
-        c.link(compounds)
-        c.enable_exploration()
 
     pre_model = db.Model("FAKE", "FAKE", "F-AKE")
     refine_model = db.Model("a", "b", "c", "d")
@@ -718,11 +618,6 @@ def test_single_ended_refinement():
     elementary_steps = manager.get_collection("elementary_steps")
     n_structures_before = structures.count(dumps({}))
 
-    # enable all compounds
-    for c in compounds.iterate_all_compounds():
-        c.link(compounds)
-        c.enable_exploration()
-
     # create calculation for each step
     pre_model = db.Model("FAKE", "FAKE", "F-AKE")
     added_calculations = create_new_calculations(elementary_steps, calculations, pre_model, structures)
@@ -795,11 +690,6 @@ def test_refine_structures_and_irc():
     calculations = manager.get_collection("calculations")
     structures = manager.get_collection("structures")
     n_structures_before = structures.count(dumps({}))
-
-    # enable all compounds
-    for c in compounds.iterate_all_compounds():
-        c.link(compounds)
-        c.enable_exploration()
 
     # create calculation for each step
     pre_model = db.Model("FAKE", "FAKE", "F-AKE")
@@ -937,6 +827,81 @@ def test_refine_structures_and_irc_reaction_based_loop():
     manager.wipe()
 
 
+def test_refine_manual_reaction_selection():
+    n_compounds = 10
+    n_flasks = 0
+    n_reactions = 5
+    max_r_per_c = 10
+    max_n_products_per_r = 3
+    max_n_educts_per_r = 2
+    max_s_per_c = 1
+    max_steps_per_r = 3
+    barrier_limits = (0.1, 200)
+    n_inserts = 3
+    manager = db_setup.get_random_db(
+        n_compounds,
+        n_flasks,
+        n_reactions,
+        max_r_per_c,
+        "chemoton_test_refine_manual_reaction_selection",
+        max_n_products_per_r,
+        max_n_educts_per_r,
+        max_s_per_c,
+        max_steps_per_r,
+        barrier_limits,
+        n_inserts,
+    )
+    compounds = manager.get_collection("compounds")
+    flasks = manager.get_collection("flasks")
+    calculations = manager.get_collection("calculations")
+    structures = manager.get_collection("structures")
+    reactions = manager.get_collection("reactions")
+
+    # create calculation for each step
+    pre_model = db.Model("FAKE", "FAKE", "F-AKE")
+    elementary_steps = manager.get_collection("elementary_steps")
+    added_calculations = create_new_calculations(elementary_steps, calculations, pre_model, structures)
+
+    refine_model = db.Model("a", "b", "c", "d")
+    refine_model.solvation = "something"
+    refinement_gear = NetworkRefinement()
+    n_opt_calculations = create_fake_optimization_calculations(elementary_steps, refine_model, db.Side.LHS,
+                                                               refinement_gear.options.opt_job,
+                                                               refinement_gear.options.opt_job_settings,
+                                                               calculations, structures)
+    refinement_gear.options.pre_refine_model = pre_model
+    refinement_gear.options.post_refine_model = refine_model
+    refinement_gear.options.refinements = {
+        "refine_single_points": False,
+        "refine_optimizations": False,
+        "double_ended_refinement": False,
+        "double_ended_new_connections": False,
+        "refine_single_ended_search": False,
+        "refine_structures_and_irc": True,
+    }
+    random_reaction = reactions.get_one_reaction(dumps({}))
+    refinement_gear.options.max_barrier = 2001
+    refinement_gear.options.manual_reaction_selection = True
+    refinement_gear.options.reaction_ids_to_refine = [random_reaction.id()]
+
+    refinement_gear.options.transition_state_energy_window = 0.0
+    refinement_gear.options.jobs_to_wait_for = ["some_react_job"]
+    refinement_engine = Engine(manager.get_credentials(), fork=False)
+    refinement_engine.set_gear(refinement_gear)
+
+    refinement_engine.run(single=True)
+    assert calculations.count(dumps({})) == added_calculations + n_opt_calculations + 1
+    random_reaction.link(reactions)
+    lhs = random_reaction.get_reactants(db.Side.LHS)[0]
+    types = random_reaction.get_reactant_types(db.Side.LHS)[0]
+    aggregate = get_compound_or_flask(lhs[0], types[0], compounds, flasks)
+    structure = db.Structure(aggregate.get_centroid(), structures)
+    assert structure.has_calculation("scine_step_refinement")
+
+    # Cleaning
+    manager.wipe()
+
+
 def test_single_ended_refinement_set_up_optimizations():
     n_compounds = 10
     n_flasks = 0
@@ -979,6 +944,7 @@ def test_single_ended_refinement_set_up_optimizations():
     for calculation in calculations.iterate_all_calculations():
         calculation.link(calculations)
         s_id_set = s_id_set.union([s_id.string() for s_id in calculation.get_structures()])
+        calculation.set_status(db.Status.PENDING)
     n_unique_lhs = len(s_id_set)
 
     refine_model = db.Model("a", "b", "c", "d")
@@ -1003,7 +969,107 @@ def test_single_ended_refinement_set_up_optimizations():
     assert compounds.count(dumps({})) == n_compounds
     assert structures.count(dumps({})) == n_structures_before
     assert max_steps_per_r == 1
+    assert calculations.count(dumps({})) == added_calculations
+
+    for calculation in calculations.iterate_all_calculations():
+        calculation.link(calculations)
+        calculation.set_status(db.Status.COMPLETE)
+
+    for _ in range(5):
+        refinement_engine.run(single=True)
+
+    assert compounds.count(dumps({})) == n_compounds
+    assert structures.count(dumps({})) == n_structures_before
+    assert max_steps_per_r == 1
+    assert n_unique_lhs > 0
     assert calculations.count(dumps({})) == added_calculations + n_unique_lhs
     assert calculations.count(dumps({"$and": model_query(refine_model)})) == n_unique_lhs
+    # Cleaning
+    manager.wipe()
+
+
+def test_double_ended_refinement():
+    n_compounds = 10
+    n_flasks = 0
+    n_reactions = 5
+    max_r_per_c = 10
+    max_n_products_per_r = 3
+    max_n_educts_per_r = 2
+    max_s_per_c = 1
+    max_steps_per_r = 1  # must be kept to know the number of expected calculations
+    barrier_limits = (0.1, 100.0)
+    n_inserts = 3
+    manager = db_setup.get_random_db(
+        n_compounds,
+        n_flasks,
+        n_reactions,
+        max_r_per_c,
+        "chemoton_test_double_ended_refinement",
+        max_n_products_per_r,
+        max_n_educts_per_r,
+        max_s_per_c,
+        max_steps_per_r,
+        barrier_limits,
+        n_inserts,
+    )
+    compounds = manager.get_collection("compounds")
+    calculations = manager.get_collection("calculations")
+    structures = manager.get_collection("structures")
+    elementary_steps = manager.get_collection("elementary_steps")
+    n_structures_before = structures.count(dumps({}))
+
+    # create calculation for each step
+    pre_model = db.Model("FAKE", "FAKE", "F-AKE")
+    added_calculations = create_new_calculations(elementary_steps, calculations, pre_model, structures)
+    for calculation in calculations.iterate_all_calculations():
+        calculation.link(calculations)
+        calculation.set_status(db.Status.PENDING)
+
+    for step in elementary_steps.iterate_all_elementary_steps():
+        step.link(elementary_steps)
+        if step.get_type() == db.ElementaryStepType.REGULAR:
+            reactant_id = step.get_reactants(db.Side.LHS)[0][0]
+            s = db.Structure(reactant_id, structures)
+            atoms = s.get_atoms()
+            rpi = utils.bsplines.ReactionProfileInterpolation()
+            rpi.append_structure(atoms, 1.0)
+            rpi.append_structure(atoms, 1.0)
+            step.set_spline(rpi.spline(2, 1))
+
+    refine_model = db.Model("a", "b", "c", "d")
+    refine_model.solvation = "something"
+    refinement_gear = NetworkRefinement()
+    refinement_gear.options.pre_refine_model = pre_model
+    refinement_gear.options.post_refine_model = refine_model
+    refinement_gear.options.refinements = {
+        "refine_single_points": False,
+        "refine_optimizations": False,
+        "double_ended_refinement": True,
+        "double_ended_new_connections": False,
+        "refine_single_ended_search": False,
+        "refine_structures_and_irc": False,
+    }
+    refinement_gear.options.max_barrier = 2001.0
+    refinement_engine = Engine(manager.get_credentials(), fork=False)
+    refinement_engine.set_gear(refinement_gear)
+    for _ in range(5):
+        refinement_engine.run(single=True)
+
+    assert compounds.count(dumps({})) == n_compounds
+    assert max_steps_per_r == 1
+    assert structures.count(dumps({})) == n_structures_before
+    assert calculations.count(dumps({})) == added_calculations
+
+    for calculation in calculations.iterate_all_calculations():
+        calculation.link(calculations)
+        calculation.set_status(db.Status.COMPLETE)
+
+    for _ in range(5):
+        refinement_engine.run(single=True)
+
+    assert structures.count(dumps({})) == n_structures_before + n_reactions * 2
+    assert compounds.count(dumps({})) == n_compounds
+    assert calculations.count(dumps({})) == added_calculations + n_reactions
+    assert calculations.count(dumps({"$and": model_query(refine_model)})) == n_reactions
     # Cleaning
     manager.wipe()

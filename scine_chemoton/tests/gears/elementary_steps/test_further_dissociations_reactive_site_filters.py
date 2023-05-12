@@ -118,6 +118,11 @@ class FurtherDissociationsReactiveSiteFiltersTests(unittest.TestCase):
         allowed_coordinates = f.filter_reaction_coordinates(self.structure, self.test_coordinate)
         assert len(allowed_coordinates) == len(self.test_coordinate)
 
+        # respects disable
+        step.disable_exploration()
+        allowed_coordinates = f.filter_reaction_coordinates(self.structure, self.test_coordinate)
+        assert not allowed_coordinates
+
         # wrong coordinate is still outruled
         allowed_coordinates = f.filter_reaction_coordinates(self.structure, [[(0, 1), (1, 5)]])
         assert not allowed_coordinates

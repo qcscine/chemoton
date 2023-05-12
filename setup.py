@@ -2,6 +2,7 @@ from os import path
 from setuptools import setup, find_packages
 import sys
 
+
 # NOTE: This file must remain Python 2 compatible for the foreseeable future,
 # to ensure that we error out properly for people with outdated setuptools
 # and/or pip.
@@ -43,7 +44,8 @@ setup(
     author_email="scine@phys.chem.ethz.ch",
     url="https://www.scine.ethz.ch",
     python_requires=">={}".format(".".join(str(n) for n in min_version)),
-    packages=find_packages(exclude=["docs", "tests"]),
+    packages=find_packages(include=["scine_chemoton", "scine_chemoton.*"],
+                           exclude=["scine_chemoton.tests*"]),
     entry_points={
         "console_scripts": [
             # 'command = some.module:some_function',

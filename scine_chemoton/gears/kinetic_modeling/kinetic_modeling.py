@@ -36,14 +36,13 @@ class KineticModeling(Gear):
     The kinetic modeling can be run in a sleepy mode. In this mode, kinetic modeling jobs are only set up
     if all other jobs are terminated (not new, hold, or pending).
     """
-    class Options:
+    class Options(Gear.Options):
         """
         The options for the KineticModeling Gear.
         """
 
         __slots__ = (
             "cycle_time",
-            "model",
             "elementary_step_interval",
             "energy_label",
             "job",
@@ -58,12 +57,14 @@ class KineticModeling(Gear):
             "use_spline_barrier",
             "max_barrier",
             "min_barrier_intermolecular",
-            "instant_barrierless",
             "min_barrier_intramolecular",
-            "only_active_aggregates"
+            "min_flux_truncation",
+            "diffusion_controlled_barrierless",
+            "use_max_flux_for_truncation"
         )
 
         def __init__(self):
+            super().__init__()
             self.cycle_time = 30
             """
             int
@@ -83,11 +84,6 @@ class KineticModeling(Gear):
                 Set up a kinetic modeling job if at least this number of new
                 elementary steps were added to the network and are eligible according
                 to reaction-barrier cut-off, and electronic structure model.
-            """
-            self.model = db.Model("PM6", "", "")
-            """
-            db.Model
-                The electronic structure model to be used for the reaction rate determination.
             """
             self.energy_label = "electronic_energy"
             """
@@ -161,17 +157,29 @@ class KineticModeling(Gear):
             float
                 The minimum allowed barrier in kJ/mol for intramolecular reactions.
             """
-            self.only_active_aggregates = True
+            self.min_flux_truncation = 1e-9
+            """
+            float
+                Minimum flux of all aggregates in a reaction in a previous kinetic modeling job. If the flux is lower
+                than this threshold, the reaction is excluded from the kinetic modeling.
+            """
+            self.diffusion_controlled_barrierless = True
             """
             bool
-                If true, reactions are only included in the kinetic modeling if the lhs or rhs consists purely of
-                aggregates that are considered explorable.
+                If true, all barrierless reactions are assigned the maximum rate according to the
+                min_barrier_intramolecular and min_barrier_intermolecular settings.
+            """
+            self.use_max_flux_for_truncation = False
+            """
+            bool
+                If true, the maximum entry of all concentration fluxes for a given reaction is used for the flux based
+                truncation.
             """
 
     def __init__(self):
         super().__init__()
-        self.options = self.Options()
-        self._required_collections = ["calculations", "elementary_steps", "properties", "reactions", "structures"]
+        self._required_collections = ["calculations", "elementary_steps", "properties", "reactions", "structures",
+                                      "flasks", "compounds"]
         self._n_reactions_started_last = 0
 
     def _loop_impl(self):
@@ -182,6 +190,8 @@ class KineticModeling(Gear):
         # Run the kinetic modeling if all other calculations are done, independent on the elementary-step interval.
         n_calc_still_waiting = self._get_n_queuing_calculations()
         if self.options.sleeper_mode and n_calc_still_waiting > 0:
+            return
+        if self.options.sleeper_mode and not self._reaction_gear_finished():
             return
         n_qualified_reactions = 0
         if n_calc_still_waiting > 0 and not self.options.sleeper_mode:
@@ -214,6 +224,12 @@ class KineticModeling(Gear):
         }
         return self._calculations.count(dumps(selection))
 
+    def _reaction_gear_finished(self) -> bool:
+        selection = {
+            "reaction": ""
+        }
+        return self._elementary_steps.count(dumps(selection)) == 0
+
     def _get_n_qualified_reactions(self):
         n_qualified_reactions = 0
         for reaction in stop_on_timeout(self._reactions.iterate_reactions(dumps({}))):
@@ -233,6 +249,8 @@ class KineticModeling(Gear):
         return n_qualified_reactions
 
     def _set_up_job(self, n_qualified_reactions: int):
+        if self.stop_at_next_break_point:
+            return
         self._n_reactions_started_last = n_qualified_reactions
         job_factory = KineticModelingJobFactory(deepcopy(self.options.model), self._manager,
                                                 self.options.energy_label, self.options.job,
@@ -241,7 +259,9 @@ class KineticModeling(Gear):
                                                 self.options.use_spline_barrier, self.options.max_barrier,
                                                 self.options.min_barrier_intermolecular,
                                                 self.options.min_barrier_intramolecular,
-                                                self.options.only_active_aggregates)
+                                                self.options.min_flux_truncation, "",
+                                                self.options.diffusion_controlled_barrierless,
+                                                self.options.use_max_flux_for_truncation)
         settings = utils.ValueCollection({})
         settings["time_step"] = self.options.time_step
         settings["solver"] = self.options.solver

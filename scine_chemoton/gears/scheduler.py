@@ -41,7 +41,7 @@ class Scheduler(Gear):
     necessarily follow the chronological order of their generation.
     """
 
-    class Options:
+    class Options(Gear.Options):
         """
         The options for the Scheduler Gear.
         """
@@ -49,6 +49,7 @@ class Scheduler(Gear):
         __slots__ = ("cycle_time", "job_counts", "job_priorities")
 
         def __init__(self):
+            super().__init__()
             self.cycle_time = 10
             """
             int
@@ -59,42 +60,42 @@ class Scheduler(Gear):
             """
             self.job_counts: Dict[str, int] = {
                 "scine_geometry_optimization": 50,
+                "scine_ts_optimization": 50,
+                "scine_single_point": 50,
                 "scine_bond_orders": 50,
                 "graph": 100,
                 "scine_hessian": 10,
                 "scine_react_complex_afir": 10,
                 "scine_react_complex_nt": 10,
                 "scine_react_complex_nt2": 10,
+                "scine_step_refinement": 10,
                 "scine_dissociation_cut": 10,
                 "conformers": 2,
                 "final_conformer_deduplication": 2,
+                "kinetx_kinetic_modeling": 1,
+                "scine_bspline_optimization_job": 50,
             }
             """
             Dict[str, int]
                 The number of Calculations to be set to run at any given time.
                 Counts are given per order type (i.e. 'scine_hessian').
-                Defaults are:
-                scine_geometry_optimization: 50,
-                scine_bond_orders: 50,
-                graph: 100,
-                scine_hessian: 10,
-                scine_react_complex: 10,
-                conformers: 2
             """
             self.job_priorities: Dict[str, int] = {
                 "scine_geometry_optimization": 2,
                 "scine_ts_optimization": 2,
+                "scine_single_point": 5,
                 "scine_bond_orders": 2,
                 "graph": 2,
                 "scine_hessian": 2,
                 "scine_react_complex_afir": 5,
                 "scine_react_complex_nt": 5,
                 "scine_react_complex_nt2": 5,
+                "scine_step_refinement": 5,
                 "scine_dissociation_cut": 5,
                 "conformers": 2,
                 "final_conformer_deduplication": 2,
-                "scine_step_refinement": 5,
-                "scine_single_point": 5
+                "kinetx_kinetic_modeling": 1,
+                "scine_bspline_optimization_job": 5
             }
             """
             Dict[str, int]
@@ -102,21 +103,17 @@ class Scheduler(Gear):
                 Priorities are given per order type (i.e. 'scine_hessian').
                 A lower number corresponds to earlier execution.
                 The possible range of numbers is 1 to 10.
-                Defaults are:
-                scine_geometry_optimization: 2,
-                scine_bond_orders: 2,
-                graph: 2,
-                scine_hessian: 2,
-                scine_react_complex: 5,
-                conformers: 2
             """
 
     def __init__(self):
         super().__init__()
-        self.options = self.Options()
         self._required_collections = ["calculations"]
 
     def _loop_impl(self):
+        self._options_sanity_check()
+        selection = {"status": "hold"}
+        if self._calculations.get_one_calculation(dumps(selection)) is None:
+            return
         # Check how many calculations are scheduled to be run for each job type
         for order in self.options.job_counts:
             selection = {
@@ -126,24 +123,32 @@ class Scheduler(Gear):
                 ]
             }
             hits = 0
+            # Skip if no jobs of this order are allowed to run
             if hits >= self.options.job_counts[order]:
                 continue
-            # Count new jobs for the given order
-            for calculation in self._calculations.iterate_calculations(dumps(selection)):
-                hits += 1
-                if hits >= self.options.job_counts[order]:
+            # Skip if enough jobs are active
+            hits = self._calculations.count(dumps(selection))
+            if hits >= self.options.job_counts[order]:
+                continue
+            # If all new jobs were counted and there are free slots as defined by
+            #   the job_count start new jobs (set them from 'hold' to 'new')
+            selection = {"$and": [{"status": "hold"}, {"job.order": order}]}
+            diff = self.options.job_counts[order] - hits
+            for calculation in stop_on_timeout(self._calculations.iterate_calculations(dumps(selection))):
+                if self.stop_at_next_break_point:
+                    return
+                calculation.link(self._calculations)
+                # Sleep a bit in order not to make the DB choke
+                time.sleep(0.001)
+                calculation.set_status(db.Status.NEW)
+                calculation.set_priority(self.options.job_priorities[order])
+                diff -= 1
+                if diff <= 0:
                     break
-            else:
-                # If all new jobs were counted and there are free slots as defined by
-                #   the job_count start new jobs (set them from 'hold' to 'new')
-                selection = {"$and": [{"status": "hold"}, {"job.order": order}]}
-                diff = self.options.job_counts[order] - hits
-                for calculation in stop_on_timeout(self._calculations.iterate_calculations(dumps(selection))):
-                    calculation.link(self._calculations)
-                    # Sleep a bit in order not to make the DB choke
-                    time.sleep(0.001)
-                    calculation.set_status(db.Status.NEW)
-                    calculation.set_priority(self.options.job_priorities[order])
-                    diff -= 1
-                    if diff <= 0:
-                        break
+            if self.stop_at_next_break_point:
+                return
+
+    def _options_sanity_check(self):
+        for k in self.options.job_counts:
+            if k not in self.options.job_priorities:
+                raise ValueError(f"Missing key '{k}' in 'job_priorities'.")

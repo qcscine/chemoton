@@ -43,8 +43,8 @@ class ReactionTests(unittest.TestCase, HoldsCollections):
         steps = self._elementary_steps
 
         # set up 2 compounds
-        c1_id, s1_id = db_setup.insert_single_empty_structure_compound(manager, db.Label.USER_OPTIMIZED)
-        c2_id, s2_id = db_setup.insert_single_empty_structure_compound(manager, db.Label.MINIMUM_OPTIMIZED)
+        c1_id, s1_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.USER_OPTIMIZED)
+        c2_id, s2_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.USER_OPTIMIZED)
 
         # set up step between compounds
         step_one = self._add_new_regular_step([s1_id, s2_id], (70.0, 71.0))
@@ -71,7 +71,7 @@ class ReactionTests(unittest.TestCase, HoldsCollections):
         n_reactions = self._reactions.count(dumps({}))
         assert n_reactions == 1
         reaction = db.Reaction(reaction_from_one[0], self._reactions)
-        assert len(reaction.get_elementary_steps()) == 1
+        assert len(reaction.get_elementary_steps()) == 2
         assert not step_two.explore() and not step_two.analyze()
 
         # insert step with same structures and TS for the same reaction with different energy
@@ -86,7 +86,7 @@ class ReactionTests(unittest.TestCase, HoldsCollections):
         n_reactions = self._reactions.count(dumps({}))
         assert n_reactions == 1
         reaction = db.Reaction(compound_one.get_reactions()[0], self._reactions)
-        assert len(reaction.get_elementary_steps()) == 1
+        assert len(reaction.get_elementary_steps()) == 3
         assert not step_three.explore() and not step_three.analyze()
 
         # no deduplication with energy criterion
@@ -99,7 +99,7 @@ class ReactionTests(unittest.TestCase, HoldsCollections):
         n_reactions = self._reactions.count(dumps({}))
         assert n_reactions == 1
         reaction = db.Reaction(compound_one.get_reactions()[0], self._reactions)
-        assert len(reaction.get_elementary_steps()) == 2
+        assert len(reaction.get_elementary_steps()) == 3
         assert step_three.explore() and step_three.analyze()
 
     def test_barrierless_disable(self):
@@ -108,16 +108,21 @@ class ReactionTests(unittest.TestCase, HoldsCollections):
         manager = self._manager
 
         # set up 4 compounds
-        _, s1_id = db_setup.insert_single_empty_structure_compound(manager, db.Label.USER_OPTIMIZED)
-        _, s2_id = db_setup.insert_single_empty_structure_compound(manager, db.Label.MINIMUM_OPTIMIZED)
-        _, s3_id = db_setup.insert_single_empty_structure_compound(manager, db.Label.USER_OPTIMIZED)
-        _, s4_id = db_setup.insert_single_empty_structure_compound(manager, db.Label.MINIMUM_OPTIMIZED)
+        _, s1_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.USER_OPTIMIZED)
+        _, s2_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.MINIMUM_OPTIMIZED)
+        _, s3_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.USER_OPTIMIZED)
+        _, s4_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.MINIMUM_OPTIMIZED)
 
         # set up one step each between two pair of structures
         step0_regular_0 = self._add_new_regular_step([s1_id, s2_id])
         step1_free_0 = self._add_new_barrierless_step([s3_id, s4_id])
 
         reaction_gear = BasicReactionHousekeeping()
+        # disable deduplication
+        reaction_gear.options.use_structure_deduplication = False
+        reaction_gear.options.use_energy_deduplication = False
+        reaction_gear.options.use_rmsd_deduplication = False
+
         reaction_engine = Engine(manager.get_credentials(), fork=False)
         reaction_engine.set_gear(reaction_gear)
         reaction_engine.run(single=True)
@@ -187,8 +192,8 @@ class ReactionTests(unittest.TestCase, HoldsCollections):
         structures = manager.get_collection("structures")
 
         # set up 2 compounds
-        _, s1_id = db_setup.insert_single_empty_structure_compound(manager, db.Label.USER_OPTIMIZED)
-        _, s2_id = db_setup.insert_single_empty_structure_compound(manager, db.Label.MINIMUM_OPTIMIZED)
+        _, s1_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.USER_OPTIMIZED)
+        _, s2_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.MINIMUM_OPTIMIZED)
 
         # set up step between compounds
         step_one = self._add_new_regular_step([s1_id, s2_id], (70.0, 71.0))
@@ -203,6 +208,11 @@ class ReactionTests(unittest.TestCase, HoldsCollections):
         step_two.set_spline(spline)
 
         reaction_gear = BasicReactionHousekeeping()
+        # disable deduplication
+        reaction_gear.options.use_structure_deduplication = False
+        reaction_gear.options.use_energy_deduplication = False
+        reaction_gear.options.use_rmsd_deduplication = False
+
         reaction_engine = Engine(manager.get_credentials(), fork=False)
         reaction_engine.set_gear(reaction_gear)
         reaction_engine.run(single=True)
@@ -236,11 +246,11 @@ class ReactionTests(unittest.TestCase, HoldsCollections):
         structures = manager.get_collection("structures")
 
         # set up 2 compounds
-        _, s1_id = db_setup.insert_single_empty_structure_compound(manager, db.Label.USER_OPTIMIZED)
-        a2_id, s2_id = db_setup.insert_single_empty_structure_compound(manager, db.Label.MINIMUM_OPTIMIZED)
-        _, duplicate_id = db_setup.insert_single_empty_structure_compound(manager, db.Label.DUPLICATE)
+        _, s1_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.USER_OPTIMIZED)
+        a2_id, s2_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.MINIMUM_OPTIMIZED)
+        _, duplicate_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.DUPLICATE)
         duplicate = db.Structure(duplicate_id, structures)
-        duplicate.set_as_duplicate_of(s2_id)
+        duplicate.set_original(s2_id)
         duplicate.set_aggregate(a2_id)
         step = self._add_new_regular_step([s1_id, duplicate_id], (70.0, 71.0))
 

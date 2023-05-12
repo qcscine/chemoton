@@ -7,21 +7,20 @@ See LICENSE.txt for details.
 
 # Standard library imports
 import time
-from copy import deepcopy
+from collections import defaultdict
 from itertools import combinations, product
-from typing import Iterator, List, Tuple, Optional
+from typing import Dict, Iterator, List, Tuple, Optional, Generator
 from json import dumps
 
 # Third party imports
+from numpy import ndarray
 import scine_database as db
 import scine_utilities as utils
 
 # Local application imports
-from ....utilities.queries import model_query, select_calculation_by_structures
-from ....utilities.calculation_creation_helpers import finalize_calculation
-from ..reactive_site_filters import ReactiveSiteFilter
+from scine_chemoton.utilities.queries import model_query, calculation_exists_in_structure, get_calculation_id
 from .connectivity_analyzer import ReactionType, ConnectivityAnalyzer
-from . import TrialGenerator
+from . import TrialGenerator, _sanity_check_wrapper
 
 
 class FragmentBased(TrialGenerator):
@@ -46,16 +45,15 @@ class FragmentBased(TrialGenerator):
         complex.
     """
 
-    class Options:
+    class Options(TrialGenerator.Options):
         """
         The options for the fragment-based reactive complex enumeration.
         """
 
         __slots__ = (
-            "model",
-            "unimolecular_dissociation",
-            "unimolecular_association",
-            "bimolecular_association",
+            "unimolecular_dissociation_options",
+            "unimolecular_association_options",
+            "bimolecular_association_options",
         )
 
         class BimolAssociationOptions:
@@ -232,38 +230,70 @@ class FragmentBased(TrialGenerator):
                     `consider_diatomic_fragments` is `True`. (default: 1)
                 """
 
-        def __init__(self):
-            self.model: db.Model = db.Model("PM6", "", "")
-            """
-            db.Model (Scine::Database::Model)
-                The Model used to evaluate the possible reactions.
-                The default is: PM6 using Sparrow.
-            """
-            self.unimolecular_dissociation = self.UnimolDissociationOptions()
+        def __init__(self, parent: Optional[TrialGenerator] = None):
+            super().__init__(parent)
+            self.unimolecular_dissociation_options = self.UnimolDissociationOptions()
             """
             UnimolDissociationOptions
                 The settings for reactions involving a single molecule, that are
                 set up to be dissociative in nature.
             """
-            self.unimolecular_association = self.UnimolAssociationOptions()
+            self.unimolecular_association_options = self.UnimolAssociationOptions()
             """
             UnimolAssociationOptions
                 The settings for reactions involving a single molecule, that are
                 set up to be associative in nature.
             """
-            self.bimolecular_association = self.BimolAssociationOptions()
+            self.bimolecular_association_options = self.BimolAssociationOptions()
             """
             BimolAssociationOptions
                 The settings for reactions involving two molecules, that are set up
                 to be associative in nature.
             """
 
-    def __init__(self):
-        super().__init__()
-        self.options = self.Options()
-        self.reactive_site_filter = ReactiveSiteFilter()
+    def clear_cache(self):
+        pass
 
-    def bimolecular_reactions(self, structure_list: List[db.Structure]):
+    @_sanity_check_wrapper
+    def bimolecular_coordinates(self, structure_list: List[db.Structure], with_exact_settings_check: bool = False) \
+            -> Dict[
+        Tuple[List[Tuple[int, int]], int],
+        List[Tuple[ndarray, ndarray, float, float]]
+    ]:
+        # Check number of compounds
+        if len(structure_list) != 2:
+            raise RuntimeError("Exactly two structures are needed for setting up an intermolecular reaction.")
+        if self._quick_bimolecular_already_exists(structure_list, do_fast_query=not with_exact_settings_check):
+            return {}
+        result = defaultdict(list)
+        for (
+                inter_pairs,
+                align1,
+                align2,
+                rot,
+                spread,
+        ) in self._generate_bimolecular_coordinates(structure_list):
+            # 0 because n_diss is always 0 for fragment based
+            result[(inter_pairs, 0)].append((align1, align2, rot, spread))
+        return result
+
+    def _quick_bimolecular_already_exists(self, structure_list: List[db.Structure], do_fast_query: bool) -> bool:
+        """
+            If there is a reactive complex calculation for the same structures, return True
+        """
+        if not do_fast_query:
+            return False
+        structure_id_list = [structure.id() for structure in structure_list]
+        return calculation_exists_in_structure(
+            self.get_bimolecular_job_order(),
+            structure_id_list,
+            self.options.model,
+            self._structures,
+            self._calculations
+        )
+
+    @_sanity_check_wrapper
+    def bimolecular_reactions(self, structure_list: List[db.Structure], with_exact_settings_check: bool = False):
         """
         Creates reactive complex calculations corresponding to the bimolecular
         reactions between the structures if there is not already a calculation
@@ -274,6 +304,11 @@ class FragmentBased(TrialGenerator):
         structure_list :: List[db.Structure]
             List of the two structures to be considered.
             The Structures have to be linked to a database.
+        with_exact_settings_check :: bool
+            If True, more expensive queries are carried out to check if the settings of the
+            calculations are exactly the same as the settings of the trial generator. This allows to add more
+            inclusive additional reaction trials but the queries are less efficient, therefore this option
+            should be only toggled if necessary.
         """
         # Check number of compounds
         if len(structure_list) != 2:
@@ -282,36 +317,70 @@ class FragmentBased(TrialGenerator):
         structure_id_list = [s.id() for s in structure_list]
 
         # If there is a reactive complex calculation for the same structures, return
-        selection = select_calculation_by_structures(
-            self.options.bimolecular_association.job.order,
-            structure_id_list,
-            self.options.model)
-        if self._calculations.get_one_calculation(dumps(selection)) is not None:
+        if self._quick_bimolecular_already_exists(structure_list, do_fast_query=not with_exact_settings_check):
             return
 
+        new_calculation_ids = []
+        # add calculations
+        for (
+                inter_pairs,
+                align1,
+                align2,
+                rot,
+                spread,
+        ) in self._generate_bimolecular_coordinates(structure_list):
+            # First element of interstructural pair belongs to first structure and second to second
+            # Indexes in the rhs and lhs list refer to the individual structures so no shifting necessary
+            lhs = list(set(pair[0] for pair in inter_pairs))
+            rhs = list(set(pair[1] for pair in inter_pairs))
+            # Set up calculation because no further intrastructural components supported
+            cid = self._add_reactive_complex_calculation(
+                structure_id_list,
+                ReactionType.Associative,
+                lhs,
+                rhs,
+                self.options.bimolecular_association_options.job,
+                self.options.bimolecular_association_options.job_settings,
+                list(align1),
+                list(align2),
+                rot,
+                spread,
+                0.0,
+                check_for_existing=with_exact_settings_check
+            )
+            if cid is not None:
+                new_calculation_ids.append(cid)
+        if new_calculation_ids:
+            for s in structure_list:
+                s.add_calculations(self.get_bimolecular_job_order(), [new_calculation_ids[0]])
+
+    def _generate_bimolecular_coordinates(self, structure_list: List[db.Structure]) -> Generator[
+        Tuple[List[Tuple[int, int]], ndarray, ndarray, float, float], None, None
+    ]:
         # Get single reactive atoms per structure
-        reactive_monoatomic1 = self.reactive_site_filter.filter_atoms(
-            [structure_list[0]], range(structure_list[0].get_atoms().size())
+        n_atoms1 = structure_list[0].get_atoms().size()
+        n_atoms2 = structure_list[1].get_atoms().size()
+        reactive_atoms = self.reactive_site_filter.filter_atoms(
+            structure_list, list(range(n_atoms1)) + [i + n_atoms1 for i in range(n_atoms2)]
         )
-        reactive_monoatomic2 = self.reactive_site_filter.filter_atoms(
-            [structure_list[1]], range(structure_list[1].get_atoms().size())
-        )
+        reactive_monoatomic1 = [i for i in reactive_atoms if i < n_atoms1]
+        reactive_monoatomic2 = [i - n_atoms1 for i in reactive_atoms if i >= n_atoms1]
         # Get reactive pairs within each structure in agreement with distance settings
         reactive_diatomic1 = []
         reactive_diatomic2 = []
 
-        if self.options.bimolecular_association.consider_diatomic_fragments:
+        if self.options.bimolecular_association_options.consider_diatomic_fragments:
             connectivity_analyzer1 = ConnectivityAnalyzer(structure_list[0])
             connectivity_analyzer2 = ConnectivityAnalyzer(structure_list[1])
             reactive_diatomic1 = self._get_intrastructural_pairs(
                 connectivity_analyzer1,
                 reactive_monoatomic1,
-                (1, self.options.bimolecular_association.max_within_fragment_graph_distance),
+                (1, self.options.bimolecular_association_options.max_within_fragment_graph_distance),
             )
             reactive_diatomic2 = self._get_intrastructural_pairs(
                 connectivity_analyzer2,
                 reactive_monoatomic2,
-                (1, self.options.bimolecular_association.max_within_fragment_graph_distance),
+                (1, self.options.bimolecular_association_options.max_within_fragment_graph_distance),
             )
 
         # Generate reactive pair combinations across the two structures from reactive sites
@@ -339,115 +408,76 @@ class FragmentBased(TrialGenerator):
             align2,
             rot,
             spread,
-        ) in self.options.bimolecular_association.complex_generator.generate_reactive_complexes(
+        ) in self.options.bimolecular_association_options.complex_generator.generate_reactive_complexes(
             structure_list[0], structure_list[1], inter_coords
         ):
-            # First element of interstructural pair belongs to first structure and second to second
-            # Indexes in the rhs and lhs list refer to the individual structures so no shifting necessary
-            lhs = list(set(pair[0] for pair in inter_pairs))
-            rhs = list(set(pair[1] for pair in inter_pairs))
-            # Set up calculation bc no further intrastructural components supported
-            self._add_reactive_complex_calculation(
-                structure_id_list,
-                ReactionType.Associative,
-                lhs,
-                rhs,
-                self.options.bimolecular_association.job,
-                self.options.bimolecular_association.job_settings,
-                list(align1),
-                list(align2),
-                rot,
-                spread,
-                0.0,
-            )
-        return
+            yield inter_pairs, align1, align2, rot, spread
 
-    def unimolecular_reactions(self, structure: db.Structure):
+    def _quick_unimolecular_already_exists(self, structure: db.Structure, do_fast_query: bool) -> bool:
         """
-        Creates reactive complex calculations corresponding to the unimolecular
-        reactions of the structure if there is not already a calculation to
-        search for a reaction of the same structure with the same job order.
-
-        Parameters
-        ----------
-        structure :: db.Structure
-            The structure to be considered. The Structure has to
-            be linked to a database.
+            If there is a reactive complex calculation for the same structures, return True
         """
-
         # Rule out compounds too small for intramolecular reactions right away
         atoms = structure.get_atoms()
-        structure_id = structure.id()
         # No intramolecular reactions for monoatomic compounds
         if atoms.size() == 1:
-            return
+            return True
         # Only consider diatomic structures if dissociations are to be considered
-        if atoms.size() == 2 and not self.options.unimolecular_dissociation.enabled:
-            return
+        if atoms.size() == 2 and not self.options.unimolecular_dissociation_options.enabled:
+            return True
+        # check later for complete check
+        if not do_fast_query:
+            return False
+        return calculation_exists_in_structure(
+            self.get_unimolecular_job_order(),
+            [structure.id()],
+            self.options.model,
+            self._structures,
+            self._calculations
+        )
 
-        # Check whether there is a reactive complex calculation for the same structure already
-        if self.options.unimolecular_dissociation.enabled:
-            selection = {
-                "$and": [
-                    {"job.order": {"$eq": self.options.unimolecular_dissociation.job.order}},
-                    {"structures": [{"$oid": structure_id.string()}]},
-                    *model_query(self.options.model)
-                ]
-            }
-            if self._calculations.get_one_calculation(dumps(selection)) is not None:
-                return
-        if self.options.unimolecular_association.enabled:
-            selection = {
-                "$and": [
-                    {"job.order": {"$eq": self.options.unimolecular_association.job.order}},
-                    {"structures": [{"$oid": structure_id.string()}]},
-                    *model_query(self.options.model)
-                ]
-            }
-            if self._calculations.get_one_calculation(dumps(selection)) is not None:
-                return
+    @_sanity_check_wrapper
+    def unimolecular_coordinates(self, structure: db.Structure, with_exact_settings_check: bool = False) \
+            -> List[Tuple[List[List[Tuple[int, int]]], int]]:
+        if self._quick_unimolecular_already_exists(structure, do_fast_query=not with_exact_settings_check):
+            return []
 
+        result = []
+
+        atoms = structure.get_atoms()
         connectivity_analyzer = ConnectivityAnalyzer(structure)
         reactive_atoms = self.reactive_site_filter.filter_atoms([structure], list(range(atoms.size())))
 
         # Associative reactions
-        if self.options.unimolecular_association.enabled:
+        if self.options.unimolecular_association_options.enabled:
             # Atom on atom
             # Pairs allowed wrt distance bound options
             monoatomic_fragment_pairs = self._get_intrastructural_pairs(
                 connectivity_analyzer,
                 reactive_atoms,
                 (
-                    self.options.unimolecular_association.min_inter_fragment_graph_distance,
-                    self.options.unimolecular_association.max_inter_fragment_graph_distance,
+                    self.options.unimolecular_association_options.min_inter_fragment_graph_distance,
+                    self.options.unimolecular_association_options.max_inter_fragment_graph_distance,
                 ),
             )
             filtered_monoatomic_fragment_pairs = self.reactive_site_filter.filter_atom_pairs(
                 [structure], monoatomic_fragment_pairs
             )
             atom_on_atom_coordinates = [[pair] for pair in filtered_monoatomic_fragment_pairs]
-            for coord in self.reactive_site_filter.filter_reaction_coordinates([structure], atom_on_atom_coordinates):
+            filtered_coords = self.reactive_site_filter.filter_reaction_coordinates([structure],
+                                                                                    atom_on_atom_coordinates)
+            for coord in filtered_coords:
+                # sanity check
                 if len(coord) != 1:
                     # Should not be reached
                     raise RuntimeError("Monoatomic fragment coordinate has to be of length one.")
-                # Determine reaction type for intramolecular reactions
-                reaction_type = connectivity_analyzer.get_reaction_type(coord)
-                # If indeed associative (should be if min_graph_distance was set to > 1)
-                if reaction_type == ReactionType.Associative:
-                    self._add_reactive_complex_calculation(
-                        [structure_id],
-                        reaction_type,
-                        [coord[0][0]],
-                        [coord[0][1]],
-                        self.options.unimolecular_association.job,
-                        self.options.unimolecular_association.job_settings,
-                    )
+            result.append((filtered_coords, 0))
             # Diatomic fragments
-            if self.options.unimolecular_association.consider_diatomic_fragments:
+            if self.options.unimolecular_association_options.consider_diatomic_fragments:
                 diatomic_fragments = self._get_intrastructural_pairs(
                     connectivity_analyzer,
                     reactive_atoms,
-                    (1, self.options.unimolecular_association.max_within_fragment_graph_distance),
+                    (1, self.options.unimolecular_association_options.max_within_fragment_graph_distance),
                 )
                 # Monoatomic to diatomic (e.g. "atom on bond" if max_within_fragment_graph_distance==1)
                 for atom in reactive_atoms:
@@ -457,13 +487,13 @@ class FragmentBased(TrialGenerator):
                         # Check whether both atoms of the diatomic fragment respect the distance bounds wrt the
                         # monoatomic fragment
                         if not self._check_all_inter_fragment_distances(
-                            connectivity_analyzer,
-                            [atom],
-                            frag,
-                            (
-                                self.options.unimolecular_association.min_inter_fragment_graph_distance,
-                                self.options.unimolecular_association.max_inter_fragment_graph_distance,
-                            ),
+                                connectivity_analyzer,
+                                [atom],
+                                list(frag),
+                                (
+                                    self.options.unimolecular_association_options.min_inter_fragment_graph_distance,
+                                    self.options.unimolecular_association_options.max_inter_fragment_graph_distance,
+                                ),
                         ):
                             continue
                         coord = [(atom, frag[0]), (atom, frag[1])]
@@ -474,14 +504,7 @@ class FragmentBased(TrialGenerator):
                         if len(self.reactive_site_filter.filter_reaction_coordinates([structure], [coord])) != 1:
                             continue
                         if connectivity_analyzer.get_reaction_type(coord) == ReactionType.Associative:
-                            self._add_reactive_complex_calculation(
-                                [structure_id],
-                                ReactionType.Associative,
-                                [atom],
-                                frag,
-                                self.options.unimolecular_association.job,
-                                self.options.unimolecular_association.job_settings,
-                            )
+                            result.append(([coord], 0))
                 # Diatomic to diatomic (e.g. "bond on bond" if max_within_fragment_graph_distance==1)
                 for frag1, frag2 in combinations(diatomic_fragments, 2):
                     if len(set(frag1 + frag2)) < 4:
@@ -489,13 +512,13 @@ class FragmentBased(TrialGenerator):
                         continue
                     # All possible pair interpretations between the two fragments shall respect the distance bounds
                     if not self._check_all_inter_fragment_distances(
-                        connectivity_analyzer,
-                        frag1,
-                        frag2,
-                        (
-                            self.options.unimolecular_association.min_inter_fragment_graph_distance,
-                            self.options.unimolecular_association.max_inter_fragment_graph_distance,
-                        ),
+                            connectivity_analyzer,
+                            frag1,
+                            frag2,
+                            (
+                                self.options.unimolecular_association_options.min_inter_fragment_graph_distance,
+                                self.options.unimolecular_association_options.max_inter_fragment_graph_distance,
+                            ),
                     ):
                         continue
 
@@ -503,14 +526,15 @@ class FragmentBased(TrialGenerator):
                     shuffled_coord = [(frag1[0], frag2[1]), (frag1[1], frag2[0])]
                     # Check whether any of the reactive pair interpretations is reactive
                     if (
-                        len(self.reactive_site_filter.filter_atom_pairs([structure], coord)) < 2
-                        and len(self.reactive_site_filter.filter_atom_pairs([structure], shuffled_coord)) < 2
+                            len(self.reactive_site_filter.filter_atom_pairs([structure], coord)) < 2
+                            and len(self.reactive_site_filter.filter_atom_pairs([structure], shuffled_coord)) < 2
                     ):
                         continue
                     # Check whether any of the reaction coordinate interpretations is reactive
                     if (
-                        len(self.reactive_site_filter.filter_reaction_coordinates([structure], [coord, shuffled_coord]))
-                        == 0
+                            len(self.reactive_site_filter.filter_reaction_coordinates([structure],
+                                                                                      [coord, shuffled_coord]))
+                            == 0
                     ):
                         continue
                     # Only consider if there is no direct bond between fragments
@@ -518,17 +542,10 @@ class FragmentBased(TrialGenerator):
                         continue
                     if connectivity_analyzer.get_reaction_type(shuffled_coord) != ReactionType.Associative:
                         continue
-                    self._add_reactive_complex_calculation(
-                        [structure_id],
-                        ReactionType.Associative,
-                        frag1,
-                        frag2,
-                        self.options.unimolecular_association.job,
-                        self.options.unimolecular_association.job_settings,
-                    )
+                    result.append(([coord], 0))
 
         # Dissociative reactions
-        if self.options.unimolecular_dissociation.enabled:
+        if self.options.unimolecular_dissociation_options.enabled:
             # Only adjacent (i.e. with a graph distance of 1) atoms are made subject to dissociation
             diss_pairs = self._get_intrastructural_pairs(connectivity_analyzer, reactive_atoms, (1, 1))
             # Filter wrt pair filter
@@ -544,29 +561,118 @@ class FragmentBased(TrialGenerator):
                     raise RuntimeError(
                         "Only one simultaneous dissociation supported in fragment based trial generator."
                     )
-                i = coord[0][0]
-                j = coord[0][1]
-                # Determine reaction type for intramolecular reactions
-                reaction_type = connectivity_analyzer.get_reaction_type([(i, j)])
-                # Add calculation
-                if reaction_type == ReactionType.Dissociative:
-                    self._add_reactive_complex_calculation(
-                        [structure_id],
-                        reaction_type,
-                        [i],
-                        [j],
-                        self.options.unimolecular_dissociation.job,
-                        self.options.unimolecular_dissociation.job_settings_dissociative,
-                    )
-                if reaction_type == ReactionType.Disconnective:
-                    self._add_reactive_complex_calculation(
-                        [structure_id],
-                        reaction_type,
-                        [i],
-                        [j],
-                        self.options.unimolecular_dissociation.job,
-                        self.options.unimolecular_dissociation.job_settings_disconnective,
-                    )
+            result.append((filtered_coords, 1))
+
+        return result
+
+    def get_unimolecular_job_order(self) -> str:
+        if self.options.unimolecular_dissociation_options.enabled and \
+                self.options.unimolecular_association_options.enabled:
+            assert self.options.unimolecular_dissociation_options.job.order == \
+                self.options.unimolecular_association_options.job.order
+            return self.options.unimolecular_association_options.job.order
+        elif self.options.unimolecular_dissociation_options.enabled:
+            return self.options.unimolecular_dissociation_options.job.order
+        elif self.options.unimolecular_association_options.enabled:
+            return self.options.unimolecular_association_options.job.order
+        else:
+            raise RuntimeError('No reactions enabled, cannot report job order.')
+
+    def get_bimolecular_job_order(self) -> str:
+        return self.options.bimolecular_association_options.job.order
+
+    @_sanity_check_wrapper
+    def unimolecular_reactions(self, structure: db.Structure, with_exact_settings_check: bool = False):
+        """
+        Creates reactive complex calculations corresponding to the unimolecular
+        reactions of the structure if there is not already a calculation to
+        search for a reaction of the same structure with the same job order.
+
+        Parameters
+        ----------
+        structure :: db.Structure
+            The structure to be considered. The Structure has to
+            be linked to a database.
+        with_exact_settings_check :: bool
+            If True, more expensive queries are carried out to check if the settings of the
+            calculations are exactly the same as the settings of the trial generator. This allows to add more
+            inclusive additional reaction trials but the queries are less efficient, therefore this option
+            should be only toggled if necessary.
+        """
+        if self.options.unimolecular_dissociation_options.enabled and \
+                self.options.unimolecular_association_options.enabled:
+            assert self.options.unimolecular_dissociation_options.job.order == \
+                self.options.unimolecular_association_options.job.order
+        if self._quick_unimolecular_already_exists(structure, do_fast_query=not with_exact_settings_check):
+            return
+        structure_id = structure.id()
+
+        # Check whether there is a reactive complex calculation for the same structure already
+        if self.options.unimolecular_dissociation_options.enabled:
+            selection = {
+                "$and": [
+                    {"job.order": {"$eq": self.options.unimolecular_dissociation_options.job.order}},
+                    {"structures": [{"$oid": structure_id.string()}]},
+                    *model_query(self.options.model)
+                ]
+            }
+            if self._calculations.get_one_calculation(dumps(selection)) is not None:
+                return
+        if self.options.unimolecular_association_options.enabled:
+            selection = {
+                "$and": [
+                    {"job.order": {"$eq": self.options.unimolecular_association_options.job.order}},
+                    {"structures": [{"$oid": structure_id.string()}]},
+                    *model_query(self.options.model)
+                ]
+            }
+            if self._calculations.get_one_calculation(dumps(selection)) is not None:
+                return
+
+        reaction_coordinates = self.unimolecular_coordinates(structure, with_exact_settings_check)
+        connectivity_analyzer = ConnectivityAnalyzer(structure)
+
+        def n_diss_error(r_type: ReactionType, n: int) -> str:
+            return f"Analyzed reaction type to be {r_type}, but reaction coordinate " \
+                   f"specifies {n} dissociations, this should not be possible in " \
+                   f"{self.__class__.__name__}"
+
+        new_calculation_ids = []
+        for coordinates, n_diss in reaction_coordinates:
+            for coord in coordinates:
+                reaction_type = connectivity_analyzer.get_reaction_type(coord)
+                if reaction_type == ReactionType.Associative:
+                    if n_diss != 0:
+                        raise RuntimeError(n_diss_error(reaction_type, n_diss))
+                    job = self.options.unimolecular_association_options.job
+                    settings = self.options.unimolecular_association_options.job_settings
+                elif reaction_type == ReactionType.Dissociative:
+                    if n_diss == 0:
+                        raise RuntimeError(n_diss_error(reaction_type, n_diss))
+                    job = self.options.unimolecular_dissociation_options.job
+                    settings = self.options.unimolecular_dissociation_options.job_settings_dissociative
+                elif reaction_type == ReactionType.Disconnective:
+                    if n_diss == 0:
+                        raise RuntimeError(n_diss_error(reaction_type, n_diss))
+                    job = self.options.unimolecular_dissociation_options.job
+                    settings = self.options.unimolecular_dissociation_options.job_settings_disconnective
+                else:
+                    raise RuntimeError(f"Unknown reaction type {reaction_type}")
+                lhs = list(set([c[0] for c in coord]))
+                rhs = list(set([c[1] for c in coord]))
+                cid = self._add_reactive_complex_calculation(
+                    [structure_id],
+                    reaction_type,
+                    lhs,
+                    rhs,
+                    job,
+                    settings,
+                    check_for_existing=with_exact_settings_check
+                )
+                if cid is not None:
+                    new_calculation_ids.append(cid)
+        if new_calculation_ids:
+            structure.add_calculations(self.get_unimolecular_job_order(), [new_calculation_ids[0]])
 
     def _add_reactive_complex_calculation(
         self,
@@ -581,7 +687,8 @@ class FragmentBased(TrialGenerator):
         x_rotation: Optional[float] = None,
         spread: Optional[float] = None,
         displacement: Optional[float] = None,
-    ):
+        check_for_existing: bool = False,
+    ) -> Optional[db.ID]:
         """
         Adds a reactive calculation to the database and puts it on hold.
 
@@ -626,30 +733,31 @@ class FragmentBased(TrialGenerator):
             adds a random displacement to all atoms (random direction, random
             length). The maximum length of this displacement (per atom) is set to
             be the value of this option.
+        check_for_existing :: bool
+            Whether it should be checked if a calculation with these exact
+            settings and model already exists or not (default: False)
         """
         model = self.options.model
-        calculation = db.Calculation()
-        calculation.link(self._calculations)
-        calculation.create(model, job, reactive_structures)
+        this_settings = self._get_settings(settings)
         # Sleep a bit in order not to make the DB choke
         time.sleep(0.001)
         if lhs_alignment is not None:
-            settings["rc_x_alignment_0"] = lhs_alignment
+            this_settings["rc_x_alignment_0"] = lhs_alignment
         if rhs_alignment is not None:
-            settings["rc_x_alignment_1"] = rhs_alignment
+            this_settings["rc_x_alignment_1"] = rhs_alignment
         if x_rotation is not None:
-            settings["rc_x_rotation"] = x_rotation
+            this_settings["rc_x_rotation"] = x_rotation
         if spread is not None:
-            settings["rc_x_spread"] = spread
+            this_settings["rc_x_spread"] = spread
         if displacement is not None:
-            settings["rc_displacement"] = displacement
+            this_settings["rc_displacement"] = displacement
         if job.order == "scine_react_complex_afir":
-            settings["afir_afir_rhs_list"] = rhs_list
-            settings["afir_afir_lhs_list"] = lhs_list
+            this_settings["afir_afir_rhs_list"] = rhs_list
+            this_settings["afir_afir_lhs_list"] = lhs_list
             # Repulsive for dissociations
-            settings["afir_afir_attractive"] = not bool(reaction_type.value)
+            this_settings["afir_afir_attractive"] = not bool(reaction_type.value)
             # Use maximum fragment distance if disconnective
-            settings["afir_afir_use_max_fragment_distance"] = bool(reaction_type == ReactionType.Disconnective)
+            this_settings["afir_afir_use_max_fragment_distance"] = bool(reaction_type == ReactionType.Disconnective)
             if reaction_type == ReactionType.Disconnective:
                 # Set fragment distance for convergence to 3*sum of maximum covalent radii within i and j
                 struct = db.Structure(reactive_structures[0])
@@ -659,15 +767,15 @@ class FragmentBased(TrialGenerator):
                     max(utils.ElementInfo.covalent_radius(atoms.get_element(atom_index)) for atom_index in frag)
                     for frag in (rhs_list, lhs_list)
                 ]
-                settings["afir_afir_max_fragment_distance"] = 3 * sum(covalent_max)
+                this_settings["afir_afir_max_fragment_distance"] = 3 * sum(covalent_max)
             else:
-                del settings["afir_afir_max_fragment_distance"]
+                del this_settings["afir_afir_max_fragment_distance"]
 
         elif job.order == "scine_react_complex_nt":
-            settings["nt_nt_rhs_list"] = rhs_list
-            settings["nt_nt_lhs_list"] = lhs_list
+            this_settings["nt_nt_rhs_list"] = rhs_list
+            this_settings["nt_nt_lhs_list"] = lhs_list
             # Repulsive for dissociations; attractive (False) for dissociative/disconnective
-            settings["nt_nt_attractive"] = not bool(reaction_type.value)
+            this_settings["nt_nt_attractive"] = not bool(reaction_type.value)
         else:
             raise RuntimeError(
                 "Only 'scine_react_complex_afir' and 'scine_react_complex_nt' "
@@ -675,11 +783,20 @@ class FragmentBased(TrialGenerator):
             )
 
         if len(reactive_structures) > 1:
-            settings["rc_minimal_spin_multiplicity"] = bool(
-                self.options.bimolecular_association.minimal_spin_multiplicity
+            this_settings["rc_minimal_spin_multiplicity"] = bool(
+                self.options.bimolecular_association_options.minimal_spin_multiplicity
             )
-        calculation.set_settings(deepcopy(settings))
-        finalize_calculation(calculation, self._structures)
+
+        if check_for_existing and get_calculation_id(job.order, reactive_structures, model,
+                                                     self._calculations, settings=this_settings) is not None:
+            return None
+
+        calculation = db.Calculation()
+        calculation.link(self._calculations)
+        calculation.create(model, job, reactive_structures)
+        calculation.set_settings(this_settings)
+        calculation.set_status(db.Status.HOLD)
+        return calculation.id()
 
     def _generate_inter_reactive_coords(
         self,

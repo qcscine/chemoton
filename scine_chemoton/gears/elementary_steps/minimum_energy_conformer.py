@@ -7,6 +7,7 @@ See LICENSE.txt for details.
 
 # Standard library imports
 from typing import Tuple, List
+import math
 
 # Third party imports
 import scine_database as db
@@ -31,9 +32,12 @@ class MinimumEnergyConformerElementarySteps(ElementaryStepGear):
     ----------
     options :: Options
         The options for the gear.
-    compound_filter :: scine_chemoton.gears.elementary_steps.compound_filter.CompoundFilter
+    aggregate_filter :: scine_chemoton.gears.elementary_steps.aggregate_filters.AggregateFilter
         A filter for allowed reaction combinations, per default everything
         is permitted, no filter is applied.
+    trial_generator :: TrialGenerator
+        The generator to set up elementary step trial calculations by enumerating
+        reactive complexes and trial reaction coordinates
 
     Notes
     -----
@@ -49,35 +53,34 @@ class MinimumEnergyConformerElementarySteps(ElementaryStepGear):
         structure  with the same job order
     """
 
+    class Options(ElementaryStepGear.Options):
+
+        __slots__ = ("energy_upper_bound", "max_number_structures")
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.energy_upper_bound = 12.0
+            """
+            float
+                Upper bound for the energy difference to the conformer with the lowest energy to
+                be considered in the reaction trial generation (in kJ/mol). Default is 12 kJ/mol
+                which corresponds to an occupation change of ~ 1 % (according to their Boltzmann
+                exponential factors).
+            """
+            self.max_number_structures = math.inf
+            """
+            int
+                The maximum number of structures considered for each compound.
+            """
+
+    options: Options
+
     def __init__(self):
-        import math
         super().__init__()
-        """
-        bool
-            If `True`, enables the exploration of bimolecular reactions.
-        """
-        self.model = db.Model("PM6", "PM6", "")
-        """
-        db.Model (Scine::Database::Model)
-            The Model determining the energies for the energy comparison.
-        """
         self._energy_label = "electronic_energy"
         """
         str
             The property label for the energy property.
-        """
-        self.energy_upper_bound = 12.0
-        """
-        float
-            Upper bound for the energy difference to the conformer with the lowest energy to
-            be considered in the reaction trial generation (in kJ/mol). Default is 12 kJ/mol
-            which corresponds to an occupation change of ~ 1 % (according to their Boltzmann
-            exponential factors).
-        """
-        self.max_number_structures = math.inf
-        """
-        int
-            The maximum number of structures considered for each compound.
         """
 
     def _check_if_conformers_are_present(self, compound) -> bool:
@@ -94,7 +97,7 @@ class MinimumEnergyConformerElementarySteps(ElementaryStepGear):
                 db.Label.USER_OPTIMIZED,
             ]:
                 continue
-            energy = get_energy_for_structure(structure, self._energy_label, self.model,
+            energy = get_energy_for_structure(structure, self._energy_label, self.options.model,
                                               self._structures, self._properties)
             # There may not be an energy available for every structure at the given model.
             if energy is not None:
@@ -111,11 +114,11 @@ class MinimumEnergyConformerElementarySteps(ElementaryStepGear):
         minimum_energy = min(energies_s_ids_sorted, key=lambda tup: tup[0])[0]
         eligible_sids = list()
         n_added = 0
-        threshold = self.energy_upper_bound * utils.HARTREE_PER_KJPERMOL
+        threshold = self.options.energy_upper_bound * utils.HARTREE_PER_KJPERMOL
         for energy, s_id in energies_s_ids_sorted:
             if abs(energy - minimum_energy) <= threshold:
                 eligible_sids.append(s_id)
                 n_added += 1
-            if n_added >= self.max_number_structures:
+            if n_added >= self.options.max_number_structures:
                 break
         return eligible_sids

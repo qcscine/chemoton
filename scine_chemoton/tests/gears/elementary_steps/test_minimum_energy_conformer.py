@@ -18,7 +18,7 @@ from ...resources import resources_root_path
 
 # Local application imports
 from ....engine import Engine
-from ....gears.elementary_steps.minimum_energy_confomer import MinimumEnergyConformerElementarySteps
+from ....gears.elementary_steps.minimum_energy_conformer import MinimumEnergyConformerElementarySteps
 from .mock_trial_generator import MockGenerator
 
 
@@ -62,9 +62,9 @@ def test_bimol():
 
     # Setup gear
     es_gear = MinimumEnergyConformerElementarySteps()
-    es_gear.model = fake_model
-    es_gear.energy_upper_bound = 0.0
-    es_gear.max_number_structures = 1
+    es_gear.options.model = fake_model
+    es_gear.options.energy_upper_bound = 0.0
+    es_gear.options.max_number_structures = 1
     es_gear.trial_generator = MockGenerator()
     es_gear.options.enable_unimolecular_trials = False
     es_gear.options.enable_bimolecular_trials = True
@@ -122,9 +122,9 @@ def test_unimol():
 
     # Setup gear
     es_gear = MinimumEnergyConformerElementarySteps()
-    es_gear.model = fake_model
-    es_gear.energy_upper_bound = 0.0
-    es_gear.max_number_structures = 1
+    es_gear.options.model = fake_model
+    es_gear.options.energy_upper_bound = 0.0
+    es_gear.options.max_number_structures = 1
     es_gear.trial_generator = MockGenerator()
     es_gear.options.enable_unimolecular_trials = True
     es_gear.options.enable_bimolecular_trials = False
@@ -182,9 +182,9 @@ def test_unimol_bimol():
 
     # Setup gear
     es_gear = MinimumEnergyConformerElementarySteps()
-    es_gear.model = fake_model
-    es_gear.energy_upper_bound = 0.0
-    es_gear.max_number_structures = 1
+    es_gear.options.model = fake_model
+    es_gear.options.energy_upper_bound = 0.0
+    es_gear.options.max_number_structures = 1
     es_gear.trial_generator = MockGenerator()
     es_gear.options.enable_unimolecular_trials = True
     es_gear.options.enable_bimolecular_trials = True
@@ -199,9 +199,9 @@ def test_unimol_bimol():
 
     # Setup gear
     es_gear = MinimumEnergyConformerElementarySteps()
-    es_gear.model = fake_model
-    es_gear.energy_upper_bound = 3000.0
-    es_gear.max_number_structures = 5
+    es_gear.options.model = fake_model
+    es_gear.options.energy_upper_bound = 3000.0
+    es_gear.options.max_number_structures = 5
     es_gear.trial_generator = MockGenerator()
     es_gear.options.enable_unimolecular_trials = False
     es_gear.options.enable_bimolecular_trials = True
@@ -212,7 +212,7 @@ def test_unimol_bimol():
     es_engine.run(single=True)
 
     assert es_gear.trial_generator.unimol_counter == 0
-    assert es_gear.trial_generator.bimol_counter == 10
+    assert es_gear.trial_generator.bimol_counter == 7
 
     # Cleaning
     manager.wipe()

@@ -7,6 +7,7 @@ See LICENSE.txt for details.
 # from typing import Union
 import scine_database as db
 import scine_utilities as utils
+import scine_molassembler as masm
 
 
 def get_molecular_formula_of_structure(structure_id: db.ID, structures: db.Collection) -> str:
@@ -65,7 +66,7 @@ def get_molecular_formula_of_aggregate(object_id: db.ID, object_type: db.Compoun
     if object_type == db.CompoundOrFlask.COMPOUND:
         molecular_formula = get_molecular_formula_of_compound(object_id, compounds, structures)
     elif object_type == db.CompoundOrFlask.FLASK:
-        molecular_formula = get_molecular_formula_of_flask(object_id, flasks, compounds, structures)
+        molecular_formula = get_molecular_formula_of_flask(object_id, flasks, structures)
 
     return molecular_formula
 
@@ -96,7 +97,6 @@ def get_molecular_formula_of_compound(compound_id: db.ID, compounds: db.Collecti
 def get_molecular_formula_of_flask(
         flask_id: db.ID,
         flasks: db.Collection,
-        compounds: db.Collection,
         structures: db.Collection) -> str:
     """
     Get the molecular formula of a given flask, its charge ("c") and its multiplicity ("m") and the identical
@@ -108,24 +108,45 @@ def get_molecular_formula_of_flask(
         The database ID of the flask.
     flasks : db.Collection
         The flask collection.
-    compounds : db.Collection
-        The compound collection.
     structures : db.Collection
         The structure collection.
 
     Returns
     -------
     str
-        The molecular formula of the given flask and the molecular formulas of the compounds, e.g. for the water dimer
-        "H4O2 (c:0, m:1) [H2O (c:0, m:1)|H2O (c:0, m:1)]".
+        The molecular formula of the given flask and the molecular formulas of the compounds according to the CBOR
+        graph of its structure, e.g. for the water dimer "H4O2 (c:0, m:1) [H2O | H2O ]".
     """
     flask = db.Flask(flask_id, flasks)
     centroid_id = flask.get_centroid()
     molecular_formula = get_molecular_formula_of_structure(centroid_id, structures) + " ["
-    for compound_id in flask.get_compounds():
-        molecular_formula += get_molecular_formula_of_compound(compound_id, compounds, structures)
-        molecular_formula += "|"
+    centroid = db.Structure(centroid_id, structures)
+    # Loop over individual masm cbor graphs
+    for cmp_cbor_graph in centroid.get_graph("masm_cbor_graph").split(";"):
+        molecular_formula += get_molecular_formula_from_cbor_string(cmp_cbor_graph)
+        molecular_formula += " | "
+    molecular_formula = molecular_formula[:-3] + "]"
 
-    molecular_formula = molecular_formula[:-1] + "]"
+    return molecular_formula
+
+
+def get_molecular_formula_from_cbor_string(cbor_graph: str) -> str:
+    """
+    Get the molecular formula of a given CBOR Graph.
+
+    Parameters
+    ----------
+    cbor_graph :: str
+        The string of a CBOR graph.
+
+    Returns
+    -------
+    str
+        The plain molecular formula of the given CBOR graph.
+    """
+    binary = masm.JsonSerialization.base_64_decode(cbor_graph)
+    serialization = masm.JsonSerialization(binary, masm.JsonSerialization.BinaryFormat.CBOR)
+    masm_molecule = serialization.to_molecule()
+    molecular_formula = utils.generate_chemical_formula([masm_molecule.graph[i] for i in masm_molecule.graph.atoms()])
 
     return molecular_formula

@@ -140,7 +140,7 @@ def test_prune_by_repulsion_atom():
         reactive_complex = InterReactiveComplexes()
         # Default pruning
         pruned_directions = reactive_complex._prune_by_repulsion(
-            [index], coords, elements, possible_directions, nearest_neighbors, radius
+            [index], coords, possible_directions, nearest_neighbors, radius
         )
         # Test oxygen, default and 180
         # Default angle must return two points
@@ -148,7 +148,7 @@ def test_prune_by_repulsion_atom():
             assert len(pruned_directions) == 2
             # Pruning with angle set to 180
             pruned_directions = reactive_complex._prune_by_repulsion(
-                [index], coords, elements, possible_directions, nearest_neighbors, radius, 180
+                [index], coords, possible_directions, nearest_neighbors, radius, 180
             )
 
             # Angle of 180 must return only one point, with lower repulsion
@@ -190,7 +190,7 @@ def test_prune_by_repulsion_bond():
 
         reactive_complex = InterReactiveComplexes()
         pruned_directions = reactive_complex._prune_by_repulsion(
-            indices, coords, elements, possible_directions, nearest_neighbors, radius
+            indices, coords, possible_directions, nearest_neighbors, radius
         )
 
         if indices == [0, 1]:
@@ -199,7 +199,7 @@ def test_prune_by_repulsion_bond():
             assert all([abs(pruned - ref) < 1e-6 for pruned, ref in zip(pruned_directions[0], ref_direction)])
 
             pruned_directions = reactive_complex._prune_by_repulsion(
-                indices, coords, elements, possible_directions, nearest_neighbors, radius, 120
+                indices, coords, possible_directions, nearest_neighbors, radius, 120
             )
             assert len(pruned_directions) == 1
 
@@ -209,7 +209,7 @@ def test_prune_by_repulsion_bond():
             assert all([abs(pruned - ref) < 1e-6 for pruned, ref in zip(pruned_directions[0], ref_direction)])
 
             pruned_directions = reactive_complex._prune_by_repulsion(
-                indices, coords, elements, possible_directions, nearest_neighbors, radius, 40
+                indices, coords, possible_directions, nearest_neighbors, radius, 40
             )
             assert len(pruned_directions) == 2
 
@@ -476,7 +476,8 @@ def test_set_up_rotamers_pair_on_pair():
 
     # Align pair[0] with pair[0] and pair[1] with pair[1]
     operations = reactive_complex._set_up_rotamers(
-        coords, elements, list(pair), attack_points[pair][0:1], coords, elements, list(pair), attack_points[pair][0:1]
+        coords, elements, list(pair), attack_points[pair][0:1], coords, elements, list(
+            pair), attack_points[pair][0:1]
     )
 
     # Check, if one rotamer was generated

@@ -5,11 +5,13 @@ Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
 See LICENSE.txt for details.
 """
 
-from typing import Union
+from typing import Union, Optional
 import warnings
 
 import scine_database as db
 import scine_utilities as utils
+
+from .insert_concentration import insert_concentration_for_structure
 
 
 def insert_initial_structure(
@@ -21,6 +23,7 @@ def insert_initial_structure(
     label: db.Label = db.Label.USER_GUESS,
     job: db.Job = db.Job("scine_geometry_optimization"),
     settings: utils.ValueCollection = utils.ValueCollection({}),
+    start_concentration: Optional[float] = None
 ):
     """
     Insert a structure to the database and set up a calculation working on it.
@@ -43,6 +46,8 @@ def insert_initial_structure(
         Job to be performed on the initial structure, by default db.Job('scine_geometry_optimization').
     settings :: utils.ValueCollection, optional
         Job settings, by default none.
+    start_concentration :: float
+        The start concentratoin of the compound that will be generated from this structure.
 
     Returns
     -------
@@ -61,6 +66,9 @@ def insert_initial_structure(
             "hinder the exploration of this structure."
         )
     structure.set_label(label)
+
+    if start_concentration is not None:
+        insert_concentration_for_structure(database, start_concentration, model, structure.id())
 
     calculation = db.Calculation()
     calculation.link(calculations)

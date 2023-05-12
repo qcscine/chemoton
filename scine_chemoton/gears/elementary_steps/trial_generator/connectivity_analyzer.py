@@ -83,9 +83,7 @@ class ConnectivityAnalyzer:
 
         # Same molecule
         assert mol_idx_i != mol_idx_j
-        if self.graphs[component_idx_i].adjacent(mol_idx_i, mol_idx_j):
-            return True
-        return False
+        return self.graphs[component_idx_i].adjacent(mol_idx_i, mol_idx_j)
 
     def get_reaction_type(self, reactive_pair_list: List[Tuple[int, int]]) -> ReactionType:
         """
@@ -132,6 +130,7 @@ class ConnectivityAnalyzer:
             return Type.Mixed
 
         # Now to distinguish dissociative and disconnective
+        dissociated_bonds = list(set(dissociated_bonds))
         modified_graphs = deepcopy(self.graphs)
         for c, bond in dissociated_bonds:
             if modified_graphs[c].can_remove(bond):
@@ -141,7 +140,7 @@ class ConnectivityAnalyzer:
 
         return Type.Dissociative
 
-    def get_adjacency_matrix(self):
+    def get_adjacency_matrix(self) -> lil_matrix:
         """
         Gets the adjacency matrix for the structure with the indices ordered as
         in the structure.
@@ -198,7 +197,7 @@ class ConnectivityAnalyzer:
 
     def _get_structure_idx(self, component_idx: int, mol_idx: int) -> int:
         """
-        Get the index of an atom in the structrue from its component index
+        Get the index of an atom in the structure from its component index
         and index in the molecule.
 
         Parameters

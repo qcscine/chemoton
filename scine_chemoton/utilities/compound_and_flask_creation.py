@@ -21,7 +21,7 @@ def get_compound_or_flask(object_id: db.ID, object_type: db.CompoundOrFlask, com
     object_id :: db.ID
         The ID of the object to construct.
     object_type :: db.CompoundOrFlask
-        The label for Compound or Flaks.
+        The label for Compound or Flask.
     compounds :: db.Collection
         The compounds collection.
     flasks :: db.Collection
@@ -31,8 +31,8 @@ def get_compound_or_flask(object_id: db.ID, object_type: db.CompoundOrFlask, com
     -------
     Either the flask or compound object.
 
-    Note
-    ----
+    Notes
+    -----
     Raises a runtime error if the object_type is unknown.
     """
     if object_type == db.CompoundOrFlask.COMPOUND:

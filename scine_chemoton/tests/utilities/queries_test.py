@@ -29,10 +29,10 @@ class QueriesTest(unittest.TestCase):
         manager = db_setup.get_clean_db("chemoton_test_identical_reaction_query")
         reactions = manager.get_collection("reactions")
         # set up compounds
-        c1 = db_setup.insert_single_empty_structure_compound(manager, db.Label.USER_OPTIMIZED)[0]
-        c2 = db_setup.insert_single_empty_structure_compound(manager, db.Label.USER_OPTIMIZED)[0]
-        c3 = db_setup.insert_single_empty_structure_compound(manager, db.Label.MINIMUM_OPTIMIZED)[0]
-        c4 = db_setup.insert_single_empty_structure_compound(manager, db.Label.MINIMUM_OPTIMIZED)[0]
+        c1 = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.USER_OPTIMIZED)[0]
+        c2 = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.USER_OPTIMIZED)[0]
+        c3 = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.MINIMUM_OPTIMIZED)[0]
+        c4 = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.MINIMUM_OPTIMIZED)[0]
         # set up reactions
         r1 = db.Reaction()
         r1.link(reactions)
@@ -65,8 +65,8 @@ class QueriesTest(unittest.TestCase):
         calculations = manager.get_collection("calculations")
         structures = manager.get_collection("structures")
 
-        _, s_id = db_setup.insert_single_empty_structure_compound(manager, db.Label.MINIMUM_GUESS)
-        _, s_id_2 = db_setup.insert_single_empty_structure_compound(manager, db.Label.MINIMUM_GUESS)
+        _, s_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.MINIMUM_GUESS)
+        _, s_id_2 = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.MINIMUM_GUESS)
 
         model = db.Model("FAKE", "FAKE", "F-AKE")
         wrong_model = db.Model("WRONG", "wrong", "wrong")
