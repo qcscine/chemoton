@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
 # Standard library imports
 from typing import List
-from warnings import warn
 
 # Third party imports
 import scine_database as db
+from scine_database.queries import optimized_labels_enums
 
 # Local application imports
 from . import ElementaryStepGear
@@ -56,11 +56,13 @@ class MinimalElementarySteps(ElementaryStepGear):
     """
 
     def _get_eligible_structures(self, compound: db.Compound) -> List[db.ID]:
-        centroid = db.Structure(compound.get_centroid(), self._structures)
-        if not centroid.explore() or centroid.get_label() not in [
-            db.Label.MINIMUM_OPTIMIZED,
-            db.Label.USER_OPTIMIZED,
-        ]:
-            warn(f"{self.name} picked centroid {centroid.id()} for compound {compound.id()}, but this is actually not "
-                 f"a valid structure.")
-        return [centroid.id()]
+        for sid in compound.get_structures():
+            structure = db.Structure(sid, self._structures)
+            # Model check if structure model is set to None
+            if not self._check_structure_model(structure):
+                continue
+            # Only consider optimized structures, no guess structures or duplicates
+            if not structure.explore() or structure.get_label() not in optimized_labels_enums():
+                continue
+            return [structure.id()]
+        return []

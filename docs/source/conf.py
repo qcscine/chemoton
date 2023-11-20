@@ -48,7 +48,7 @@ master_doc = "index"
 
 # General information about the project.
 project = "Chemoton"
-copyright = "2019, ETH Zurich, Laboratory for Physical Chemistry, Reiher Group"
+copyright = "ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group"
 author = "Reiher Group"
 
 # The version info for the project you're documenting, acts as replacement for

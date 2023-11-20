@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
 # Standard library imports
+from typing import List, Tuple
 import os
 import json
 import unittest
@@ -13,9 +14,9 @@ from itertools import combinations, product
 
 # Third party imports
 import scine_database as db
+from scine_database import test_database_setup as db_setup
 
 # Local application tests imports
-from ... import test_database_setup as db_setup
 from ...resources import resources_root_path
 
 # Local application imports
@@ -28,12 +29,16 @@ from ....gears.elementary_steps.reactive_site_filters import (
     AtomRuleBasedFilter,
     ElementWiseReactionCoordinateFilter,
     HeuristicPolarizationReactionCoordinateFilter,
+    CentralSiteFilter,
+    AtomPairFunctionalGroupFilter,
+    SubStructureFilter,
 )
 from ....gears.elementary_steps.reaction_rules.distance_rules import (
     DistanceRuleAndArray,
     DistanceRuleOrArray,
     SimpleDistanceRule,
     FunctionalGroupRule,
+    AlwaysTrue,
 )
 from ....gears.elementary_steps.reaction_rules.polarization_rules import (
     PolarizationRuleAndArray,
@@ -50,6 +55,19 @@ from scine_chemoton.gears.elementary_steps. \
     reaction_rules.distance_rules import *  # pylint: disable=(wildcard-import,unused-wildcard-import)  # noqa
 from scine_chemoton.gears.elementary_steps. \
     reaction_rules.polarization_rules import *  # pylint: disable=(wildcard-import,unused-wildcard-import)  # noqa
+from ....gears.elementary_steps.reaction_rules.reaction_rule_library import (
+    CarbonylX,
+    CHOlefinC,
+    SpNCX,
+    CarboxylX,
+    AmidX,
+    AcetalX,
+    CarboxylH,
+    AllylicSp3X,
+    AmmoniumX,
+    AminX,
+    DefaultOrganicChemistry
+)
 
 
 class ReactiveSiteFiltersTests(unittest.TestCase):
@@ -80,10 +98,35 @@ class ReactiveSiteFiltersTests(unittest.TestCase):
         structure2.set_graph("masm_idx_map", adduct["masm_idx_map"])
         structure2.set_aggregate(db.ID())
 
+        furfuryl_alcohol_graph = json.load(open(os.path.join(rr, "furfuryl_alcohol.json"), "r"))
+        furfuryl_alcohol = db.Structure(db.ID(), structures)
+        furfuryl_alcohol.create(os.path.join(rr, "furfuryl_alcohol.xyz"), 0, 1, model, db.Label.MINIMUM_OPTIMIZED)
+        furfuryl_alcohol.set_graph("masm_cbor_graph", furfuryl_alcohol_graph["masm_cbor_graph"])
+        furfuryl_alcohol.set_graph("masm_idx_map", furfuryl_alcohol_graph["masm_idx_map"])
+        furfuryl_alcohol.set_aggregate(db.ID())
+
+        amide_acetal_graph = json.load(open(os.path.join(rr, "amide_acetal.json"), "r"))
+        amide_acetal = db.Structure(db.ID(), structures)
+        amide_acetal.create(os.path.join(rr, "amide_acetal.xyz"), 0, 1, model, db.Label.MINIMUM_OPTIMIZED)
+        amide_acetal.set_graph("masm_cbor_graph", amide_acetal_graph["masm_cbor_graph"])
+        amide_acetal.set_graph("masm_idx_map", amide_acetal_graph["masm_idx_map"])
+        amide_acetal.set_aggregate(db.ID())
+
+        proline_propanal_product_graph = json.load(open(os.path.join(rr, "proline_acid_propanal_product.json"), "r"))
+        proline_propanal_product = db.Structure(db.ID(), structures)
+        proline_propanal_product.create(os.path.join(rr, "proline_acid_propanal_product.xyz"), 0, 1, model,
+                                        db.Label.MINIMUM_OPTIMIZED)
+        proline_propanal_product.set_graph("masm_cbor_graph", proline_propanal_product_graph["masm_cbor_graph"])
+        proline_propanal_product.set_graph("masm_idx_map", proline_propanal_product_graph["masm_idx_map"])
+        proline_propanal_product.set_aggregate(db.ID())
+
         self.manager = manager
         self.structure = structure
         self.structure1 = structure1
         self.structure2 = structure2
+        self.amide_acetal = amide_acetal
+        self.furfuryl_alcohol = furfuryl_alcohol
+        self.proline_propanal_product = proline_propanal_product
 
     def tearDown(self) -> None:
         self.manager.wipe()
@@ -525,7 +568,6 @@ class ReactiveSiteFiltersTests(unittest.TestCase):
         allowed_pairs = f.filter_atom_pairs([self.structure2, self.structure1], pairs)
         reference = [(4, 3), (26, 3), (26, 4)]
         assert len(allowed_pairs) == len(reference)
-        print(allowed_pairs)
         for ref in reference:
             assert ref in allowed_pairs
 
@@ -723,3 +765,743 @@ class ReactiveSiteFiltersTests(unittest.TestCase):
         assert len(reference_pairs) == len(allowed_pairs)
         for pair in allowed_pairs:
             assert pair in reference_pairs
+
+    def test_central_site_filter(self):
+        rr = resources_root_path()
+        grubbs = json.load(open(os.path.join(rr, "grubbs.json"), "r"))
+        cat = db.Structure(db.ID(), self.manager.get_collection("structures"))
+        cat.create(os.path.join(rr, "grubbs.xyz"), 0, 1, db_setup.get_fake_model(), db.Label.MINIMUM_OPTIMIZED)
+        cat.set_graph("masm_cbor_graph", grubbs["masm_cbor_graph"])
+        cat.set_graph("masm_idx_map", grubbs["masm_idx_map"])
+        cat.set_aggregate(db.ID())
+
+        coordinates = [[(0, 1), (1, 2)], [(0, 2)]]
+        f = CentralSiteFilter("Ru", ligand_without_central_atom_reactive=True)
+        re_f = CentralSiteFilter("Ru", ligand_without_central_atom_reactive=True,
+                                 reevaluate_on_all_levels=True)
+        nolig_f = CentralSiteFilter("Ru", ligand_without_central_atom_reactive=False)
+        re_nolig_f = CentralSiteFilter("Ru", ligand_without_central_atom_reactive=False,
+                                       reevaluate_on_all_levels=True)
+
+        # test empty inputs
+        for filt in [f, re_f, nolig_f, re_nolig_f]:
+            for structure in [self.structure, self.structure1]:
+                assert [] == filt.filter_atoms([structure], [])
+                assert [] == filt.filter_atom_pairs([structure], [])
+                assert [] == filt.filter_reaction_coordinates([structure], [])
+
+        for structure in [self.structure, self.structure1]:
+            n = len(structure.get_atoms())
+
+            for filt in [f, re_f, nolig_f, re_nolig_f]:
+                allowed_atoms = filt.filter_atoms([structure], list(range(n)))
+                assert len(allowed_atoms) == 0
+
+                pairs: List[Tuple[int, int]] = list(combinations(range(n), 2))
+                expected = 0
+                allowed_pairs = filt.filter_atom_pairs([self.structure], pairs)
+                assert len(allowed_pairs) == expected
+
+                # Just two random coordinates
+                expected = 0 if filt.reevaluate_on_all_levels else len(coordinates)
+                allowed_coordinates = filt.filter_reaction_coordinates([self.structure], coordinates)
+                assert len(allowed_coordinates) == expected
+
+        n_atoms = [len(structure.get_atoms()) for structure in [self.structure, self.structure1, cat]]
+
+        range_0 = list(range(n_atoms[0]))
+        range_01 = list(range(n_atoms[0], n_atoms[0] + n_atoms[1]))
+        indices = range_0 + range_01
+        for filt in [f, re_f, nolig_f, re_nolig_f]:
+            allowed_atoms = filt.filter_atoms([self.structure, self.structure1], indices)
+            assert len(allowed_atoms) == 0
+
+            pairs: List[Tuple[int, int]] = list(combinations(indices, 2))
+            expected = 0
+            allowed_pairs = filt.filter_atom_pairs([self.structure, self.structure1], pairs)
+            assert len(allowed_pairs) == expected
+
+            coords = list([inter_pair] for inter_pair in product(range_0, range_01))
+            expected = 0 if filt.reevaluate_on_all_levels else len(coords)
+            allowed_coordinates = filt.filter_reaction_coordinates([self.structure, self.structure1], coords)
+            assert len(allowed_coordinates) == expected
+
+        """ catalyst """
+        metal_index = 1
+        ligand_indices = [0, 2, 3, 11, 34, 91]
+        reactive = ligand_indices + [metal_index]
+
+        # unimolecular
+        for filt in [f, re_f]:
+            allowed_atoms = filt.filter_atoms([cat], list(range(n_atoms[2])))
+            assert len(allowed_atoms) == len(reactive)
+            assert sorted(reactive) == sorted(allowed_atoms)
+
+            expected = list(combinations(reactive, 2))
+            allowed_pairs = filt.filter_atom_pairs([cat], list(combinations(allowed_atoms, 2)))
+            assert len(allowed_pairs) == len(expected)
+            assert sorted([sorted(pair) for pair in expected]) == sorted([sorted(pair) for pair in allowed_pairs])
+
+            # coordinates are all valid pairs for ligand_without central reactive
+            allowed_coordinates = filt.filter_reaction_coordinates([cat], coordinates)
+            assert len(allowed_coordinates) == len(coordinates)
+            assert sorted(allowed_coordinates) == sorted(coordinates)
+
+        # no lig filter
+        for filt in [nolig_f, re_nolig_f]:
+            allowed_atoms = filt.filter_atoms([cat], list(range(n_atoms[2])))
+            assert len(allowed_atoms) == len(reactive)
+            assert sorted(reactive) == sorted(allowed_atoms)
+
+            allowed_pairs = filt.filter_atom_pairs([cat], list(combinations(allowed_atoms, 2)))
+            expected = [pair for pair in combinations(reactive, 2) if metal_index in pair]
+            assert len(allowed_pairs) == len(expected)
+            assert sorted([sorted(pair) for pair in expected]) == sorted([sorted(pair) for pair in allowed_pairs])
+
+            coords = [[pair] for pair in allowed_pairs]
+            allowed_coordinates = filt.filter_reaction_coordinates([cat], coords)
+            assert len(allowed_coordinates) == len(coords)
+            assert sorted(allowed_coordinates) == sorted(coords)
+
+        allowed_coordinates = nolig_f.filter_reaction_coordinates([cat], coordinates)
+        assert len(allowed_coordinates) == len(coordinates)  # wrong result because no reevaluation
+
+        allowed_coordinates = re_nolig_f.filter_reaction_coordinates([cat], coordinates)
+        assert len(allowed_coordinates) == 1
+
+        # bimolecular
+        range_2 = list(range(n_atoms[2]))
+        range_20 = list(range(n_atoms[2], n_atoms[2] + n_atoms[0]))
+        range_21 = list(range(n_atoms[2], n_atoms[2] + n_atoms[1]))
+        for filt in [f, re_f]:
+            for struc_range, struc_pair in zip([range_20, range_21],
+                                               [[cat, self.structure], [cat, self.structure1]]):
+                indices = range_2 + struc_range
+                allowed_atoms = filt.filter_atoms(struc_pair, indices)
+                assert len(allowed_atoms) == len(reactive) + len(struc_range)
+                assert sorted(reactive + struc_range) == sorted(allowed_atoms)
+
+                expected = list(combinations(reactive, 2)) + list(product(reactive, struc_range))
+                allowed_pairs = filt.filter_atom_pairs(struc_pair, list(combinations(allowed_atoms, 2)))
+                assert len(allowed_pairs) == len(expected)
+                assert sorted([sorted(pair) for pair in expected]) == sorted([sorted(pair) for pair in allowed_pairs])
+
+                coords = [[pair] for pair in allowed_pairs]
+                allowed_coordinates = filt.filter_reaction_coordinates(struc_pair, coords)
+                assert len(allowed_coordinates) == len(coords)
+                assert sorted(allowed_coordinates) == sorted(coords)
+
+                # coordinates are all valid pairs for ligand without central reactive
+                allowed_coordinates = filt.filter_reaction_coordinates(struc_pair, coordinates)
+                assert len(allowed_coordinates) == len(coordinates)
+                assert sorted(allowed_coordinates) == sorted(coordinates)
+
+        for filt in [nolig_f, re_nolig_f]:
+            for struc_range, struc_pair in zip([range_20, range_21],
+                                               [[cat, self.structure], [cat, self.structure1]]):
+                indices = range_2 + struc_range
+                allowed_atoms = filt.filter_atoms(struc_pair, indices)
+                assert len(allowed_atoms) == len(reactive) + len(struc_range)
+                assert sorted(reactive + struc_range) == sorted(allowed_atoms)
+
+                expected = [pair for pair in combinations(reactive + struc_range, 2) if metal_index in pair]
+                allowed_pairs = filt.filter_atom_pairs(struc_pair, list(combinations(allowed_atoms, 2)))
+                assert len(allowed_pairs) == len(expected)
+                assert sorted([sorted(pair) for pair in expected]) == sorted([sorted(pair) for pair in allowed_pairs])
+
+                coords = [[pair] for pair in allowed_pairs]
+                allowed_coordinates = filt.filter_reaction_coordinates(struc_pair, coords)
+                assert len(allowed_coordinates) == len(coords)
+                assert sorted(allowed_coordinates) == sorted(coords)
+
+        allowed_coordinates = nolig_f.filter_reaction_coordinates([cat, self.structure], coordinates)
+        assert len(allowed_coordinates) == len(coordinates)  # wrong result because no reevaluation
+
+        allowed_coordinates = re_nolig_f.filter_reaction_coordinates([cat, self.structure], coordinates)
+        assert len(allowed_coordinates) == 1
+
+        allowed_coordinates = nolig_f.filter_reaction_coordinates([cat, self.structure1], coordinates)
+        assert len(allowed_coordinates) == len(coordinates)  # wrong result because no reevaluation
+
+        allowed_coordinates = re_nolig_f.filter_reaction_coordinates([cat, self.structure1], coordinates)
+        assert len(allowed_coordinates) == 1
+
+    def test_trivial_atom_pair_rule_based_filter(self):
+        # trivial checks with association_rules == dissociation_rules and identical pairs
+        rules = {
+            'H': True,
+            'C': True,
+            'N': True,
+            'O': True
+        }
+        f = AtomPairFunctionalGroupFilter(association_rules=[(rules, rules)], dissociation_rules=[(rules, rules)])
+        assert f._association_rules
+        assert f._dissociation_rules
+        assert eval(repr(f._association_rules))  # pylint: disable=eval-used
+        assert eval(repr(f._dissociation_rules))  # pylint: disable=eval-used
+        allowed_atoms = f.filter_atoms([self.structure2, self.structure1], list(range(27)))
+        reference = range(27)
+        assert len(allowed_atoms) == len(reference)
+        for ref in reference:
+            assert ref in allowed_atoms
+
+        rules = {
+            'H': False,
+            'C': False,
+            'N': True,
+            'O': False
+        }
+        f = AtomPairFunctionalGroupFilter(association_rules=[(rules, rules)], dissociation_rules=[(rules, rules)])
+        assert f._association_rules
+        assert f._dissociation_rules
+        assert eval(repr(f._association_rules))  # pylint: disable=eval-used
+        assert eval(repr(f._dissociation_rules))  # pylint: disable=eval-used
+        allowed_atoms = f.filter_atoms([self.structure2, self.structure1], list(range(27)))
+        reference = [4]
+        assert len(allowed_atoms) == len(reference)
+        for ref in reference:
+            assert ref in allowed_atoms
+
+        rules = {
+            'C': DistanceRuleAndArray([SimpleDistanceRule('C', 1),
+                                       SimpleDistanceRule('O', 1),
+                                       SimpleDistanceRule('N', 1)])
+        }
+        f = AtomPairFunctionalGroupFilter(association_rules=[(rules, rules)], dissociation_rules=[(rules, rules)])
+        assert f._association_rules
+        assert f._dissociation_rules
+        assert eval(repr(f._association_rules))  # pylint: disable=eval-used
+        assert eval(repr(f._dissociation_rules))  # pylint: disable=eval-used
+        allowed_atoms = f.filter_atoms([self.structure2, self.structure1], list(range(27)))
+        reference = [2]
+        assert len(allowed_atoms) == len(reference)
+        for ref in reference:
+            assert ref in allowed_atoms
+
+        rules = {
+            'H': False,
+            'C': [DistanceRuleOrArray([SimpleDistanceRule('O', 1),
+                                       SimpleDistanceRule('O', 2)])],
+            'N': [DistanceRuleAndArray([SimpleDistanceRule('C', 1)])],
+            'O': True
+        }
+        # Setup filter and check
+        f = AtomPairFunctionalGroupFilter(association_rules=[(rules, rules)], dissociation_rules=[(rules, rules)])
+        assert f._association_rules
+        assert f._dissociation_rules
+        assert eval(repr(f._association_rules))  # pylint: disable=eval-used
+        assert eval(repr(f._dissociation_rules))  # pylint: disable=eval-used
+        allowed_atoms = f.filter_atoms([self.structure2, self.structure1], list(range(27)))
+        reference = [
+            1,   # C
+            2,   # C
+            3,   # O
+            4,   # N
+            26,  # O (water)
+        ]
+        assert len(allowed_atoms) == len(reference)
+        for ref in reference:
+            assert ref in allowed_atoms
+
+        acetal_like_group_d2 = FunctionalGroupRule(distance=2, n_bonds=(4, 4), central_atom="C",
+                                                   specified_bond_partners={'O': 1, 'N': 1}, strict_counts=True)
+        acetal_like_group_d1 = FunctionalGroupRule(distance=1, n_bonds=(4, 4), central_atom="C",
+                                                   specified_bond_partners={'O': 1, 'N': 1}, strict_counts=True)
+
+        rules = {
+            'H': acetal_like_group_d2,
+            'C': DistanceRuleOrArray([DistanceRuleOrArray([SimpleDistanceRule('O', 1),
+                                                           SimpleDistanceRule('O', 2)]),
+                                      acetal_like_group_d1]),
+            'N': SimpleDistanceRule('C', 1),
+            'O': SimpleDistanceRule('C', 1)
+        }
+        # Setup filter and check
+        f = AtomPairFunctionalGroupFilter(association_rules=[(rules, rules)], dissociation_rules=[(rules, rules)])
+        assert f._association_rules
+        assert f._dissociation_rules
+        assert eval(repr(f._association_rules))  # pylint: disable=eval-used
+        assert eval(repr(f._dissociation_rules))  # pylint: disable=eval-used
+        allowed_atoms = f.filter_atoms([self.structure2, self.structure1], list(range(27)))
+        reference = [
+            1,   # C
+            2,   # C
+            3,   # O
+            4,   # N
+            12,  # H
+            13,  # H
+            15   # H
+        ]
+        assert len(allowed_atoms) == len(reference)
+        for ref in reference:
+            assert ref in allowed_atoms
+
+    def test_atom_pair_rule_based_filter_2(self):
+        # some more specific checks involving different functionality
+
+        # Get collections
+        structures = self.manager.get_collection("structures")
+
+        # Add structure data
+        rr = resources_root_path()
+        prol_adduct = json.load(open(os.path.join(rr, "proline_acid_propanal_product.json"), "r"))
+        structure = db.Structure()
+        structure.link(structures)
+        structure.create(os.path.join(rr, "proline_acid_propanal_product.xyz"), 0, 1)
+        structure.set_label(db.Label.MINIMUM_OPTIMIZED)
+        structure.set_graph("masm_cbor_graph", prol_adduct["masm_cbor_graph"])
+        structure.set_graph("masm_idx_map", prol_adduct["masm_idx_map"])
+        structure.set_compound(db.ID())
+
+        water = json.load(open(os.path.join(rr, "water.json"), "r"))
+        structure1 = db.Structure()
+        structure1.link(structures)
+        structure1.create(os.path.join(rr, "water.xyz"), 0, 1)
+        structure1.set_label(db.Label.MINIMUM_OPTIMIZED)
+        structure1.set_graph("masm_cbor_graph", water["masm_cbor_graph"])
+        structure1.set_graph("masm_idx_map", water["masm_idx_map"])
+        structure1.set_compound(db.ID())
+
+        n_atoms_tot = 27 + 3
+
+        any_O = {
+            'O': AlwaysTrue()
+        }
+        O_bound_H = {
+            'H': FunctionalGroupRule(1, 'O', (1, 3))
+        }
+        O_bound_C = {
+            'C': FunctionalGroupRule(0, 'C', (1, 4), {'O': 1})
+        }
+        O_bound_C_strict = {
+            'C': FunctionalGroupRule(0, 'C', (1, 4), {'O': 1}, strict_counts=True)
+        }
+        O_1 = {
+            'O': FunctionalGroupRule(0, 'O', (1, 1))
+        }
+        O_12 = {
+            'O': FunctionalGroupRule(0, 'O', (1, 2))
+        }
+        N3_bound_C = {
+            'C': FunctionalGroupRule(1, 'N', (3, 3))
+        }
+        H2O_O = {
+            'O': FunctionalGroupRule(0, 'O', (2, 2), {'H': 2}, strict_counts=True)
+        }
+
+        # Test 1: association between any O and any O-bound H:
+        f = AtomPairFunctionalGroupFilter(association_rules=[(any_O, O_bound_H)], dissociation_rules=[])
+        assert f._association_rules
+        assert f._dissociation_rules == []
+        assert eval(repr(f._association_rules))  # pylint: disable=eval-used
+        assert eval(repr(f._dissociation_rules)) == []  # pylint: disable=eval-used
+        allowed_atoms = f.filter_atoms([structure, structure1], list(range(n_atoms_tot)))
+        reference = [
+            9,    # H atom adduct
+            14,   # O atom adduct
+            15,   # O atom adduct
+            16,   # H atom adduct
+            20,   # O atom adduct
+            27,   # H atom water
+            28,   # H atom water
+            29    # O atom water
+        ]
+
+        assert len(allowed_atoms) == len(reference)
+        for ref in reference:
+            assert ref in allowed_atoms
+
+        allowed_pairs = f.filter_atom_pairs([structure, structure1], list(combinations(allowed_atoms, 2)))
+        reference = [
+            (9, 14),
+            (9, 20),
+            (9, 29),
+            (14, 16),
+            (14, 27),
+            (14, 28),
+            (15, 16),
+            (15, 27),
+            (15, 28),
+            (16, 29),
+            (20, 27),
+            (20, 28)
+        ]
+
+        assert len(allowed_pairs) == len(reference)
+        for ref in reference:
+            assert ref in allowed_pairs
+
+        # Test 2: dissociation between any O and any O-bound H:
+        f = AtomPairFunctionalGroupFilter(association_rules=[], dissociation_rules=[(any_O, O_bound_H)])
+        assert f._association_rules == []
+        assert f._dissociation_rules
+        assert eval(repr(f._association_rules)) == []  # pylint: disable=eval-used
+        assert eval(repr(f._dissociation_rules))  # pylint: disable=eval-used
+        allowed_atoms = f.filter_atoms([structure, structure1], list(range(n_atoms_tot)))
+        reference = [
+            9,    # H atom adduct
+            14,   # O atom adduct
+            15,   # O atom adduct
+            16,   # H atom adduct
+            20,   # O atom adduct
+            27,   # H atom water
+            28,   # H atom water
+            29    # O atom water
+        ]
+
+        assert len(allowed_atoms) == len(reference)
+        for ref in reference:
+            assert ref in allowed_atoms
+
+        allowed_pairs = f.filter_atom_pairs([structure, structure1], list(combinations(allowed_atoms, 2)))
+        reference = [
+            (9, 15),
+            (16, 20),
+            (27, 29),
+            (28, 29)
+        ]
+
+        assert len(allowed_pairs) == len(reference)
+        for ref in reference:
+            assert ref in allowed_pairs
+
+        # Test 3: association between C bound to one O (non-strict) and any O
+        f = AtomPairFunctionalGroupFilter(association_rules=[(any_O, O_bound_C)], dissociation_rules=[])
+        assert f._association_rules
+        assert f._dissociation_rules == []
+        assert eval(repr(f._association_rules))  # pylint: disable=eval-used
+        assert eval(repr(f._dissociation_rules)) == []  # pylint: disable=eval-used
+        allowed_atoms = f.filter_atoms([structure, structure1], list(range(n_atoms_tot)))
+        reference = [
+            13,
+            14,
+            15,
+            17,
+            20,
+            29
+        ]
+
+        assert len(allowed_atoms) == len(reference)
+        for ref in reference:
+            assert ref in allowed_atoms
+
+        allowed_pairs = f.filter_atom_pairs([structure, structure1], list(combinations(allowed_atoms, 2)))
+        reference = [
+            (13, 20),
+            (13, 29),
+            (14, 17),
+            (15, 17),
+            (17, 29)
+        ]
+
+        assert len(allowed_pairs) == len(reference)
+        for ref in reference:
+            assert ref in allowed_pairs
+
+        # Test 4: association between C bound to one O (strict) and any O
+        f = AtomPairFunctionalGroupFilter(association_rules=[(O_bound_C_strict, any_O)], dissociation_rules=[])
+        assert f._association_rules
+        assert f._dissociation_rules == []
+        assert eval(repr(f._association_rules))  # pylint: disable=eval-used
+        assert eval(repr(f._dissociation_rules)) == []  # pylint: disable=eval-used
+        allowed_atoms = f.filter_atoms([structure, structure1], list(range(n_atoms_tot)))
+        reference = [
+            14,
+            15,
+            17,
+            20,
+            29
+        ]
+
+        assert len(allowed_atoms) == len(reference)
+        for ref in reference:
+            assert ref in allowed_atoms
+
+        allowed_pairs = f.filter_atom_pairs([structure, structure1], list(combinations(allowed_atoms, 2)))
+        reference = [
+            (14, 17),
+            (15, 17),
+            (17, 29)
+        ]
+
+        assert len(allowed_pairs) == len(reference)
+        for ref in reference:
+            assert ref in allowed_pairs
+
+        # Test 5: association between O having one bonding partner and any O-bound H
+        f = AtomPairFunctionalGroupFilter(association_rules=[(O_bound_H, O_1)], dissociation_rules=[])
+        assert f._association_rules
+        assert f._dissociation_rules == []
+        assert eval(repr(f._association_rules))  # pylint: disable=eval-used
+        assert eval(repr(f._dissociation_rules)) == []  # pylint: disable=eval-used
+        allowed_atoms = f.filter_atoms([structure, structure1], list(range(n_atoms_tot)))
+        reference = [
+            9,    # H of adduct
+            14,   # carboxyl-O with only one C as bonding partner
+            16,   # H of adduct
+            27,   # H of water
+            28    # H of water
+        ]
+
+        assert len(allowed_atoms) == len(reference)
+        for ref in reference:
+            assert ref in allowed_atoms
+
+        allowed_pairs = f.filter_atom_pairs([structure, structure1], list(combinations(allowed_atoms, 2)))
+        reference = [
+            (9, 14),
+            (14, 16),
+            (14, 27),
+            (14, 28)
+        ]
+
+        assert len(allowed_pairs) == len(reference)
+        for ref in reference:
+            assert ref in allowed_pairs
+
+        # Test 6: association between O having one or two bonding partners and any O-bound H.
+        # This gives exactly the same selection as test 1.
+        f = AtomPairFunctionalGroupFilter(association_rules=[(O_12, O_bound_H)], dissociation_rules=[])
+        assert f._association_rules
+        assert f._dissociation_rules == []
+        assert eval(repr(f._association_rules))  # pylint: disable=eval-used
+        assert eval(repr(f._dissociation_rules)) == []  # pylint: disable=eval-used
+        allowed_atoms = f.filter_atoms([structure, structure1], list(range(n_atoms_tot)))
+        reference = [
+            9,    # H atom adduct
+            14,   # O atom adduct
+            15,   # O atom adduct
+            16,   # H atom adduct
+            20,   # O atom adduct
+            27,   # H atom water
+            28,   # H atom water
+            29    # O atom water
+        ]
+
+        assert len(allowed_atoms) == len(reference)
+        for ref in reference:
+            assert ref in allowed_atoms
+
+        allowed_pairs = f.filter_atom_pairs([structure, structure1], list(combinations(allowed_atoms, 2)))
+        reference = [
+            (9, 14),
+            (9, 20),
+            (9, 29),
+            (14, 16),
+            (14, 27),
+            (14, 28),
+            (15, 16),
+            (15, 27),
+            (15, 28),
+            (16, 29),
+            (20, 27),
+            (20, 28)
+        ]
+
+        assert len(allowed_pairs) == len(reference)
+        for ref in reference:
+            assert ref in allowed_pairs
+
+        # Test 7: association between C atoms directly bound to an N atom with 3 bonding partners,
+        # and an O atom from water
+        f = AtomPairFunctionalGroupFilter(association_rules=[(N3_bound_C, H2O_O)], dissociation_rules=[])
+        assert f._association_rules
+        assert f._dissociation_rules == []
+        assert eval(repr(f._association_rules))  # pylint: disable=eval-used
+        assert eval(repr(f._dissociation_rules)) == []  # pylint: disable=eval-used
+        allowed_atoms = f.filter_atoms([structure, structure1], list(range(n_atoms_tot)))
+        reference = [
+            2,   # C atom
+            4,   # C atom
+            17,  # C atom
+            29,  # O atom
+        ]
+
+        assert len(allowed_atoms) == len(reference)
+        for ref in reference:
+            assert ref in allowed_atoms
+
+        allowed_pairs = f.filter_atom_pairs([structure, structure1], list(combinations(allowed_atoms, 2)))
+        reference = [
+            (2, 29),
+            (4, 29),
+            (17, 29)
+        ]
+
+        assert len(allowed_pairs) == len(reference)
+        for ref in reference:
+            assert ref in allowed_pairs
+
+    def test_library_rules_carbonyl(self):
+        f = AtomRuleBasedFilter({'C': CarbonylX(0)})
+        for structure in [self.structure, self.structure1, self.structure2, self.amide_acetal]:
+            n_atoms_tot = len(structure.get_atoms())
+            allowed_atoms = f.filter_atoms([structure], list(range(n_atoms_tot)))
+            assert not allowed_atoms
+
+        # Note that we define a carbonyl group as a sp2 carbon connected to an oxigen.
+        n_atoms_tot = len(self.furfuryl_alcohol.get_atoms())
+        allowed_atoms = f.filter_atoms([self.furfuryl_alcohol], list(range(n_atoms_tot)))
+        assert allowed_atoms == [0, 4]
+
+        n_atoms_tot = len(self.proline_propanal_product.get_atoms())
+        allowed_atoms = f.filter_atoms([self.proline_propanal_product], list(range(n_atoms_tot)))
+        assert allowed_atoms == [13]
+
+    def test_library_rules_ch_olefin(self):
+        f = AtomRuleBasedFilter({'C': CHOlefinC()})
+        n_atoms_tot = len(self.furfuryl_alcohol.get_atoms())
+        allowed_atoms = f.filter_atoms([self.furfuryl_alcohol], list(range(n_atoms_tot)))
+        assert allowed_atoms == [1, 3]
+
+    def test_library_rules_spNCX(self):
+        fsp1 = AtomRuleBasedFilter({'C': SpNCX(0, 1)})
+        n_atoms_tot = len(self.furfuryl_alcohol.get_atoms())
+        allowed_atoms = fsp1.filter_atoms([self.furfuryl_alcohol], list(range(n_atoms_tot)))
+        assert not allowed_atoms
+
+        fsp2 = AtomRuleBasedFilter({'C': SpNCX(0, 2)})
+        allowed_atoms = fsp2.filter_atoms([self.furfuryl_alcohol], list(range(n_atoms_tot)))
+        assert allowed_atoms == [0, 1, 3, 4]
+
+        fsp3 = AtomRuleBasedFilter({'C': SpNCX(0, 3)})
+        allowed_atoms = fsp3.filter_atoms([self.furfuryl_alcohol], list(range(n_atoms_tot)))
+        assert allowed_atoms == [5]
+
+    def test_library_rules_carboxyl(self):
+        f = AtomRuleBasedFilter({'C': CarboxylX(0)})
+        n_atoms_tot = len(self.furfuryl_alcohol.get_atoms())
+        allowed_atoms = f.filter_atoms([self.furfuryl_alcohol], list(range(n_atoms_tot)))
+        assert not allowed_atoms
+
+        n_atoms_tot = len(self.proline_propanal_product.get_atoms())
+        allowed_atoms = f.filter_atoms([self.proline_propanal_product], list(range(n_atoms_tot)))
+        assert allowed_atoms == [13]
+
+    def test_library_rules_amid(self):
+        f = AtomRuleBasedFilter({'C': AmidX(0)})
+        n_atoms_tot = len(self.amide_acetal.get_atoms())
+        allowed_atoms = f.filter_atoms([self.amide_acetal], list(range(n_atoms_tot)))
+        assert not allowed_atoms
+
+    def test_library_rules_allylic_c(self):
+        f = AtomRuleBasedFilter({'C': AllylicSp3X(0)})
+        n_atoms_tot = len(self.furfuryl_alcohol.get_atoms())
+        allowed_atoms = f.filter_atoms([self.furfuryl_alcohol], list(range(n_atoms_tot)))
+        assert allowed_atoms == [5]
+
+        n_atoms_tot = len(self.structure2.get_atoms())
+        allowed_atoms = f.filter_atoms([self.structure2], list(range(n_atoms_tot)))
+        assert not allowed_atoms
+
+        n_atoms_tot = len(self.amide_acetal.get_atoms())
+        allowed_atoms = f.filter_atoms([self.amide_acetal], list(range(n_atoms_tot)))
+        assert not allowed_atoms
+
+    def test_library_rules_allylic_sp3(self):
+        f = AtomRuleBasedFilter({'H': AllylicSp3X(1)})
+        n_atoms_tot = len(self.furfuryl_alcohol.get_atoms())
+        allowed_atoms = f.filter_atoms([self.furfuryl_alcohol], list(range(n_atoms_tot)))
+        assert allowed_atoms == [11, 12]
+
+        n_atoms_tot = len(self.amide_acetal.get_atoms())
+        allowed_atoms = f.filter_atoms([self.amide_acetal], list(range(n_atoms_tot)))
+        assert not allowed_atoms
+
+    def test_library_rules_ammonium(self):
+        f = AtomRuleBasedFilter({'N': AmmoniumX(0)})
+        for structure in [self.amide_acetal, self.structure2]:
+            n_atoms_tot = len(structure.get_atoms())
+            allowed_atoms = f.filter_atoms([structure], list(range(n_atoms_tot)))
+            assert not allowed_atoms
+
+    def test_library_rules_amin(self):
+        f = AtomRuleBasedFilter({'N': AminX(0)})
+        n_atoms_tot = len(self.amide_acetal.get_atoms())
+        allowed_atoms = f.filter_atoms([self.amide_acetal], list(range(n_atoms_tot)))
+        assert allowed_atoms == [6]
+
+        n_atoms_tot = len(self.structure2.get_atoms())
+        allowed_atoms = f.filter_atoms([self.structure2], list(range(n_atoms_tot)))
+        assert allowed_atoms == [4]
+
+    def test_library_rules_carboxyl_h(self):
+        f = AtomRuleBasedFilter({'H': CarboxylH()})
+        n_atoms_tot = len(self.proline_propanal_product.get_atoms())
+        allowed_atoms = f.filter_atoms([self.proline_propanal_product], list(range(n_atoms_tot)))
+        assert allowed_atoms == [9]
+
+    def test_library_rules_acetal(self):
+        f = AtomRuleBasedFilter({'C': AcetalX(0)})
+        n_atoms_tot = len(self.proline_propanal_product.get_atoms())
+        allowed_atoms = f.filter_atoms([self.proline_propanal_product], list(range(n_atoms_tot)))
+        assert allowed_atoms == [17]
+
+        n_atoms_tot = len(self.amide_acetal.get_atoms())
+        allowed_atoms = f.filter_atoms([self.amide_acetal], list(range(n_atoms_tot)))
+        assert allowed_atoms == [1]
+
+        f = AtomRuleBasedFilter({'C': AcetalX(1)})
+        allowed_atoms = f.filter_atoms([self.amide_acetal], list(range(n_atoms_tot)))
+        assert allowed_atoms == [0]
+
+        f = AtomRuleBasedFilter({'H': AcetalX(2)})
+        allowed_atoms = f.filter_atoms([self.amide_acetal], list(range(n_atoms_tot)))
+        assert allowed_atoms == [2, 3, 5]
+
+    def test_library_rules_default_oc(self):
+        f = AtomRuleBasedFilter(DefaultOrganicChemistry())
+        n_atoms_tot = len(self.proline_propanal_product.get_atoms())
+        allowed_atoms = f.filter_atoms([self.proline_propanal_product], list(range(n_atoms_tot)))
+        assert allowed_atoms == [2, 3, 8, 9, 13, 14, 15, 16, 17, 20, 22, 23]
+
+        n_atoms_tot = len(self.amide_acetal.get_atoms())
+        allowed_atoms = f.filter_atoms([self.amide_acetal], list(range(n_atoms_tot)))
+        assert allowed_atoms == [1, 2, 3, 4, 5, 6, 16]
+
+        n_atoms_tot = len(self.furfuryl_alcohol.get_atoms())
+        allowed_atoms = f.filter_atoms([self.furfuryl_alcohol], list(range(n_atoms_tot)))
+        assert allowed_atoms == [0, 1, 2, 3, 4, 5, 6, 7, 11, 12]
+
+    def test_substructure_filter(self):
+        rr = resources_root_path()
+        grubbs = json.load(open(os.path.join(rr, "grubbs.json"), "r"))
+        cat = db.Structure(db.ID(), self.manager.get_collection("structures"))
+        cat.create(os.path.join(rr, "grubbs.xyz"), 0, 1, db_setup.get_fake_model(), db.Label.MINIMUM_OPTIMIZED)
+        cat.set_graph("masm_cbor_graph", grubbs["masm_cbor_graph"])
+        cat.set_graph("masm_idx_map", grubbs["masm_idx_map"])
+        cat.set_aggregate(db.ID())
+
+        ring_ids = [
+            5, 6, 7, 8, 9, 10,
+            35, 36, 37, 38, 39, 40,
+            41, 42, 43, 44, 45, 46,
+            47, 48, 49, 50, 51, 52,
+            122, 123, 124, 125, 126, 127,
+            152, 153, 154, 155, 156, 157,
+            158, 159, 160, 161, 162, 163,
+            164, 165, 166, 167, 168, 169,
+        ]
+
+        f = SubStructureFilter(os.path.join(rr, 'substructures'), exclude_mode=False)
+        n_atoms_tot = len(cat.get_atoms())
+        allowed_atoms = f.filter_atoms([cat, cat], list(range(2 * n_atoms_tot)))
+        assert len(allowed_atoms) == 48
+        assert allowed_atoms == ring_ids
+        f = SubStructureFilter(os.path.join(rr, 'substructures'), exclude_mode=False)
+        n_atoms_tot = len(cat.get_atoms())
+        allowed_atoms = f.filter_atoms([cat, cat], list(range(n_atoms_tot)))
+        assert len(allowed_atoms) == 24
+        assert allowed_atoms == ring_ids[:24]
+
+        f = SubStructureFilter(os.path.join(rr, 'substructures'), exclude_mode=True)
+        n_atoms_tot = len(cat.get_atoms())
+        allowed_atoms = f.filter_atoms([cat, cat], list(range(2 * n_atoms_tot)))
+        assert len(allowed_atoms) == (2 * n_atoms_tot - 48)
+        assert allowed_atoms == list(set(range(2 * n_atoms_tot)).difference(set(ring_ids)))
+
+        f = SubStructureFilter(os.path.join(rr, 'substructures'), exclude_mode=True)
+        n_atoms_tot = len(cat.get_atoms())
+        allowed_atoms = f.filter_atoms([cat, cat], list(range(n_atoms_tot)))
+        assert len(allowed_atoms) == (n_atoms_tot - 24)
+        assert allowed_atoms == list(set(range(n_atoms_tot)).difference(set(ring_ids)))

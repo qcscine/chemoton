@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -11,11 +11,11 @@ from typing import List, Dict, Set, Tuple, Optional, Any
 
 # Third party imports
 import scine_database as db
+from scine_database.queries import model_query, calculation_exists_in_id_set, stop_on_timeout
 import scine_utilities as utils
 
 # Local application imports
 from ..gears import Gear
-from ..utilities.queries import model_query, calculation_exists_in_id_set, stop_on_timeout
 from ..utilities.calculation_creation_helpers import finalize_calculation
 
 
@@ -26,15 +26,19 @@ class RerunCalculations(Gear):
     setting, the mode, the job-order, the resulting calculation status, and the comment.
     """
 
-    __slots__ = ("options")
+    __slots__ = "options"
 
-    class Options:
+    class Options(Gear.Options):
         """
         The options for the RerunCalculations Gear.
         """
 
+        __slots__ = ("_parent", "old_job_settings", "new_job_settings", "old_status", "old_job",
+                     "new_job", "change_model", "old_model", "new_model", "comment_filter", "calculation_id_list")
+
         def __init__(self, parent: Optional[Any] = None):
             self._parent = parent  # best be first member to be set because of __setattr__
+            super().__init__()
             self.cycle_time = 101
             """
             int
@@ -89,7 +93,7 @@ class RerunCalculations(Gear):
             self.comment_filter: List[str] = []
             """
             List[str]
-                A list of comments that is used to further identify calculations tht should be re-run.
+                A list of comments that is used to further identify calculations that should be re-run.
                 Example comments:
                 * No more negative eigenvalues
                 * TS has incorrect number of imaginary frequencies.
@@ -125,7 +129,6 @@ class RerunCalculations(Gear):
             self._create_cache_of_set_up_calculations()
         cache_update = dict()
         if self.options.calculation_id_list:
-            print("Test")
             for calculation_id in self.options.calculation_id_list:
                 old_calculation = db.Calculation(calculation_id, self._calculations)
                 self._rerun_calculation(old_calculation, cache_update)

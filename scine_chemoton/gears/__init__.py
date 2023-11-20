@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
 # Standard library imports
 from abc import ABC, abstractmethod
+from collections import UserDict
 from ctypes import c_int
 from enum import Enum
 from setproctitle import setproctitle
@@ -18,7 +19,7 @@ import time
 import scine_database as db
 
 from scine_chemoton.utilities import connect_to_db
-from scine_chemoton.utilities.comparisons import attribute_comparison
+from scine_chemoton.utilities.options import BaseOptions
 
 
 class HoldsCollections:
@@ -67,19 +68,43 @@ class HoldsCollections:
         self._unset_collections_of_attributes(self)
 
     def _unset_collections_of_attributes(self, inst):
-        if not hasattr(inst, '__dict__'):
-            return
-        for key, attr in inst.__dict__.items():
+        if isinstance(inst, dict) or isinstance(inst, UserDict):
+            items = inst.items()
+        elif hasattr(inst, '__dict__'):
+            items = inst.__dict__.items()
+        elif hasattr(inst, '__slots__'):
+            items = ((s, getattr(inst, s)) for s in inst.__slots__)
+        else:
+            return inst
+        for key, attr in list(items):
             if isinstance(attr, HoldsCollections):
                 attr.unset_collections()
             elif isinstance(attr, db.Collection) or isinstance(attr, db.Manager):
-                setattr(inst, key, None)
+                if isinstance(inst, dict) or isinstance(inst, UserDict):
+                    inst[key] = None
+                else:
+                    setattr(inst, key, None)
                 continue
-            elif hasattr(attr, '__dict__') and not isinstance(attr, Enum):
-                self._unset_collections_of_attributes(attr)
-            if hasattr(attr, '__iter__') and not isinstance(attr, str):
-                for a in attr:
-                    self._unset_collections_of_attributes(a)
+            if isinstance(attr, Enum):
+                continue
+            if hasattr(attr, '__dict__') or hasattr(attr, "__slots__") \
+                    or isinstance(attr, dict) or isinstance(attr, UserDict):
+                attr = self._unset_collections_of_attributes(attr)
+                if isinstance(attr, dict) or isinstance(attr, UserDict):
+                    if isinstance(inst, dict) or isinstance(inst, UserDict):
+                        inst[key] = attr
+                    else:
+                        setattr(inst, key, attr)
+                    continue
+            if hasattr(attr, '__iter__') and hasattr(attr, "__setitem__") and not isinstance(attr, str):
+                for i, a in list(enumerate(attr)):
+                    a = self._unset_collections_of_attributes(a)
+                    attr[i] = a
+            if isinstance(inst, dict) or isinstance(inst, UserDict):
+                inst[key] = attr
+            else:
+                setattr(inst, key, attr)
+        return inst
 
 
 class HasName:
@@ -123,15 +148,25 @@ class Gear(ABC, HoldsCollections, HasName):
     existing ones.
     """
 
-    class Options:
+    class Options(BaseOptions):
 
-        __slots__ = "model"
+        __slots__ = ("model", "cycle_time")
 
         def __init__(self):
+            super().__init__()
             self.model = db.Model("PM6", "PM6", "")
-
-        def __eq__(self, other) -> bool:
-            return attribute_comparison(self, other)
+            """
+            Model
+                The model the Gear is working with.
+            """
+            self.cycle_time: int = 10
+            """
+            int
+                The minimum number of seconds between two cycles of the Gear.
+                Cycles are finished independently of this option, hence if a cycle
+                takes longer than the cycle_time will effectively lead to longer
+                cycle times and not cause multiple cycles of the same Gear.
+            """
 
     def __init__(self):
         super().__init__()
@@ -173,6 +208,9 @@ class Gear(ABC, HoldsCollections, HasName):
         ----------
         credentials :: db.Credentials (Scine::Database::Credentials)
             The credentials to a database storing a reaction network.
+        loop_count :: c_int
+            A shared memory integer that allows to communicate the number of loops
+            across processes.
         single :: bool
             If true, runs only a single iteration of the actual loop.
             Default: false, meaning endless repetition of the loop.
@@ -180,7 +218,7 @@ class Gear(ABC, HoldsCollections, HasName):
         self._give_current_process_own_name()
 
         # Make sure cycle time exists
-        sleep = getattr(getattr(self, "options"), "cycle_time")
+        sleep_time = self.options.cycle_time
 
         # Prepare database connection and members
         _initialize_a_gear_to_a_db(self, credentials)
@@ -197,8 +235,8 @@ class Gear(ABC, HoldsCollections, HasName):
         while True:
             # Wait if needed
             now = time.time()
-            if now - last_cycle < sleep:
-                time.sleep(sleep - now + last_cycle)
+            if now - last_cycle < sleep_time:
+                time.sleep(sleep_time - now + last_cycle)
             last_cycle = time.time()
 
             with self._DelayedKeyboardInterrupt(callable=self.stop):

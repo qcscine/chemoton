@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -12,6 +12,7 @@ from typing import Dict, List, Set, Optional, Tuple
 
 from numpy import ndarray
 import scine_database as db
+from scine_database.queries import stop_on_timeout
 from scine_utilities import ValueCollection
 
 # Local application imports
@@ -20,7 +21,6 @@ from .reactive_site_filters import ReactiveSiteFilter
 from .trial_generator import TrialGenerator
 from .trial_generator.bond_based import BondBased
 from .. import Gear, _initialize_a_gear_to_a_db
-from scine_chemoton.utilities.queries import stop_on_timeout
 
 
 class ElementaryStepGear(Gear, ABC):
@@ -35,21 +35,16 @@ class ElementaryStepGear(Gear, ABC):
 
         __slots__ = (
             "_parent",
-            "cycle_time",
             "enable_unimolecular_trials",
             "enable_bimolecular_trials",
             "run_one_cycle_with_settings_enhancement",
-            "base_job_settings"
+            "base_job_settings",
+            "structure_model"
         )
 
         def __init__(self, _parent: Optional[Gear] = None):
             self._parent = _parent
             super().__init__()
-            self.cycle_time = 10
-            """
-            int
-                Sleep time between cycles, in seconds.
-            """
             self.enable_unimolecular_trials = True
             """
             bool
@@ -69,6 +64,11 @@ class ElementaryStepGear(Gear, ABC):
             """
             ValueCollection
                 The base settings for the jobs. Duplicate keys are overwritten by the settings of the TrialGenerator.
+            """
+            self.structure_model: Optional[db.Model] = None
+            """
+            Optional[db.Model]
+                If not None, calculations are only started for structures with the given model.
             """
 
         def __setattr__(self, item, value):
@@ -244,6 +244,8 @@ class ElementaryStepGear(Gear, ABC):
                     if not self.options.run_one_cycle_with_settings_enhancement and sid_one.string() in self._cache:
                         continue
                     structure_one = db.Structure(sid_one, self._structures)
+                    if not self._check_structure_model(structure_one):
+                        continue
                     if self._rebuild_cache:
                         if sid_one.string() not in self._cache:
                             self._update_cache(
@@ -298,6 +300,9 @@ class ElementaryStepGear(Gear, ABC):
                             continue
                         structure_one = db.Structure(sid_one, self._structures)
                         structure_two = db.Structure(sid_two, self._structures)
+                        if not self._check_structure_model(structure_one) or \
+                           not self._check_structure_model(structure_two):
+                            continue
                         if self._rebuild_cache:
                             if i == 0 and (sid_one.string() not in self._cache):
                                 self._update_cache(
@@ -345,3 +350,13 @@ class ElementaryStepGear(Gear, ABC):
     @abstractmethod
     def _get_eligible_structures(self, compound: db.Compound) -> List[db.ID]:
         pass
+
+    def _check_structure_model(self, structure: db.Structure) -> bool:
+        success = True
+        # Only check the model if the option for the structure model is checked
+        if self.options.structure_model is not None:
+            if self.options.structure_model == structure.get_model():
+                success = True
+            else:
+                success = False
+        return success

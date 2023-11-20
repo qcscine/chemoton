@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -15,19 +15,20 @@ import pickle
 
 # Third party imports
 import scine_database as db
-import scine_utilities as utils
-
-# Local application imports
-from ..gears import Gear
-from ..utilities.queries import (
+from scine_database.queries import (
     identical_reaction,
     model_query,
     stop_on_timeout,
     get_calculation_id_from_structure,
     query_calculation_in_id_set
 )
-from ..utilities.energy_query_functions import get_energy_for_structure, get_barriers_for_elementary_step_by_type
+from scine_database.energy_query_functions import get_energy_for_structure, get_barriers_for_elementary_step_by_type
+import scine_utilities as utils
+
+# Local application imports
+from ..gears import Gear
 from ..utilities.calculation_creation_helpers import finalize_calculation
+from scine_chemoton.default_settings import default_opt_settings, default_nt_settings
 
 
 class NetworkRefinement(Gear):
@@ -69,7 +70,6 @@ class NetworkRefinement(Gear):
         """
 
         __slots__ = (
-            "cycle_time",
             "pre_refine_model",
             "post_refine_model",
             "use_calculation_model",
@@ -185,11 +185,11 @@ class NetworkRefinement(Gear):
                 The Job used for optimizing all minima.
                 The default is: the 'scine_geometry_optimization' order on a single core.
             """
-            self.opt_job_settings: utils.ValueCollection = utils.ValueCollection()
+            self.opt_job_settings: utils.ValueCollection = default_opt_settings()
             """
             utils.ValueCollection
                 Additional settings for optimizing all minima.
-                Empty by default.
+                Chemoton's default optimization settings by default.
             """
             self.tsopt_job: db.Job = db.Job("scine_ts_optimization")
             """
@@ -197,11 +197,13 @@ class NetworkRefinement(Gear):
                 The Job used for optimizing all transition states.
                 The default is: the 'scine_ts_optimization' order on a single core.
             """
-            self.tsopt_job_settings: utils.ValueCollection = utils.ValueCollection()
+            self.tsopt_job_settings: utils.ValueCollection = utils.ValueCollection(
+                {k: v for k, v in default_opt_settings().as_dict().items() if "bfgs" not in k}
+            )
             """
             utils.ValueCollection
                 Additional settings for optimizing all transition states.
-                Empty by default.
+                Chemoton's default optimization settings by default without the BFGS settings.
             """
             self.double_ended_job: db.Job = db.Job("scine_bspline_optimization_job")
             """
@@ -209,24 +211,27 @@ class NetworkRefinement(Gear):
                 The Job used for searching for a transition state between two compounds.
                 The default is: the 'scine_react_double_ended' order on a single core.
             """
-            self.double_ended_job_settings: utils.ValueCollection = utils.ValueCollection()
+            self.double_ended_job_settings: utils.ValueCollection = utils.ValueCollection(
+                {k: v for k, v in default_nt_settings().as_dict().items()
+                 if "nt_" not in k and "rcopt" not in k}
+            )
             """
             utils.ValueCollection
                 Additional settings for searching for a transition state between two compounds.
-                Empty by default.
+                Chemoton's default NT settings without the NT and RCOpt parts by default.
             """
-            self.single_ended_job: db.Job = db.Job("scine_react_complex_nt")
+            self.single_ended_job: db.Job = db.Job("scine_react_complex_nt2")
             """
             db.Job (Scine::Database::Calculation::Job)
                 The Job used for searching for redoing previously successful single ended searches.
                 The default is: the 'scine_react_complex_nt' order on a single core. This job implies the approximation
                 that the structures of the old model can be used for the single ended calculation with the new model.
             """
-            self.single_ended_job_settings: utils.ValueCollection = utils.ValueCollection()
+            self.single_ended_job_settings: utils.ValueCollection = default_nt_settings()
             """
             utils.ValueCollection
                 Additional settings for single ended reaction search.
-                Empty by default.
+                Chemoton's default NT job settings by default.
             """
             self.single_ended_step_refinement_job: db.Job = db.Job("scine_step_refinement")
             """
@@ -234,11 +239,13 @@ class NetworkRefinement(Gear):
                 The Job used for searching for refining previously successful single ended searches.
                 The default is: the 'scine_step_refinement' order.
             """
-            self.single_ended_step_refinement_settings: utils.ValueCollection = utils.ValueCollection()
+            self.single_ended_step_refinement_settings: utils.ValueCollection = utils.ValueCollection(
+                {k: v for k, v in default_nt_settings().as_dict().items() if "nt_" not in k and "rcopt" not in k}
+            )
             """
             utils.ValueCollection
                 Additional settings for refining single ended reaction searches.
-                Empty by default.
+                Chemoton's default NT settings without the NT and RCOpt part by default.
             """
             self.max_barrier: float = 262.5
             """
@@ -336,9 +343,14 @@ class NetworkRefinement(Gear):
             self._loop_steps("refine_single_ended_search")
         if self.options.refinements["refine_structures_and_irc"]:
             self._loop_steps("refine_structures_and_irc")
+        if self.stop_at_next_break_point:
+            return
 
     def _loop_steps(self, job_label: str):
         if self.options.reaction_based_loop or self.options.manual_reaction_selection:
+            if job_label == "refine_single_points":
+                warn("WARNING: reaction based loop is not implemented for single point refinement, yet")
+                return
             self._loop_reactions_with_barrier_screening(job_label)
         else:
             self._loop_elementary_step_with_barrier_screening(job_label)
@@ -436,6 +448,7 @@ class NetworkRefinement(Gear):
                         {"label": "minimum_optimized"},
                         {"label": "user_optimized"},
                         {"label": "complex_optimized"},
+                        {"label": "user_complex_optimized"},
                     ]
                 },
                 {"aggregate": {"$ne": ""}},
@@ -473,6 +486,7 @@ class NetworkRefinement(Gear):
                             {"label": "minimum_optimized"},
                             {"label": "user_optimized"},
                             {"label": "complex_optimized"},
+                            {"label": "user_complex_optimized"},
                         ]
                     },
                 ]
@@ -644,8 +658,9 @@ class NetworkRefinement(Gear):
             elementary_steps = [db.ElementaryStep(step_id, self._elementary_steps) for step_id in
                                 calculation.get_results().get_elementary_steps()]
             all_barrierless = True
+            barrierless_types = [db.ElementaryStepType.BARRIERLESS, db.ElementaryStepType.MODEL_TRANSFORMATION]
             for step in elementary_steps:
-                if step.get_type() != db.ElementaryStepType.BARRIERLESS:
+                if step.get_type() not in barrierless_types:
                     all_barrierless = False
             if self.options.exclude_barrierless and all_barrierless:
                 continue
@@ -752,7 +767,9 @@ class NetworkRefinement(Gear):
                 calc_id = self._get_calculation_id_for_step(step_id)
             if calc_id:
                 calculation = db.Calculation(calc_id, self._calculations)
-            self._set_up_calculation(job_label, calculation, step_id)
+                self._set_up_calculation(job_label, calculation, step_id)
+            else:
+                warn(f"Could not find calculation for elementary step {str(step_id)}")
 
     def _get_job_order(self, job_label: str):
         if job_label == "refine_structures_and_irc":
@@ -802,7 +819,7 @@ class NetworkRefinement(Gear):
         for step_id in elementary_steps_in_reaction:
             elementary_step = db.ElementaryStep(step_id, self._elementary_steps)
             # Check the TS for non-barrierless reactions.
-            if elementary_step.get_type() != db.ElementaryStepType.BARRIERLESS:
+            if elementary_step.has_transition_state():
                 ts = db.Structure(elementary_step.get_transition_state())
                 energy = get_energy_for_structure(ts, "electronic_energy", self.options.pre_refine_model,
                                                   self._structures, self._properties)
@@ -851,7 +868,7 @@ class NetworkRefinement(Gear):
                                                     structure_model):
                 continue
             energy: Optional[float] = 0.0
-            if elementary_step.get_type() != db.ElementaryStepType.BARRIERLESS:
+            if elementary_step.has_transition_state():
                 ts = db.Structure(elementary_step.get_transition_state(), self._structures)
                 if ts.get_model() != model:
                     continue
@@ -907,15 +924,6 @@ class NetworkRefinement(Gear):
         else:
             return list()
 
-    def _all_structures_have_energy(self, structure_id_list: List[db.ID]):
-        for s_id in structure_id_list:
-            s = db.Structure(s_id)
-            energy = get_energy_for_structure(s, "electronic_energy", self.options.post_refine_model, self._structures,
-                                              self._properties)
-            if energy is None:
-                return False
-        return True
-
     def _set_up_calculation(self, job_label: str, calculation: db.Calculation,
                             targeted_step_id: Optional[db.ID] = None) -> bool:
         """
@@ -961,9 +969,15 @@ class NetworkRefinement(Gear):
             all_structure_ids_list = rhs_lhs_structure_list + [transition_state_id]
         else:
             all_structure_ids_list = rhs_lhs_structure_list
-        if job_label == "refine_structures_and_irc" and transition_state_id is not None:
+        if job_label == "refine_structures_and_irc":
+            if transition_state_id is None:
+                # either we did not exclude barrierless or the elementary step is not sorted into a reaction
+                # or the step has been disabled (e.g. because it is a duplicate)
+                return False
             reactant_structure_ids = self._get_optimized_structure_ids(calculation.get_structures())
-            if reactant_structure_ids and self._all_structures_have_graph(reactant_structure_ids):
+            if reactant_structure_ids \
+               and self._all_structures_have_graph(reactant_structure_ids) \
+               and self._all_structures_have_aggregate(reactant_structure_ids):
                 self._refine_structures_and_irc(reactant_structure_ids, transition_state_id,
                                                 calculation.get_settings())
             else:
@@ -976,10 +990,16 @@ class NetworkRefinement(Gear):
             self._refine_optimizations(all_structure_ids_list)
         elif job_label == "refine_single_ended_search":
             reactant_structure_ids = self._get_optimized_structure_ids(calculation.get_structures())
-            if reactant_structure_ids and self._all_structures_have_graph(reactant_structure_ids):
-                self._refine_existing_react_jobs(self.options.single_ended_job, self.options.single_ended_job_settings,
-                                                 self._rc_keys() + self._single_ended_keys_to_take_over(),
-                                                 reactant_structure_ids, calculation.get_settings())
+            if reactant_structure_ids \
+               and self._all_structures_have_graph(reactant_structure_ids) \
+               and self._all_structures_have_aggregate(reactant_structure_ids):
+                self._refine_existing_react_jobs(
+                    self.options.single_ended_job,
+                    self.options.single_ended_job_settings,
+                    self._rc_keys() +
+                    self._single_ended_keys_to_take_over(),
+                    reactant_structure_ids,
+                    calculation.get_settings())
             else:
                 return False
         elif job_label == "double_ended_refinement":
@@ -995,7 +1015,7 @@ class NetworkRefinement(Gear):
                                                  self._double_ended_keys_to_take_over(),
                                                  [], calculation.get_settings(), elementary_step)
         else:
-            raise RuntimeError("The job label is not resolved for elementary step refinement.")
+            raise RuntimeError(f"The job label '{job_label}' is not resolved for elementary step refinement.")
         return True
 
     def _barrier_exceeded(self, elementary_step: db.ElementaryStep) -> bool:
@@ -1032,5 +1052,43 @@ class NetworkRefinement(Gear):
         for s_id in structure_ids:
             structure = db.Structure(s_id, self._structures)
             if not structure.has_graph("masm_cbor_graph"):
+                return False
+        return True
+
+    def _all_structures_have_energy(self, structure_id_list: List[db.ID]):
+        """
+        Check if all structures in the list have an electronic energy with the post-refinement model.
+        Parameters
+        ----------
+        structure_ids :: List[db.ID]
+            The structure ID list.
+        Returns
+        -------
+        bool
+            True if all structures have an electronic energy with the post-refinement model. False otherwise.
+        """
+        for s_id in structure_id_list:
+            s = db.Structure(s_id)
+            energy = get_energy_for_structure(s, "electronic_energy", self.options.post_refine_model, self._structures,
+                                              self._properties)
+            if energy is None:
+                return False
+        return True
+
+    def _all_structures_have_aggregate(self, structure_ids: List[db.ID]):
+        """
+        Check if all structures in the list have an aggregate assigned.
+        Parameters
+        ----------
+        structure_ids :: List[db.ID]
+            The structure ID list.
+        Returns
+        -------
+        bool
+            True if all structures have an aggregate assigned. False otherwise.
+        """
+        for s_id in structure_ids:
+            structure = db.Structure(s_id, self._structures)
+            if not structure.has_aggregate():
                 return False
         return True

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -9,9 +9,8 @@ from typing import Union, Optional
 import warnings
 
 import scine_database as db
+from scine_database.insert_concentration import insert_concentration_for_structure
 import scine_utilities as utils
-
-from .insert_concentration import insert_concentration_for_structure
 
 
 def insert_initial_structure(
@@ -69,6 +68,10 @@ def insert_initial_structure(
 
     if start_concentration is not None:
         insert_concentration_for_structure(database, start_concentration, model, structure.id())
+
+    if label == db.Label.USER_OPTIMIZED:
+        structure.set_model(model)
+        return structure, None
 
     calculation = db.Calculation()
     calculation.link(calculations)

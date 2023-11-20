@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -12,10 +12,10 @@ from typing import Dict, List, Tuple, Optional
 import numpy as np
 import scine_database as db
 from scine_utilities import ValueCollection
+from scine_database.queries import get_calculation_id, calculation_exists_in_structure
 
 # Local application imports
 from ....gears.elementary_steps.trial_generator import TrialGenerator, _sanity_check_wrapper
-from scine_chemoton.utilities.queries import get_calculation_id, calculation_exists_in_structure
 
 
 class MockGenerator(TrialGenerator):

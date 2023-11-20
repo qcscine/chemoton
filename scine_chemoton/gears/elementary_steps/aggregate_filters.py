@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -13,9 +13,9 @@ import numpy as np
 # Third party imports
 import scine_database as db
 import scine_utilities as utils
+from scine_database.concentration_query_functions import query_concentration_with_object
 
 from scine_chemoton.gears import HoldsCollections, HasName
-from ..kinetic_modeling.concentration_query_functions import query_concentration_with_object
 
 
 class AggregateFilter(HoldsCollections, HasName):
@@ -203,6 +203,9 @@ class AggregateFilterAndArray(AggregateFilter):
     def __iter__(self):
         return (f for f in self._filters)
 
+    def __setitem__(self, key, value):
+        self._filters[key] = value
+
 
 class AggregateFilterOrArray(AggregateFilter):
     """
@@ -251,6 +254,9 @@ class AggregateFilterOrArray(AggregateFilter):
 
     def __iter__(self):
         return (f for f in self._filters)
+
+    def __setitem__(self, key, value):
+        self._filters[key] = value
 
 
 class ElementCountFilter(AggregateFilter):
@@ -711,8 +717,7 @@ class SelectedAggregateIdFilter(AggregateFilter):
 
 
 class ConcentrationPropertyFilter(AggregateFilter):
-    def __init__(self, property_labels: List[str], min_value: float, filter_only_pairs: bool, structures: db.Collection,
-                 properties: db.Collection):
+    def __init__(self, property_labels: List[str], min_value: float, filter_only_pairs: bool):
         """
         Filters all compounds that have a concentration lower than a given value. For the two compound case,
         the product of both concentrations has to be larger than this value. The filter may be set to only
@@ -720,22 +725,16 @@ class ConcentrationPropertyFilter(AggregateFilter):
 
         Parameters
         ----------
-        property_label :: str
+        property_labels :: str
             The label for the concentration to filter with.
         min_value :: float
             The minimum concentration/concentration product.
         filter_only_pairs :: bool
             If true, the filter will always return True for the single compound case.
-        structures :: db.Collection
-            The structure collection.
-        properties :: db.Collection
-            The property collection.
         """
         super().__init__()
         self._property_labels = property_labels
         self._min_value = min_value
-        self._properties = properties
-        self._structures = structures
         self._filter_only_paris = filter_only_pairs
         self._can_cache: bool = False
         self._currently_caches: bool = False
@@ -759,18 +758,6 @@ class ConcentrationPropertyFilter(AggregateFilter):
 
 
 class ChargeCombinationFilter(AggregateFilter):
-    def __init__(self, structures: db.Collection):
-        """
-        Forbids the combination of compounds with the same sign, non-zero charge.
-
-        Parameters
-        ----------
-        structures :: db.Collection
-            The structure collection.
-        """
-        super().__init__()
-        self._structures = structures
-
     def _filter_impl(self, compound: db.Compound, optional_compound: Optional[db.Compound] = None) -> bool:
         if optional_compound is None:
             return True
@@ -784,26 +771,19 @@ class ChargeCombinationFilter(AggregateFilter):
 
 
 class LastKineticModelingFilter(AggregateFilter):
-    def __init__(self, manager: db.Manager, kinetic_modeling_job_order: Optional[str] = None,
-                 aggregate_settings_key: Optional[str] = None):
+    def __init__(self, kinetic_modeling_job_order: Optional[str] = None, aggregate_settings_key: Optional[str] = None):
         """
         Allow only compounds that were handled in the last kinetic modeling calculation or have a non-zero start
         concentration.
 
         Parameters
         ----------
-        manager : db.Manager
-            The database manager.
         kinetic_modeling_job_order : Optional[str]
             The kinetic modeling job order. By default, "kinetx_kinetic_modeling".
         aggregate_settings_key : Optional[str]
             The key to the aggregate ids in the kinetic modeling job. By default, "aggregate_ids".
         """
         super().__init__()
-        self._structures: db.Collection = manager.get_collection("structures")
-        self._compounds: db.Collection = manager.get_collection("compounds")
-        self._properties: db.Collection = manager.get_collection("properties")
-        self._calculations: db.Collection = manager.get_collection("calculations")
         self._start_structure: Union[None, db.Structure] = None
         if not kinetic_modeling_job_order:
             kinetic_modeling_job_order = "kinetx_kinetic_modeling"
@@ -853,7 +833,7 @@ class LastKineticModelingFilter(AggregateFilter):
                 return
             for i, calc_id in enumerate(reversed(calc_ids)):
                 calculation = db.Calculation(calc_id, self._calculations)
-                if calculation.get_status() == db.Status.COMPLETE:
+                if calculation.exists() and calculation.get_status() == db.Status.COMPLETE:
                     aggregate_str_ids = calculation.get_settings()[self._aggregate_settings_key]
                     self._aggregate_str_ids_in_last_job = aggregate_str_ids  # type: ignore
                     self._n_calculations_last = len(calc_ids) - i

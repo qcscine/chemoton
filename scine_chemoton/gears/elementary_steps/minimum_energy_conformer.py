@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -11,11 +11,12 @@ import math
 
 # Third party imports
 import scine_database as db
+from scine_database.energy_query_functions import get_energy_for_structure
+from scine_database.queries import optimized_labels_enums
 import scine_utilities as utils
 
 # Local application imports
 from . import ElementaryStepGear
-from ...utilities.energy_query_functions import get_energy_for_structure
 
 
 class MinimumEnergyConformerElementarySteps(ElementaryStepGear):
@@ -91,11 +92,10 @@ class MinimumEnergyConformerElementarySteps(ElementaryStepGear):
         energies_sids: List[Tuple[float, db.ID]] = list()
         for sid in compound.get_structures():
             structure = db.Structure(sid, self._structures)
+            if not self._check_structure_model(structure):
+                continue
             # Only consider optimized structures, no guess structures or duplicates
-            if not structure.explore() or structure.get_label() not in [
-                db.Label.MINIMUM_OPTIMIZED,
-                db.Label.USER_OPTIMIZED,
-            ]:
+            if not structure.explore() or structure.get_label() not in optimized_labels_enums():
                 continue
             energy = get_energy_for_structure(structure, self._energy_label, self.options.model,
                                               self._structures, self._properties)

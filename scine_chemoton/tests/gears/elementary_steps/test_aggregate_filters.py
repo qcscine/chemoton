@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -13,9 +13,11 @@ import unittest
 
 # Third party imports
 import scine_database as db
+import scine_utilities as utils
+from scine_database.insert_concentration import insert_concentration_for_compound
+from scine_database import test_database_setup as db_setup
 
 # Local application tests imports
-from ... import test_database_setup as db_setup
 from ....gears import HoldsCollections
 from ...resources import resources_root_path
 from ....utilities.calculation_creation_helpers import finalize_calculation
@@ -43,7 +45,6 @@ from ....gears.elementary_steps.aggregate_filters import (
 from ....gears.elementary_steps.reactive_site_filters import (
     ReactiveSiteFilter
 )
-from ....utilities.insert_concentration import insert_concentration_for_compound
 
 
 class AggregateFiltersTests(unittest.TestCase, HoldsCollections):
@@ -638,10 +639,9 @@ class AggregateFiltersTests(unittest.TestCase, HoldsCollections):
     def test_concentration_filter(self):
         # Connect to test DB
         manager = db_setup.get_clean_db("chemoton_test_concentration_filter")
+        self.custom_setup(manager)
 
         # Get collections
-        structures = manager.get_collection("structures")
-        properties = manager.get_collection("properties")
         compounds = manager.get_collection("compounds")
 
         c1_id, _ = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.MINIMUM_OPTIMIZED)
@@ -653,8 +653,8 @@ class AggregateFiltersTests(unittest.TestCase, HoldsCollections):
         c3 = db.Compound(c3_id, compounds)
         c4 = db.Compound(c4_id, compounds)
 
-        f = ConcentrationPropertyFilter(["max_concentration", "start_concentration"], 1e-2, True, structures,
-                                        properties)
+        f = ConcentrationPropertyFilter(["max_concentration", "start_concentration"], 1e-2, True)
+        f.initialize_collections(manager)
 
         insert_concentration_for_compound(manager, 0.5, db.Model("FAKE", "", ""), c1_id, False, "max_concentration")
         insert_concentration_for_compound(manager, 0.5, db.Model("FAKE", "", ""), c2_id, False, "start_concentration")
@@ -671,8 +671,8 @@ class AggregateFiltersTests(unittest.TestCase, HoldsCollections):
         assert not f.filter(c2, c4)
         assert not f.filter(c3, c4)
 
-        f = ConcentrationPropertyFilter(["max_concentration", "start_concentration"], 3e-1, False, structures,
-                                        properties)
+        f = ConcentrationPropertyFilter(["max_concentration", "start_concentration"], 3e-1, False)
+        f.initialize_collections(manager)
 
         assert f.filter(c1)
         assert f.filter(c2)
@@ -692,6 +692,7 @@ class AggregateFiltersTests(unittest.TestCase, HoldsCollections):
     def test_charge_combination_filter(self):
         # Connect to test DB
         manager = db_setup.get_clean_db("chemoton_test_charge_filter")
+        self.custom_setup(manager)
 
         # Get collections
         structures = manager.get_collection("structures")
@@ -712,7 +713,9 @@ class AggregateFiltersTests(unittest.TestCase, HoldsCollections):
         s3.charge = +3
         s4.charge = -7
 
-        f = ChargeCombinationFilter(structures)
+        f = ChargeCombinationFilter()
+        f.initialize_collections(manager)
+
         assert f.filter(c1)
         assert f.filter(c2)
         assert f.filter(c3)
@@ -734,9 +737,9 @@ class AggregateFiltersTests(unittest.TestCase, HoldsCollections):
         manager.wipe()
 
     def test_last_kinetic_modeling_job_filter(self):
-        import scine_utilities as utils
         # Connect to test DB
         manager = db_setup.get_clean_db("chemoton_test_last_kinetic_modeling_job_filter")
+        self.custom_setup(manager)
 
         # Get collections
         calculations = manager.get_collection("calculations")
@@ -758,7 +761,9 @@ class AggregateFiltersTests(unittest.TestCase, HoldsCollections):
 
         job_order = "fake_kinetic_modeling"
         aggregate_key = "fake_aggregate_key"
-        f = LastKineticModelingFilter(manager, job_order, aggregate_key)
+        f = LastKineticModelingFilter(job_order, aggregate_key)
+        f.initialize_collections(manager)
+
         assert f.filter(c1)
         assert f.filter(c2)
         assert not f.filter(c3)

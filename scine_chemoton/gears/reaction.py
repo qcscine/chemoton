@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -14,13 +14,13 @@ from copy import copy
 
 # Third party imports
 import scine_database as db
+from scine_database.queries import stop_on_timeout
+from scine_database.energy_query_functions import get_energy_for_structure
+from scine_database.compound_and_flask_creation import get_compound_or_flask
 import scine_utilities as utils
 
 # Local application imports
 from . import Gear
-from ..utilities.queries import stop_on_timeout
-from ..utilities.energy_query_functions import get_energy_for_structure
-from ..utilities.compound_and_flask_creation import get_compound_or_flask
 
 
 class BasicReactionHousekeeping(Gear):
@@ -51,8 +51,7 @@ class BasicReactionHousekeeping(Gear):
         The options for the BasicReactionHousekeeping Gear.
         """
 
-        __slots__ = ("cycle_time",
-                     "use_structure_deduplication",
+        __slots__ = ("use_structure_deduplication",
                      "use_energy_deduplication",
                      "use_rmsd_deduplication",
                      "energy_tolerance",
@@ -60,14 +59,6 @@ class BasicReactionHousekeeping(Gear):
 
         def __init__(self):
             super().__init__()
-            self.cycle_time = 10
-            """
-            int
-                The minimum number of seconds between two cycles of the Gear.
-                Cycles are finished independent of this option, thus if a cycle
-                takes longer than the cycle_time will effectively lead to longer
-                cycle times and not cause multiple cycles of the same Gear.
-            """
             self.use_structure_deduplication = True
             """
             bool
@@ -143,7 +134,7 @@ class BasicReactionHousekeeping(Gear):
                     label = structure.get_label()
                     if label in [db.Label.MINIMUM_OPTIMIZED, db.Label.USER_OPTIMIZED, db.Label.DUPLICATE]:
                         types[i].append(db.CompoundOrFlask.COMPOUND)
-                    elif label == db.Label.COMPLEX_OPTIMIZED:
+                    elif label == db.Label.COMPLEX_OPTIMIZED or label == db.Label.USER_COMPLEX_OPTIMIZED:
                         types[i].append(db.CompoundOrFlask.FLASK)
                     else:
                         raise RuntimeError(f"Structure label '{str(label)}' is not supported for aggregation.")
@@ -280,7 +271,8 @@ class BasicReactionHousekeeping(Gear):
             warn(f"Found barrierless and regular elementary step for identical reaction {str(reaction.id())}. "
                  f"We are now disabling all barrierless steps in this reaction.")
             new_type = new_step.get_type()
-            if new_type == db.ElementaryStepType.BARRIERLESS:
+            barrierless_types = [db.ElementaryStepType.BARRIERLESS, db.ElementaryStepType.MODEL_TRANSFORMATION]
+            if new_type in barrierless_types:
                 # new is barrierless, first enabled was regular, hence we should not need to check all steps of reaction
                 new_step.disable_exploration()
                 new_step.disable_analysis()
@@ -288,7 +280,7 @@ class BasicReactionHousekeeping(Gear):
                 # new step is regular, and first enabled was barrierless, disable all barrierless in reaction
                 for step_id in steps:
                     reaction_step = db.ElementaryStep(step_id, self._elementary_steps)
-                    if reaction_step.get_type() == db.ElementaryStepType.BARRIERLESS:
+                    if reaction_step.get_type() in barrierless_types:
                         reaction_step.disable_exploration()
                         reaction_step.disable_analysis()
             else:

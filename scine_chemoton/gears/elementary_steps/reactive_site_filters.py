@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
 # Standard library imports
 import ast
+import os
+from json import load
 from typing import List, Optional, Tuple, Union
+from itertools import combinations
 
 # Third party imports
 import scine_database as db
+import scine_utilities as utils
+from scine_art.io import load_file
+from scine_art.molecules import maximum_matching_fragments
 
 # Local application imports
 from .reaction_rules.distance_rules import DistanceRuleSet
@@ -198,6 +204,9 @@ class ReactiveSiteFilterAndArray(ReactiveSiteFilter):
     def __iter__(self):
         return (f for f in self._filters)
 
+    def __setitem__(self, key, value):
+        self._filters[key] = value
+
 
 class ReactiveSiteFilterOrArray(ReactiveSiteFilter):
     """
@@ -253,6 +262,9 @@ class ReactiveSiteFilterOrArray(ReactiveSiteFilter):
 
     def __iter__(self):
         return (f for f in self._filters)
+
+    def __setitem__(self, key, value):
+        self._filters[key] = value
 
 
 class MasmChemicalRankingFilter(ReactiveSiteFilter):
@@ -581,3 +593,362 @@ class HeuristicPolarizationReactionCoordinateFilter(ReactiveSiteFilter):
                 rule = self._rules[element]
                 string_list.append(rule.string_from_rule(molecules, idx_map, elements, atom_index))
         return string_list
+
+
+class CentralSiteFilter(ReactiveSiteFilter):
+    """
+    This filter activates sites only on/around a central element, e.g. a metal center in an organometallic
+    catalyst. The behavior is different for uni- and bimolecular reactions, e.g. if "C" is the central atom::
+
+      Unimolecular:
+      A-B-C-D
+      C is reactive, B and D depends on set option, A is never reactive.
+      E-F
+      No atom is reactive.
+
+      Bimolecular:
+      A-B-C-D  +  E-F
+      C is reactive, B and D depends on set option, A is never reactive, E and F are reactive.
+      G-H  +  E-F
+      No atom is reactive.
+
+    Notes
+    -----
+    For efficiency, this filter by default works in combination of filter_atoms + filter_atom_pairs, the pair and
+    coordinate filtering alone are insufficient, unless activated by optional flag
+    """
+
+    def __init__(self,
+                 central_atom: str,
+                 ligand_without_central_atom_reactive: bool = False,
+                 reevaluate_on_all_levels: bool = False):
+        """
+        Parameters
+        ----------
+        central_atom :: str
+            The central element, such as "Ru"
+        ligand_without_central_atom_reactive :: bool
+            Whether atoms, that are directly bonded to the central element, should also be reactive. Default is False
+        reevaluate_on_all_levels :: bool
+            Whether each filter stage (filter_atoms, filter_atom_pairs, filter_reaction_coordinates) should
+            evaluate all levels below again. Default is False
+        """
+        super().__init__()
+        self.central_atom = utils.ElementInfo.element_from_symbol(central_atom)
+        self.ligand_without_central_atom_reactive = ligand_without_central_atom_reactive
+        self.reevaluate_on_all_levels = reevaluate_on_all_levels
+
+    def filter_atoms(self, structure_list: List[db.Structure], atom_indices: List[int]) -> List[int]:
+        idx_shift = 0  # To account for the shifting of indices in structures further down the structure_list
+        reactives = []
+        atoms_list = [structure.get_atoms() for structure in structure_list]
+        structure_contains_central = [self.central_atom in atoms.elements for atoms in atoms_list]
+        # if no structure contains element, we don't have reactive atoms
+        if not any(structure_contains_central):
+            return []
+        for has_central, atoms, structure in zip(structure_contains_central, atoms_list, structure_list):
+            if not has_central:
+                # for bimolecular reactions we leave all atoms of the structures
+                # that don't have the central element as reactive
+                reactives += [idx + idx_shift for idx in range(len(atoms))]
+            else:
+                # structure has central atom -> limit to central + ligands
+                neighbors = get_atom_pairs(structure, (1, 1))
+                elements = atoms.elements
+                for pair in neighbors:
+                    if any(elements[p] == self.central_atom for p in pair):
+                        shifted_pair = [p + idx_shift for p in pair]
+                        reactives += [sp for sp in shifted_pair]
+            idx_shift += len(atoms)
+
+        return list(set(atom_indices) & set(reactives))
+
+    def filter_atom_pairs(self, structure_list: List[db.Structure], pairs: List[Tuple[int, int]]) \
+            -> List[Tuple[int, int]]:
+        atoms_list = [structure.get_atoms() for structure in structure_list]
+        all_elements = [atoms.elements for atoms in atoms_list]
+        flat_all_elements = [item for sublist in all_elements for item in sublist]
+        index_to_structure_index = self._structure_assignment_map(atoms_list)
+        structure_contains_central = [self.central_atom in atoms.elements for atoms in atoms_list]
+
+        if not self.reevaluate_on_all_levels:
+            evaluate_pairs = pairs
+        else:
+            n = sum(len(atoms) for atoms in atoms_list)
+            indices = list(range(n))
+            reactive_atoms = self.filter_atoms(structure_list, indices)
+            possible_pairs = list(combinations(reactive_atoms, 2))
+            evaluate_pairs = [pair for pair in possible_pairs if pair in pairs]
+
+        reactive_pairs = []
+        for p0, p1 in evaluate_pairs:
+            structure_indices = (index_to_structure_index[p0], index_to_structure_index[p1])
+            if not any(structure_contains_central[idx] for idx in structure_indices):
+                continue
+            pair_elements = (flat_all_elements[p0], flat_all_elements[p1])
+            # when one is a central atom reactive
+            # if ligands alone are reactive, also reactive relying on the fact that filter_atoms() sorts out all
+            # non-ligands for structures that contain a central atom
+            if any(ele == self.central_atom for ele in pair_elements) or self.ligand_without_central_atom_reactive:
+                reactive_pairs.append((p0, p1))
+        return reactive_pairs
+
+    def filter_reaction_coordinates(
+            self, structure_list: List[db.Structure], coordinates: List[List[Tuple[int, int]]]
+    ) -> List[List[Tuple[int, int]]]:
+        if not self.reevaluate_on_all_levels:
+            return coordinates
+        reactive_coordinates = []
+        for coordinate in coordinates:
+            reactive_pairs = self.filter_atom_pairs(structure_list, coordinate)
+            if len(reactive_pairs) == len(coordinate):
+                reactive_coordinates.append(coordinate)
+        return reactive_coordinates
+
+    @staticmethod
+    def _structure_assignment_map(atoms_list: List[utils.AtomCollection]) -> List[int]:
+        lengths = [len(atoms) for atoms in atoms_list]
+        result = []
+        for i, length in enumerate(lengths):
+            result += [i] * length
+        return result
+
+
+class AtomPairFunctionalGroupFilter(ReactiveSiteFilter):
+    """
+    A filter that classifies atom pairs as reactive if they belong to a
+    user-specified pair of functional groups. Different lists of such pairs can
+    be specified for associations and dissociations.
+    The order of the two rules in a given pair does not matter.
+
+    Example rules::
+
+      any_O = {
+        'O': AlwaysReactive()
+      }
+      O_bound_H = {
+        'H': FunctionalGroupRule(1, 'O', (1, 3))
+      }
+      f = AtomPairFunctionalGroupFilter(association_rules=[(any_O, O_bound_H)], dissociation_rules=[])
+
+    This allows associations between any O atom and a H atom bound to an O.
+
+    """
+
+    def __init__(self,
+                 association_rules: List[Tuple[Union[dict, DistanceRuleSet], Union[dict, DistanceRuleSet]]],
+                 dissociation_rules: List[Tuple[Union[dict, DistanceRuleSet], Union[dict, DistanceRuleSet]]]
+                 ):
+        """
+        Parameters
+        ----------
+        association_rules :: List[Tuple[Union[dict, DistanceRuleSet], Union[dict, DistanceRuleSet]]]
+            A list of pairs of (functional group) rules. A given associative pair of atoms is reactive
+            if it satisfies at least one of these pairs of rules.
+        dissociation_rules :: List[Tuple[Union[dict, DistanceRuleSet], Union[dict, DistanceRuleSet]]]
+            A list of pairs of (functional group) rules. A given dissociative pair of atoms is reactive
+            if it satisfies at least one of these pairs of rules.
+        """
+        super().__init__()
+        self._association_rules = association_rules
+        self._dissociation_rules = dissociation_rules
+        self._atomrules = []  # for the moment, we do not care about duplicates
+        for tup in self._association_rules:
+            for t in tup:
+                if not isinstance(t, DistanceRuleSet):
+                    t = DistanceRuleSet(t)
+                self._atomrules.append(t)
+        for tup in self._dissociation_rules:
+            for t in tup:
+                if not isinstance(t, DistanceRuleSet):
+                    t = DistanceRuleSet(t)
+                self._atomrules.append(t)
+
+    def filter_atoms(self, structure_list: List[db.Structure], atom_indices: List[int]) -> List[int]:
+        reactive_atom_indices = []
+        idx_shift = 0  # this is an offset for different structures in structure_list
+        for structure in structure_list:
+            atoms = structure.get_atoms()
+            elements = [str(x) for x in atoms.elements]
+            molecules = deserialize_molecules(structure)
+            # For each atom index (within a whole structure), idx_map gives
+            # a pair of a molecule index and an index within the molecule.
+            idx_map = ast.literal_eval(structure.get_graph("masm_idx_map"))
+            for i, e in enumerate(elements):
+                for ruledict in self._atomrules:
+                    # atom is turned reactive if it fulfills at least one of the ruledicts
+                    if e in ruledict:
+                        rule = ruledict[e]
+                        if rule.filter_by_rule(molecules, idx_map, elements, i):
+                            reactive_atom_indices.append(i + idx_shift)
+                            break
+            idx_shift += structure.get_atoms().size()
+        # only return reactive atom indices that are also contained in the input atom indices (set intersection).
+        return list(set(atom_indices) & set(reactive_atom_indices))
+
+    def filter_atom_pairs(self, structure_list: List[db.Structure], pairs: List[Tuple[int, int]]) \
+            -> List[Tuple[int, int]]:
+        from scine_chemoton.gears.elementary_steps.trial_generator.connectivity_analyzer import ConnectivityAnalyzer
+        molecules = []
+        idx_map = []
+        elements = []
+        totalindex_to_structureindex: List[int] = []
+        totalindex_to_localindex: List[int] = []
+        adjacency_matrices = []
+        for i, structure in enumerate(structure_list):
+            connectivity_analyzer = ConnectivityAnalyzer(structure)
+            adjacency_matrices.append(connectivity_analyzer.get_adjacency_matrix())
+            molecules.append(deserialize_molecules(structure))
+            idx_map.append(ast.literal_eval(structure.get_graph("masm_idx_map")))
+            atoms = structure.get_atoms()
+            elements.append([str(x) for x in atoms.elements])
+            totalindex_to_structureindex += atoms.size() * [i]
+            totalindex_to_localindex += list(range(atoms.size()))
+
+        # all_elements_symbols contains the element symbol for each atom
+        # in the whole structure_list
+        all_element_symbols = [item for sublist in elements for item in sublist]
+
+        reactive_pairs = []
+        for i, j in pairs:
+            # Check if the pair is associative or dissociative
+            # The way this is done is inspired by _get_filtered_intraform_and_diss in bond_based.py
+            strucindex_i = totalindex_to_structureindex[i]
+            strucindex_j = totalindex_to_structureindex[j]
+            locindex_i = totalindex_to_localindex[i]
+            locindex_j = totalindex_to_localindex[j]
+            if strucindex_i == strucindex_j:
+                is_associative_pair = not adjacency_matrices[strucindex_i][locindex_i, locindex_j]
+            else:
+                is_associative_pair = True
+            if is_associative_pair:
+                rules_to_follow = self._association_rules
+            else:
+                rules_to_follow = self._dissociation_rules
+            if self.checkrules(i, j, rules_to_follow, all_element_symbols, totalindex_to_structureindex,
+                               totalindex_to_localindex, molecules, idx_map, elements):
+                reactive_pairs.append((i, j))
+
+        return reactive_pairs
+
+    @staticmethod
+    def checkrules(i, j, rules_to_follow, all_element_symbols, totalindex_to_structureindex,
+                   totalindex_to_localindex, molecules, idx_map, elements) -> bool:
+        """
+        this method checks whether the pair i, j fulfills the rules specified by rules_to_follow
+        """
+        e_i = all_element_symbols[i]
+        strucindex_i = totalindex_to_structureindex[i]
+        locindex_i = totalindex_to_localindex[i]
+        e_j = all_element_symbols[j]
+        strucindex_j = totalindex_to_structureindex[j]
+        locindex_j = totalindex_to_localindex[j]
+        for ruledict1, ruledict2 in rules_to_follow:
+            ruledicts = []  # we need to allow for permutation of the two dictionaries
+            if (e_i in ruledict1) and (e_j in ruledict2):
+                ruledicts.append((ruledict1, ruledict2))
+            if (e_i in ruledict2) and (e_j in ruledict1):
+                ruledicts.append((ruledict2, ruledict1))
+            for ruledict_i, ruledict_j in ruledicts:
+                rule_i = ruledict_i[e_i]
+                rule_j = ruledict_j[e_j]
+                if (rule_i.filter_by_rule(molecules[strucindex_i], idx_map[strucindex_i], elements[strucindex_i],
+                                          locindex_i) and
+                        rule_j.filter_by_rule(molecules[strucindex_j], idx_map[strucindex_j],
+                                              elements[strucindex_j], locindex_j)):
+                    return True
+        return False
+
+
+class SubStructureFilter(ReactiveSiteFilter):
+    """
+    A filter that matches given substructures with reactants structures.
+    Substructures are given as .xyz or .mol files and can in total or in
+    parts be used as active and disallowed list.
+
+    Note: The substructure matching does not consider local shapes of the
+          coordination spheres around atoms. As an example: a benzene
+          substructure will match cyclohexane blocks.
+
+    As an example: giving a CH3-CH2- substructure and using it in a disallowed
+    list (exclude_mode=True) will allow only the OH group of ethanol to be
+    allowed to react.
+
+    For each substructure a list of indices can be provided in an additional
+    .json file. If this list is provided the entire substructure will be matched
+    but only the subset of atoms will be applied. Indices start at index 0 for
+    the first atom in the corresponding substructure .xyz/.mol file.
+
+    As an example: giving a -CH2-OH substructure and an additional index list
+    containing only the atom indices of the -OH atoms will allow only the
+    OH-group of ethanol to react if used in an allowed-list fashion
+    (exclude_mode=False). The same input would not allow the OH-group in
+    (CH3)2-CH-OH to react.
+
+    Multiple substructures are added in an 'or' fashion, meaning that matching
+    any of the given substructures will trigger the filter.
+    """
+
+    def __init__(self, library_folder: str, exclude_mode: bool = False):
+        """
+        Parameters
+        ----------
+        library_folder :: str
+            Path to a folder containing xyz or mol files of substructures
+            to be used for filtering. For each xyz/mol file a json file of the
+            same name can be supplied to mark only specific atoms as relevant
+            for the final filtering. The json file should contain a single list
+            of atom indices of active atoms matching the corresponding xyz/mol
+            file. If not such json file is provided, all atoms in the xyz/mol file
+            are recognized as active for the filter.
+        exclude_mode :: bool
+            If false, only (active) atoms of given substructures are allowed to react.
+            If true, all (active) atoms of the given substructures are disallowed from
+            reactions trials, but all other are allowed.
+        """
+        super().__init__()
+        assert library_folder
+        self.library_folder = library_folder
+        assert os.path.isdir(self.library_folder)
+        self.exclude_mode = exclude_mode
+
+    def filter_atoms(self, structure_list: List[db.Structure], atom_indices: List[int]) -> List[int]:
+        gathered_atom_indices = set()
+        offsets = [0]  # Filled while parsing
+        for structure_idx, structure in enumerate(structure_list):
+            deserialized_molecules = deserialize_molecules(structure)
+            atom_map = ast.literal_eval(structure.get_graph("masm_idx_map"))
+            assert len(deserialized_molecules) == 1
+            reactant_molecule = deserialized_molecules[0]
+            offsets.append(sum(offsets) + reactant_molecule.graph.V)
+            unique_atom_idxs = set()
+            for path, _, files in os.walk(self.library_folder):
+                for file in files:
+                    if not (file.endswith('.xyz') or file.endswith('.mol')):
+                        continue
+                    loaded_file = load_file(os.path.join(path, file))
+                    assert len(loaded_file) == 1
+                    substructure = loaded_file[0]
+                    if substructure.graph.V > reactant_molecule.graph.V:
+                        continue
+
+                    selection_file_name = os.path.splitext(file)[0] + '.json'
+                    if os.path.isfile(os.path.join(path, selection_file_name)):
+                        with open(os.path.join(path, selection_file_name), 'r') as f:
+                            selection = load(f)
+                    else:
+                        selection = [i for i in range(substructure.graph.V)]
+
+                    match = maximum_matching_fragments(substructure, reactant_molecule, substructure.graph.V)
+
+                    for atm_idxs in match[2][0]:
+                        tmp = []
+                        for allowed_idx in selection:
+                            tmp.append(atm_idxs[allowed_idx])
+                        unique_atom_idxs.update(tmp)
+            gathered_atom_indices.update([atom_map.index((0, i)) + offsets[structure_idx] for i in unique_atom_idxs])
+
+        if self.exclude_mode:
+            return sorted(list(set(atom_indices).difference(set(gathered_atom_indices))))
+        else:
+            return sorted(list(gathered_atom_indices.intersection(set(atom_indices))))

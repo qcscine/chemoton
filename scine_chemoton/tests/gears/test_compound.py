@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -13,15 +13,15 @@ import unittest
 # Third party imports
 import pytest
 import scine_database as db
+from scine_database import test_database_setup as db_setup
 
 # Local application tests imports
-from .. import test_database_setup as db_setup
 from ...gears import HoldsCollections
 from ..resources import resources_root_path
 
 # Local application imports
 from ...engine import Engine
-from ...gears.compound import BasicAggregateHousekeeping
+from ...gears.compound import BasicAggregateHousekeeping, ThermoAggregateHousekeeping
 
 
 class CompoundTests(unittest.TestCase, HoldsCollections):
@@ -305,99 +305,111 @@ class CompoundTests(unittest.TestCase, HoldsCollections):
         assert structure.get_label() == db.Label.IRRELEVANT
 
     def test_graph_job_setup(self):
-        # Connect to test DB
-        manager = db_setup.get_clean_db("chemoton_test_graph_job_setup")
-        self.custom_setup(manager)
-
-        # Add structure data
         model = db.Model("FAKE", "FAKE", "F-AKE")
         rr = resources_root_path()
-        structure = db.Structure()
-        structure.link(self._structures)
-        structure.create(os.path.join(rr, "water.xyz"), 0, 1)
-        structure.set_label(db.Label.MINIMUM_OPTIMIZED)
-        structure.add_property("bond_orders", db.ID())
 
-        # Setup gear
-        compound_gear = BasicAggregateHousekeeping()
-        compound_gear.options.model = model
-        compound_gear.options.graph_job = db.Job("testy_mac_test_face")
-        compound_engine = Engine(manager.get_credentials(), fork=False)
-        compound_engine.set_gear(compound_gear)
+        # Setup gears
+        basic_compound_gear = BasicAggregateHousekeeping()
+        basic_compound_gear.options.model = model
+        basic_compound_gear.options.graph_job = db.Job("testy_mac_test_face")
 
-        # Run a single loop
-        compound_engine.run(single=True)
+        thermo_compound_gear = ThermoAggregateHousekeeping()
+        thermo_compound_gear.options.model = model
+        thermo_compound_gear.options.graph_job = db.Job("testy_mac_test_face")
 
-        # Checks
-        hits = self._calculations.query_calculations(dumps({}))
-        assert len(hits) == 1
+        for compound_gear in [basic_compound_gear, thermo_compound_gear]:
+            # Connect to test DB
+            manager = db_setup.get_clean_db("chemoton_test_graph_job_setup")
+            self.custom_setup(manager)
+            # Add structure data
+            structure = db.Structure()
+            structure.link(self._structures)
+            structure.create(os.path.join(rr, "water.xyz"), 0, 1)
+            structure.set_label(db.Label.MINIMUM_OPTIMIZED)
+            structure.add_property("bond_orders", db.ID())
 
-        calculation = db.Calculation(hits[0].id())
-        calculation.link(self._calculations)
+            compound_engine = Engine(manager.get_credentials(), fork=False)
+            compound_engine.set_gear(compound_gear)
 
-        assert len(calculation.get_structures()) == 1
-        assert calculation.get_structures()[0].string() == structure.id().string()
-        assert calculation.get_status() == db.Status.HOLD
-        assert calculation.get_job().order == "testy_mac_test_face"
+            # Run a single loop
+            compound_engine.run(single=True)
 
-        # Run a second time
-        compound_engine.run(single=True)
-        hits = self._calculations.query_calculations(dumps({}))
-        assert len(hits) == 1
+            # Checks
+            hits = self._calculations.query_calculations(dumps({}))
+            assert len(hits) == 1
 
-        # Rerun with a different model
-        model2 = db.Model("FAKE2", "", "")
-        compound_gear.options.model = model2
-        compound_engine.run(single=True)
-        hits = self._calculations.query_calculations(dumps({}))
-        assert len(hits) == 2
+            calculation = db.Calculation(hits[0].id())
+            calculation.link(self._calculations)
+
+            assert len(calculation.get_structures()) == 1
+            assert calculation.get_structures()[0].string() == structure.id().string()
+            assert calculation.get_status() == db.Status.HOLD
+            assert calculation.get_job().order == "testy_mac_test_face"
+
+            # Run a second time
+            compound_engine.run(single=True)
+            hits = self._calculations.query_calculations(dumps({}))
+            assert len(hits) == 1
+
+            # Rerun with a different model
+            model2 = db.Model("FAKE2", "", "")
+            compound_gear.options.model = model2
+            compound_engine.run(single=True)
+            hits = self._calculations.query_calculations(dumps({}))
+            assert len(hits) == 2
 
     def test_bo_job_setup(self):
-        # Connect to test DB
-        manager = db_setup.get_clean_db("chemoton_test_bo_job_setup")
-        self.custom_setup(manager)
-
-        # Add structure data
         model = db.Model("FAKE", "FAKE", "F-AKE")
         rr = resources_root_path()
-        structure = db.Structure()
-        structure.link(self._structures)
-        structure.create(os.path.join(rr, "water.xyz"), 0, 1)
-        structure.set_label(db.Label.MINIMUM_OPTIMIZED)
 
-        # Setup gear
-        compound_gear = BasicAggregateHousekeeping()
-        compound_gear.options.model = model
-        compound_gear.options.bond_order_job = db.Job("eggs_bacon_and_spam")
-        compound_engine = Engine(manager.get_credentials(), fork=False)
-        compound_engine.set_gear(compound_gear)
+        # Setup gears
+        basic_compound_gear = BasicAggregateHousekeeping()
+        basic_compound_gear.options.model = model
+        basic_compound_gear.options.bond_order_job = db.Job("eggs_bacon_and_spam")
 
-        # Run a single loop
-        compound_engine.run(single=True)
+        thermo_compound_gear = ThermoAggregateHousekeeping()
+        thermo_compound_gear.options.model = model
+        thermo_compound_gear.options.bond_order_job = db.Job("eggs_bacon_and_spam")
 
-        # Checks
-        hits = self._calculations.query_calculations(dumps({}))
-        assert len(hits) == 1
+        for compound_gear in [basic_compound_gear, thermo_compound_gear]:
+            # Connect to test DB
+            manager = db_setup.get_clean_db("chemoton_test_bo_job_setup")
+            self.custom_setup(manager)
+            # Add structure data
+            structure = db.Structure()
+            structure.link(self._structures)
+            structure.create(os.path.join(rr, "water.xyz"), 0, 1)
+            structure.set_label(db.Label.MINIMUM_OPTIMIZED)
 
-        calculation = db.Calculation(hits[0].id())
-        calculation.link(self._calculations)
+            compound_engine = Engine(manager.get_credentials(), fork=False)
+            compound_engine.set_gear(compound_gear)
 
-        assert len(calculation.get_structures()) == 1
-        assert calculation.get_structures()[0].string() == structure.id().string()
-        assert calculation.get_status() == db.Status.HOLD
-        assert calculation.get_job().order == "eggs_bacon_and_spam"
+            # Run a single loop
+            compound_engine.run(single=True)
 
-        # Run a second time
-        compound_engine.run(single=True)
-        hits = self._calculations.query_calculations(dumps({}))
-        assert len(hits) == 1
+            # Checks
+            hits = self._calculations.query_calculations(dumps({}))
+            assert len(hits) == 1
 
-        # Rerun with a different model
-        model2 = db.Model("FAKE2", "", "")
-        compound_gear.options.model = model2
-        compound_engine.run(single=True)
-        hits = self._calculations.query_calculations(dumps({}))
-        assert len(hits) == 2
+            calculation = db.Calculation(hits[0].id())
+            calculation.link(self._calculations)
+
+            assert len(calculation.get_structures()) == 1
+            assert calculation.get_structures()[0].string() == structure.id().string()
+            assert calculation.get_status() == db.Status.HOLD
+            assert calculation.get_job().order == "eggs_bacon_and_spam"
+
+            # Run a second time
+            compound_engine.run(single=True)
+            hits = self._calculations.query_calculations(dumps({}))
+            assert len(hits) == 1
+
+            # Rerun with a different model
+            model2 = db.Model("FAKE2", "", "")
+            compound_gear.options.model = model2
+            compound_engine.run(single=True)
+            hits = self._calculations.query_calculations(dumps({}))
+            assert len(hits) == 2
 
     def test_flask_creation(self):
         # Connect to test DB

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -16,11 +16,10 @@ from typing import List
 
 # Third party imports
 import scine_database as db
-import scine_utilities as utils
 
 # Local application imports
 from scine_chemoton.utilities.insert_initial_structure import insert_initial_structure
-from scine_chemoton.default_settings import default_nt_settings
+from scine_chemoton.default_settings import default_nt_settings, default_cutting_settings, default_opt_settings
 from scine_chemoton.engine import Engine
 from scine_chemoton.gears.scheduler import Scheduler
 from scine_chemoton.gears.thermo import BasicThermoDataCompletion
@@ -74,8 +73,8 @@ if wipe:
     manager.init()
     time.sleep(1.0)
     # Load initial data
-    methanol = pkg_resources.resource_filename("scine_chemoton", "tests/resources/methanol.xyz")
-    formaldehyde = pkg_resources.resource_filename("scine_chemoton", "tests/resources/formaldehyde.xyz")
+    methanol = pkg_resources.resource_filename("scine_chemoton", os.path.join("resources", "methanol.xyz"))
+    formaldehyde = pkg_resources.resource_filename("scine_chemoton", os.path.join("resources", "formaldehyde.xyz"))
 
     structure, calculation = insert_initial_structure(
         manager,
@@ -83,12 +82,7 @@ if wipe:
         0,
         1,
         model,
-        settings=utils.ValueCollection(
-            {
-                "convergence_max_iterations": 1000,
-                "bfgs_use_trust_radius": True,
-            }
-        ),
+        settings=default_opt_settings()
     )
     structure, calculation = insert_initial_structure(
         manager,
@@ -96,12 +90,7 @@ if wipe:
         0,
         1,
         model,
-        settings=utils.ValueCollection(
-            {
-                "convergence_max_iterations": 1000,
-                "bfgs_use_trust_radius": True,
-            }
-        ),
+        settings=default_opt_settings()
     )
 
 
@@ -131,13 +120,7 @@ conformer_gear = BruteForceConformers()
 conformer_gear.options.model = model
 conformer_gear.options.conformer_job = db.Job("conformers")
 conformer_gear.options.minimization_job = db.Job("scine_geometry_optimization")
-conformer_gear.options.minimization_settings = utils.ValueCollection(
-    {
-        "convergence_max_iterations": 1000,
-        "bfgs_use_trust_radius": True,
-        "geoopt_coordinate_system": "cartesianWithoutRotTrans",
-    }
-)
+conformer_gear.options.minimization_settings = default_opt_settings()
 conformer_engine = Engine(credentials)
 conformer_engine.set_gear(conformer_gear)
 conformer_engine.run()
@@ -177,7 +160,7 @@ dissociations_gear.trial_generator.reactive_site_filter = ReactiveSiteFilter()
 dissociations_gear.trial_generator.further_exploration_filter = FurtherExplorationFilter()
 dissociations_gear.trial_generator.options.model = model
 dissociations_gear.trial_generator.options.job = db.Job("scine_dissociation_cut")
-dissociations_gear.trial_generator.options.cutting_job_settings = utils.ValueCollection({})
+dissociations_gear.trial_generator.options.cutting_job_settings = default_cutting_settings()
 dissociations_gear.trial_generator.options.min_bond_dissociations = 1
 dissociations_gear.trial_generator.options.max_bond_dissociations = 1
 dissociations_gear.trial_generator.options.enable_further_explorations = False

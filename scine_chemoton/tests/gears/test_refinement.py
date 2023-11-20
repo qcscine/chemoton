@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -13,15 +13,13 @@ import random
 # Third party imports
 import scine_database as db
 import scine_utilities as utils
-
-# Local application tests imports
-from .. import test_database_setup as db_setup
+from scine_database.queries import identical_reaction, model_query
+from scine_database.compound_and_flask_creation import get_compound_or_flask
+from scine_database import test_database_setup as db_setup
 
 # Local application imports
-from ...utilities.queries import identical_reaction, model_query
 from ...engine import Engine
 from ...gears.refinement import NetworkRefinement
-from ...utilities.compound_and_flask_creation import get_compound_or_flask
 
 
 def create_new_calculations(elementary_steps, calculations, pre_model, structures):

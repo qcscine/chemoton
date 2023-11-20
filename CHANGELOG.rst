@@ -1,6 +1,22 @@
 Changelog
 =========
 
+Release 3.1.0
+-------------
+
+New features
+ - Add SteeringWheel infrastructure for actively steering explorations.
+ - Add ThermoAggregateHousekeeping gear which allows sorting of structures with a frequency check.
+ - AtomPairFunctionalGroupFilter for specifying pairs of functional groups that are allowed to react.
+ - CentralSiteFilter to focus explorations on certain elements, suited well for homogeneous catalysis.
+ - New ElementaryStepGear to focus explorations on certain structures.
+ - New ReactiveSiteFilter based on substructures provided in .xyz or .mol files. 
+ - The KineticModelingGear is now able to setup jobs for the puffin interface of the ReactionMechanismSimulator.
+
+Changes
+ - Queries and utility functions related only to the database are moved to the `scine_database` package. The functionality here is deprecated and the unittests are removed.
+ - Update address in license
+
 Release 3.0.0
 -------------
 

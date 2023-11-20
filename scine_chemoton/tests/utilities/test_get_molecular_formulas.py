@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -12,10 +12,10 @@ import unittest
 from scine_chemoton.gears import HoldsCollections
 
 import scine_database as db
+from scine_database import test_database_setup as db_setup
 
 # local imports
 from ..resources import resources_root_path
-from .. import test_database_setup as db_setup
 from ...utilities.get_molecular_formula import (
     get_molecular_formula_of_structure,
     get_molecular_formula_of_compound,

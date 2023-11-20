@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -15,16 +15,18 @@ from typing import Optional, Dict, List, Tuple, Union
 
 # Third party imports
 import scine_database as db
+from scine_database.energy_query_functions import get_barriers_for_elementary_step_by_type
+from scine_database.queries import stop_on_timeout, model_query
+from scine_database.concentration_query_functions import (
+    query_concentration_with_model_object,
+    query_concentration_with_object
+)
+from scine_database.compound_and_flask_creation import get_compound_or_flask
 
 # Local application imports
 from . import Gear
 from .pathfinder import Pathfinder as pf
 from .elementary_steps.aggregate_filters import AggregateFilter
-from .kinetic_modeling.concentration_query_functions import query_concentration_with_model_object,\
-    query_concentration_with_object
-from ..utilities.energy_query_functions import get_barriers_for_elementary_step_by_type
-from ..utilities.queries import stop_on_timeout, model_query
-from ..utilities.compound_and_flask_creation import get_compound_or_flask
 
 
 class KineticsBase(Gear, ABC):
@@ -43,18 +45,10 @@ class KineticsBase(Gear, ABC):
         """
         The options for the KineticsBase Gear.
         """
-        __slots__ = ("cycle_time", "restart")
+        __slots__ = "restart"
 
         def __init__(self):
             super().__init__()
-            self.cycle_time = 10
-            """
-            int
-                The minimum number of seconds between two cycles of the Gear.
-                Cycles are finished independent of this option, thus if a cycle
-                takes longer than the cycle_time will effectively lead to longer
-                cycle times and not cause multiple cycles of the same Gear.
-            """
             self.restart = False
             """
             bool
@@ -139,7 +133,7 @@ class KineticsBase(Gear, ABC):
         bool
             aggregate was inserted
         """
-        user_labels = [db.Label.USER_OPTIMIZED, db.Label.USER_GUESS]
+        user_labels = [db.Label.USER_OPTIMIZED, db.Label.USER_GUESS, db.Label.USER_COMPLEX_OPTIMIZED]
         for s_id in aggregate.get_structures():
             structure = db.Structure(s_id)
             structure.link(self._structures)
@@ -387,7 +381,7 @@ class BasicBarrierHeightKinetics(KineticsBase):
                 if lhs is not None:
                     values.append(lhs)
                 if lhs is not None and rhs is not None:
-                    energies[energy_type].append(lhs-rhs)
+                    energies[energy_type].append(lhs - rhs)
         barrier_gibbs = None if not barriers["gibbs_free_energy"] else min(barriers["gibbs_free_energy"])
         barrier_electronic = None if not barriers["electronic_energy"] else min(barriers["electronic_energy"])
         energy_gibbs = None if not barriers["gibbs_free_energy"] else min(energies["gibbs_free_energy"])
@@ -677,12 +671,9 @@ class PathfinderKinetics(KineticsBase):
         int
             Number of optimized structures with the given model.
         """
-        selection = {
-            "$and": [
-                {"label": {"$in": ["user_optimized", "minimum_optimized", "ts_optimized", "complex_optimized"]}}
-            ]
-            + model_query(model)
-        }
+        selection = {"$and": [{"label": {"$in": ["user_optimized", "minimum_optimized",
+                                                 "ts_optimized", "complex_optimized",
+                                                 "user_complex_optimized"]}}] + model_query(model)}
 
         return self._structures.count(dumps(selection))
 

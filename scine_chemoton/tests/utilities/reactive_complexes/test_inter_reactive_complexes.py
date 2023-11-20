@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -13,9 +13,9 @@ import numpy as np
 # Third party imports
 import scine_database as db
 import scine_utilities as utils
+from scine_database import test_database_setup as db_setup
 
 # Local application tests imports
-from ... import test_database_setup as db_setup
 from ...resources import resources_root_path
 
 # Local application imports
@@ -322,7 +322,6 @@ def test_set_up_rotamers_atom_on_atom():
         list(index2),
         attack_points2[index2][0:1],
     )
-    print(operations)
     # Check, if one rotamer was generated
     assert len(operations) == 1
     tmp_op = operations[-1]

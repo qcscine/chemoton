@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -64,4 +64,38 @@ def default_nt_settings() -> utils.ValueCollection:
         "opt_bfgs_trust_radius": 0.4,
         # # # Settings for the optimisation of the reactive complex
         "rcopt_convergence_max_iterations": 1000,
+    })
+
+
+def default_cutting_settings() -> utils.ValueCollection:
+    return utils.ValueCollection({
+        "opt_convergence_delta_value": 1.0e-06,
+        "opt_convergence_gradient_max_coefficient": 0.0002,
+        "opt_convergence_gradient_rms": 0.0001,
+        "opt_convergence_max_iterations": 1000,
+        "opt_convergence_requirement": 3,
+        "opt_convergence_step_max_coefficient": 0.002,
+        "opt_convergence_step_rms": 0.001,
+        "rcopt_convergence_delta_value": 1.0e-06,
+        "rcopt_convergence_gradient_max_coefficient": 0.0002,
+        "rcopt_convergence_gradient_rms": 0.0001,
+        "rcopt_convergence_max_iterations": 1000,
+        "rcopt_convergence_requirement": 3,
+        "rcopt_convergence_step_max_coefficient": 0.002,
+        "rcopt_convergence_step_rms": 0.001,
+    })
+
+
+def default_opt_settings() -> utils.ValueCollection:
+    return utils.ValueCollection({
+        "convergence_max_iterations": 1000,
+        "convergence_step_max_coefficient": 2.0e-3,
+        "convergence_step_rms": 1.0e-3,
+        "convergence_gradient_max_coefficient": 2.0e-4,
+        "convergence_gradient_rms": 1.0e-4,
+        "convergence_requirement": 3,
+        "convergence_delta_value": 1e-6,
+        "geoopt_coordinate_system": "cartesianWithoutRotTrans",
+        "bfgs_use_trust_radius": True,
+        "bfgs_trust_radius": 0.4,
     })

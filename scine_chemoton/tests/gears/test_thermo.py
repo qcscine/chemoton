@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -13,9 +13,9 @@ from json import dumps
 # Third party imports
 import scine_database as db
 import scine_utilities as utils
+from scine_database import test_database_setup as db_setup
 
 # Local application tests imports
-from .. import test_database_setup as db_setup
 from ...gears import HoldsCollections
 from ..resources import resources_root_path
 
@@ -231,7 +231,7 @@ class ThermoTests(unittest.TestCase, HoldsCollections):
         structure.set_label(db.Label.USER_OPTIMIZED)
         structure.set_model(model)
         # Second structure
-        model2 = db.Model("fake", "fake", "f-ake")
+        model2 = db.Model("realfake", "realfake", "realf-ake")
         structure2 = db.Structure()
         structure2.link(self._structures)
         structure2.create(os.path.join(rr, "water.xyz"), 0, 1)

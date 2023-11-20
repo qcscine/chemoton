@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -9,8 +9,10 @@ from typing import Union, List
 
 # Third party imports
 import scine_database as db
+from scine_database.compound_and_flask_creation import get_compound_or_flask
 
-from ...utilities.compound_and_flask_creation import get_compound_or_flask
+from warnings import warn
+warn('This is deprecated, please import the queries from scine_database', DeprecationWarning, stacklevel=2)
 
 
 def query_concentration_with_model_id(label: str, compound_id: db.ID, compounds: db.Collection,

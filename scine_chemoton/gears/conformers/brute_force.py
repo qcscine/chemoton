@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -13,12 +13,12 @@ import time
 
 # Third party imports
 import scine_database as db
+from scine_database.queries import model_query, stop_on_timeout
 import scine_utilities as utils
 
 # Local application imports
 from .. import Gear
 from ..elementary_steps.aggregate_filters import AggregateFilter
-from ...utilities.queries import model_query, stop_on_timeout
 
 
 class BruteForceConformers(Gear):
@@ -48,7 +48,6 @@ class BruteForceConformers(Gear):
         """
 
         __slots__ = (
-            "cycle_time",
             "conformer_job",
             "minimization_job",
             "conformer_settings",
@@ -58,14 +57,6 @@ class BruteForceConformers(Gear):
 
         def __init__(self):
             super().__init__()
-            self.cycle_time = 10
-            """
-            int
-                The minimum number of seconds between two cycles of the Gear.
-                Cycles are finished independent of this option, thus if a cycle
-                takes longer than the cycle_time will effectively lead to longer
-                cycle times and not cause multiple cycles of the same Gear.
-            """
             self.conformer_job: db.Job = db.Job("conformers")
             """
             db.Job (Scine::Database::Calculation::Job)

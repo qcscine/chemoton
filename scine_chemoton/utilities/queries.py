@@ -6,7 +6,7 @@
               based on Chemoton specific objects.
 """
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -20,6 +20,9 @@ from typing import Any, Dict, List, Optional, Union, Set
 # Third party imports
 import scine_database as db
 import scine_utilities as utils
+
+from warnings import warn
+warn('This is deprecated, please import the queries from scine_database', DeprecationWarning, stacklevel=2)
 
 
 class stop_on_timeout:
@@ -93,7 +96,8 @@ def model_query(model: db.Model) -> List[dict]:
     """
     result = []
     fields = ['spin_mode', 'basis_set', 'method', 'method_family', 'program', 'version', 'solvation', 'solvent',
-              'embedding', 'periodic_boundaries', 'external_field', 'temperature', 'electronic_temperature']
+              'embedding', 'periodic_boundaries', 'external_field', 'temperature', 'electronic_temperature',
+              'pressure']
     for field in fields:
         value = getattr(model, field)
         if value.lower() != "any":
@@ -343,6 +347,40 @@ def query_calculation_in_id_set(id_selection: Set[str], n_structures: int, calcu
     return None
 
 
+def get_common_calculation_ids(job_order: str, structure_id_list: List[db.ID], model: db.Model,
+                               structures: db.Collection, calculations: db.Collection) -> Set[str]:
+    """
+    Getter for the intersection of all calculations associated to the given structures, job_order, and model.
+    Parameters
+    ----------
+    job_order : str
+        The job order of the calculations to consider.
+    structure_id_list : List[db.ID]
+        The list of structure ids of interest.
+    model : db.Model
+        The model, the calculations shall use.
+    structures : db.Collection
+        The structure collection.
+    calculations : db.Collection
+        The calculation collection.
+    """
+    if len(structure_id_list) < 1:
+        return set()
+    # Eliminate duplicate structure ids.
+    s_id_list = [db.ID(str_id) for str_id in set([s_id.string() for s_id in structure_id_list])]
+    # settings type check, support both dict and ValueCollection and want ValueCollection for speed
+    structure_0 = db.Structure(s_id_list[0], structures)
+    calc_id_set = set([c_id.string() for c_id in structure_0.query_calculations(job_order, model, calculations)])
+    if not calc_id_set:
+        return set()
+    for counter in range(len(s_id_list) - 1):
+        s_id = s_id_list[counter + 1]
+        structure = db.Structure(s_id, structures)
+        struc_set = set([c_id.string() for c_id in structure.query_calculations(job_order, model, calculations)])
+        calc_id_set = calc_id_set.intersection(struc_set)
+    return calc_id_set
+
+
 def get_calculation_id_from_structure(job_order: str, structure_id_list: List[db.ID], model: db.Model,
                                       structures: db.Collection, calculations: db.Collection,
                                       settings: Optional[Union[utils.ValueCollection, Dict[str, Any]]] = None,
@@ -372,21 +410,9 @@ def get_calculation_id_from_structure(job_order: str, structure_id_list: List[db
     Returns the calculation ID if found. Returns None if no calculation corresponds to the given specification.
 
     """
-    if len(structure_id_list) < 1:
-        return None
-    # Eliminate duplicate structure ids.
-    s_id_list = [db.ID(str_id) for str_id in set([s_id.string() for s_id in structure_id_list])]
-    # settings type check, support both dict and ValueCollection and want ValueCollection for speed
-    structure_0 = db.Structure(s_id_list[0], structures)
-    calc_id_set = set([c_id.string() for c_id in structure_0.query_calculations(job_order, model, calculations)])
+    calc_id_set = get_common_calculation_ids(job_order, structure_id_list, model, structures, calculations)
     if not calc_id_set:
         return None
-    for counter in range(len(s_id_list) - 1):
-        s_id = s_id_list[counter + 1]
-        structure = db.Structure(s_id, structures)
-        struc_set = set([c_id.string() for c_id in structure.query_calculations(job_order, model, calculations)])
-        calc_id_set = calc_id_set.intersection(struc_set)
-
     return query_calculation_in_id_set(calc_id_set, len(structure_id_list), calculations, structure_id_list,
                                        settings, auxiliaries)
 
@@ -451,3 +477,34 @@ def get_calculation_id(job_order: str, structure_id_list: List[db.ID], model: db
 
 def lastmodified_since(time: datetime) -> Dict[str, Any]:
     return {'_lastmodified': {'$gt': {"$date": int(time.timestamp() * 1000)}}}
+
+
+def optimized_labels() -> List[str]:
+    """
+    Returns a list of all labels for optimized structures in the database, should be used for queries
+    """
+    return [
+        "minimum_optimized",
+        "user_optimized",
+        "complex_optimized",
+        "user_surface_optimized",
+        "complex_surface_optimized",
+        "surface_optimized",
+        "user_complex_optimized",
+        "user_surface_complex_optimized"]
+
+
+def optimized_labels_enums() -> List[db.Label]:
+    """
+    Returns a list of all labels for optimized structures in Enum form, should be used to compare label of Structure
+    object.
+    """
+    return [
+        db.Label.MINIMUM_OPTIMIZED,
+        db.Label.USER_OPTIMIZED,
+        db.Label.COMPLEX_OPTIMIZED,
+        db.Label.USER_SURFACE_OPTIMIZED,
+        db.Label.SURFACE_COMPLEX_OPTIMIZED,
+        db.Label.SURFACE_OPTIMIZED,
+        db.Label.USER_COMPLEX_OPTIMIZED,
+        db.Label.USER_SURFACE_COMPLEX_OPTIMIZED]

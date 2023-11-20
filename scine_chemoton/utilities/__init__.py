@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 from time import sleep
@@ -31,7 +31,7 @@ def yes_or_no_question(question: str, callable_input: Callable = input) -> bool:
 
 
 def integer_question(question: str, limits: Tuple[int, int], callable_input: Callable = input) -> int:
-    inp = callable_input(f"{question}? (y/n) ")
+    inp = callable_input(f"{question}? ")
     while True:
         try:
             val = int(inp.strip())

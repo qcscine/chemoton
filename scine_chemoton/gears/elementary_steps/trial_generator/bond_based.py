@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -14,12 +14,13 @@ from scipy.special import comb
 
 # Third party imports
 from numpy import ndarray
+from scine_database.queries import calculation_exists_in_structure, get_calculation_id
 import scine_database as db
 import scine_utilities as utils
 import scine_molassembler as masm
 
 # Local application imports
-from ....utilities.queries import calculation_exists_in_structure, get_calculation_id
+from scine_chemoton.utilities.options import BaseOptions
 from .connectivity_analyzer import ReactionType, ConnectivityAnalyzer
 from . import TrialGenerator, _sanity_check_wrapper
 
@@ -44,7 +45,7 @@ class BondBased(TrialGenerator):
 
         __slots__ = ("unimolecular_options", "bimolecular_options")
 
-        class BimolOptions:
+        class BimolOptions(BaseOptions):
             """
             The options for the generation and exploration of bimolecular reactions.
 
@@ -158,7 +159,7 @@ class BondBased(TrialGenerator):
                     False: sum(multiplicities) - 1
                 """
 
-        class UnimolOptions:
+        class UnimolOptions(BaseOptions):
             """
             The options for the generation and exploration of unimolecular
             reactions.
@@ -420,8 +421,6 @@ class BondBased(TrialGenerator):
                 )
                 if cid is not None:
                     new_calculation_ids.append(cid)
-                else:
-                    print("No new calculation added")
         if new_calculation_ids:
             for s in structure_list:
                 s.add_calculations(self.options.bimolecular_options.job.order, [new_calculation_ids[0]])

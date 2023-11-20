@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -10,12 +10,12 @@ from typing import Set, Optional, Dict, List, Union
 
 # Third party imports
 import scine_database as db
+from scine_database.queries import stop_on_timeout, calculation_exists_in_structure
 import scine_utilities as utils
 
 # Local application imports
 from ..gears import Gear
 from ..gears.elementary_steps.aggregate_filters import AggregateFilter
-from ..utilities.queries import stop_on_timeout, calculation_exists_in_structure
 from ..utilities.calculation_creation_helpers import finalize_calculation
 
 
@@ -45,7 +45,7 @@ class BasicThermoDataCompletion(Gear):
         The options for the BasicThermoDataCompletion Gear.
         """
 
-        __slots__ = ("cycle_time", "job", "settings", "structure_model", "ignore_explore_bool")
+        __slots__ = ("job", "settings", "structure_model", "ignore_explore_bool")
 
         def __init__(self):
             super().__init__()
@@ -200,7 +200,7 @@ class BasicThermoDataCompletion(Gear):
             # TS has no aggregate, so AggregateFilters cannot filter
             return False
         agg_id = structure.get_aggregate()
-        if label == db.Label.COMPLEX_OPTIMIZED:
+        if label == db.Label.COMPLEX_OPTIMIZED or label == db.Label.USER_COMPLEX_OPTIMIZED:
             aggregate = db.Flask(agg_id, self._flasks)
         else:
             aggregate = db.Compound(agg_id, self._compounds)  # type: ignore

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -15,10 +15,11 @@ from json import dumps
 # Third party imports
 from numpy import ndarray
 import scine_database as db
+from scine_database.queries import model_query, calculation_exists_in_structure, get_calculation_id
 import scine_utilities as utils
 
 # Local application imports
-from scine_chemoton.utilities.queries import model_query, calculation_exists_in_structure, get_calculation_id
+from scine_chemoton.utilities.options import BaseOptions
 from .connectivity_analyzer import ReactionType, ConnectivityAnalyzer
 from . import TrialGenerator, _sanity_check_wrapper
 
@@ -56,7 +57,7 @@ class FragmentBased(TrialGenerator):
             "bimolecular_association_options",
         )
 
-        class BimolAssociationOptions:
+        class BimolAssociationOptions(BaseOptions):
             """
             The options for the exploration of bimolecular reactions.
             """
@@ -117,7 +118,7 @@ class FragmentBased(TrialGenerator):
                     False: sum(multiplicities) - 1
                 """
 
-        class UnimolDissociationOptions:
+        class UnimolDissociationOptions(BaseOptions):
             """
             The options for the generation of dissociative and
             disconnective unimolecular trial elementary step calculations.
@@ -162,7 +163,7 @@ class FragmentBased(TrialGenerator):
                     Empty by default.
                 """
 
-        class UnimolAssociationOptions:
+        class UnimolAssociationOptions(BaseOptions):
             """
             The options for the generation of associative unimolecular elementary step trial calculations.
             """

@@ -40,7 +40,7 @@ setup(
     version=__version__,
     description="Software driving the automated exploration of chemical reaction networks",
     long_description=readme,
-    author="ETH Zurich, Laboratory of Physical Chemistry, Reiher Group",
+    author="ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group",
     author_email="scine@phys.chem.ethz.ch",
     url="https://www.scine.ethz.ch",
     python_requires=">={}".format(".".join(str(n) for n in min_version)),
@@ -57,7 +57,7 @@ setup(
             # When adding files here, remember to update MANIFEST.in as well,
             # or else they will not be included in the distribution on PyPI!
             # 'path/to/data_file',
-            "tests/resources/*xyz"
+            "resources/*xyz"
         ]
     },
     install_requires=requirements,

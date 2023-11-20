@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -17,11 +17,11 @@ from warnings import warn
 # Third party imports
 from numpy import ndarray
 import scine_database as db
+from scine_database.energy_query_functions import get_energy_sum_of_elementary_step_side, get_energy_for_structure
+from scine_database.queries import stop_on_timeout, get_calculation_id, select_calculation_by_structures
 import scine_utilities as utils
 
 # Local application imports
-from ....utilities.queries import stop_on_timeout, get_calculation_id, select_calculation_by_structures
-from ....utilities.energy_query_functions import get_energy_sum_of_elementary_step_side, get_energy_for_structure
 from ..reactive_site_filters import ReactiveSiteFilter, ReactiveSiteFilterAndArray, ReactiveSiteFilterOrArray
 from .connectivity_analyzer import ReactionType, ConnectivityAnalyzer
 from .bond_based import BondBased
@@ -296,6 +296,7 @@ class FastDissociations(BondBased):
         """
         The options for generating dissociations.
         """
+        __slots__ = ()
 
         class UnimolOptions(BondBased.Options.UnimolOptions):
             __slots__ = (
@@ -384,7 +385,8 @@ class FastDissociations(BondBased):
                 super().__setattr__(item, value)
                 if hasattr(self, "_parent") and self._parent is not None:
                     self._parent.clear_cache()
-                if hasattr(self, "_unusable_settings") and item in self._unusable_settings:
+                if hasattr(self, "_unusable_settings") and item in self._unusable_settings \
+                        and hasattr(self, item) and getattr(self, item) != value:
                     raise NotImplementedError(f"The setting {item} is not implemented for "
                                               f"{self._parent.__class__.__name__}")
                 # couple together modifications and dissociations

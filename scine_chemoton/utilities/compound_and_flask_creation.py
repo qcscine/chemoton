@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
 from typing import Union
 
 import scine_database as db
+
+from warnings import warn
+warn('This is deprecated, please import the functions from scine_database', DeprecationWarning, stacklevel=2)
 
 
 def get_compound_or_flask(object_id: db.ID, object_type: db.CompoundOrFlask, compounds: db.Collection,
@@ -56,6 +59,6 @@ def get_aggregate_type(structure: db.Structure) -> db.CompoundOrFlask:
 
     """
     aggregate_type = db.CompoundOrFlask.COMPOUND
-    if structure.get_label() in [db.Label.COMPLEX_OPTIMIZED, db.Label.COMPLEX_GUESS]:
+    if structure.get_label() in [db.Label.COMPLEX_OPTIMIZED, db.Label.COMPLEX_GUESS, db.Label.USER_COMPLEX_OPTIMIZED]:
         aggregate_type = db.CompoundOrFlask.FLASK
     return aggregate_type

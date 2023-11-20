@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -12,19 +12,18 @@ import os
 import json
 import copy
 import numpy as np
-import networkx as nx
 
 # Local application tests imports
-from .. import test_database_setup as db_setup
 from ...gears import HoldsCollections
 
 # Third party imports
 import scine_database as db
+from scine_database.energy_query_functions import rate_constant_from_barrier
+from scine_database import test_database_setup as db_setup
 
 # Local application imports
 from ..resources import resources_root_path
 from ...gears.pathfinder import Pathfinder as pf
-from ...utilities.energy_query_functions import rate_constant_from_barrier
 
 
 class PathfinderTests(unittest.TestCase, HoldsCollections):
@@ -65,30 +64,6 @@ class PathfinderTests(unittest.TestCase, HoldsCollections):
 
         return reaction
 
-    def _load_json_to_graph(self, filename: str):
-        # # # Load graph as dictionary of dictionaries
-        graph_json = filename
-
-        with open(graph_json, "r") as f:
-            graph = json.load(f)
-        # # # Extract node type information
-        type_dict = {}
-        for key, value in graph.items():
-            type_dict[key] = value['type']
-            graph[key].pop('type')
-        # # # Load NetworkX Digraph
-        nx_graph = nx.convert.from_dict_of_dicts(graph, create_using=nx.DiGraph)
-        for key, value in type_dict.items():
-            nx_graph.nodes[key]['type'] = value
-
-        return nx_graph
-
-    def _load_json_to_compound_costs(self, filename: str):
-        cc_json = filename
-        with open(cc_json, "r") as f:
-            cc_dict = json.load(f)
-        return cc_dict
-
     def test_pathfinder_initialization(self):
         manager = db_setup.get_clean_db("test_pathfinder_init")
         self.custom_setup(manager)
@@ -104,7 +79,7 @@ class PathfinderTests(unittest.TestCase, HoldsCollections):
         # Test default options
         assert finder.options.graph_handler == "basic"
         assert finder.options.barrierless_weight == 1.0
-        assert finder.options.model is None
+        assert finder.options.model == db.Model("any", "any", "any")
 
     def test_basic_graph_handler_core(self):
         manager = db_setup.get_clean_db("test_pathfinder_basic_graph_handler")
@@ -245,7 +220,6 @@ class PathfinderTests(unittest.TestCase, HoldsCollections):
         finder.options.model = db.Model("FAKE", "FAKE", "F-AKE")
         finder.graph_handler = pf.BarrierBasedHandler(manager, db.Model("FAKE", "FAKE", "F-AKE"))
         finder.graph_handler._map_elementary_steps_to_reactions()
-
         assert finder.graph_handler._rxn_to_es_map == {reaction.id().string(): el_step_id}
         # Check temperature setting
         assert finder.graph_handler.get_temperature() == 298.15
@@ -320,11 +294,11 @@ class PathfinderTests(unittest.TestCase, HoldsCollections):
             for c_id in side:
                 c = db.Compound(c_id, self._compounds)
                 c.add_structure(db_setup._fake_structure(c, self._structures, self._properties, False, (-20.0, -10.0),
-                                                         db.Model("Fake", "Fake", "F-ake")))
+                                                         db.Model("wrongFake", "wrongFake", "wrongF-ake")))
         # Add elementary step with wrong structure model
         el_model_step_id = db_setup._add_step(reaction, (5.0, 15.0), self._compounds,
                                               self._structures, self._elementary_steps, self._properties,
-                                              db.Model("Fake", "Fake", "F-ake"))
+                                              db.Model("wrongFake", "wrongFake", "wrongF-ake"))
         reaction.add_elementary_step(el_model_step_id)
 
         # Setup pathfinder
@@ -332,10 +306,14 @@ class PathfinderTests(unittest.TestCase, HoldsCollections):
         finder.options.model = db.Model("FAKE", "FAKE", "F-AKE")
         finder.options.graph_handler = "barrier"
         finder.options.filter_negative_barriers = True
+        finder.options.use_structure_model = True
         finder.options.structure_model = db.Model("FAKE", "FAKE", "F-AKE")
         finder.build_graph()
-        assert finder.graph_handler.use_structure_model
         assert finder.graph_handler._rxn_to_es_map == {reaction.id().string(): el_pos_step_id}
+        # Check that id is in both reaction nodes
+        for i in range(0, 2):
+            assert finder.graph_handler.graph.nodes(data=True)[reaction.id().string(
+            ) + ";" + str(i) + ";"]['elementary_step_id'] == el_pos_step_id.string()
 
     def test_barrier_graph_handler_for_barrierless(self):
         manager = db_setup.get_clean_db("test_pathfinder_barrierless_graph_handler")
@@ -460,6 +438,7 @@ class PathfinderTests(unittest.TestCase, HoldsCollections):
             assert len(finder.find_paths(compound_nodes[0], compound_nodes[-1], 1000)) < 1000
             assert len(finder.find_unique_paths(compound_nodes[0], compound_nodes[-1], 1000)) < 1000
 
+    @pytest.mark.filterwarnings('ignore::UserWarning')
     def test_pathfinder_compound_costs(self):
         manager = db_setup.get_clean_db("test_pathfinder_compound_costs")
         self.custom_setup(manager)
@@ -486,6 +465,7 @@ class PathfinderTests(unittest.TestCase, HoldsCollections):
         finder.build_graph()
         n_compounds = [node for node in finder.graph_handler.graph.nodes if ';' not in node]
         n_rxn_nodes = [node for node in finder.graph_handler.graph.nodes if ';' in node]
+
         # Check default for start_compounds_set
         assert finder.start_compounds_set is False
         start_conditions = {
@@ -496,6 +476,7 @@ class PathfinderTests(unittest.TestCase, HoldsCollections):
         assert finder.start_compounds_set is True
         assert finder.start_compounds == n_compounds[0:1]
         assert finder.compound_costs == start_conditions
+
         # Check failed attempt for determining compound costs
         finder.calculate_compound_costs()
         assert finder.compound_costs_solved is False
@@ -504,20 +485,25 @@ class PathfinderTests(unittest.TestCase, HoldsCollections):
                                          n_compounds[2]: finder._pseudo_inf,
                                          n_compounds[3]: finder._pseudo_inf,
                                          n_compounds[4]: finder._pseudo_inf}
-        # Check updating prints error to sys.err
+
+        # Check resetting graph without compound costs raises error
         assert finder.graph_updated_with_compound_costs is False
         self.assertRaises(RuntimeError, finder.reset_graph_compound_costs)
-        finder.update_graph_compound_costs()
-        _, err = self.capsys.readouterr()
-        assert "Warning: The following compounds have no cost assigned:\n" in err
+
+        # Check updating of graph with compound costs warns thee user if not all solved
+        with self.assertWarns(UserWarning) as w_handler:
+            finder.update_graph_compound_costs()
+        assert ("The following compounds have no cost assigned:" in str(w_handler.warning))
         assert finder.graph_updated_with_compound_costs
         finder.reset_graph_compound_costs()
         assert finder.graph_updated_with_compound_costs is False
+
         # Check updating of start conditions
         start_conditions[n_compounds[1]] = 0.4
         finder.set_start_conditions(start_conditions)
         assert finder.start_compounds == n_compounds[0:2]
         assert finder.compound_costs == start_conditions
+
         # Check successful attempt for determining compound costs, the third compound has the cost of 1 + 0.4 + 0.7
         finder.calculate_compound_costs()
         out, _ = self.capsys.readouterr()
@@ -525,6 +511,7 @@ class PathfinderTests(unittest.TestCase, HoldsCollections):
         assert "Removing " + n_compounds[4] + " from compounds to check.\n" in out
         assert finder.compound_costs_solved is False
         assert finder.compound_costs[n_compounds[2]] == 1.0 + 0.4 + 0.7
+
         # Check correct update of weights in graph
         finder.update_graph_compound_costs()
         assert finder.graph_updated_with_compound_costs is True
@@ -540,14 +527,12 @@ class PathfinderTests(unittest.TestCase, HoldsCollections):
         ref_overall_equation = "1 H2O(c:0, m:1) + 1 H2O(c:0, m:1) = 1 H2O(c:0, m:1)"
         assert finder.get_overall_reaction_equation(path[0]) == ref_overall_equation
 
-        # Check that warning is raised when updating the graph again
-        self.assertRaises(Warning, finder.update_graph_compound_costs)
-
         # Check correct resetting of starting conditions
         start_conditions = {
             n_compounds[0]: 1.4,
             n_compounds[1]: 1.7
         }
+        assert finder.start_compounds_set
         finder.set_start_conditions(start_conditions)
         finder.calculate_compound_costs()
         assert finder.compound_costs_solved is False
@@ -565,6 +550,15 @@ class PathfinderTests(unittest.TestCase, HoldsCollections):
                    - 0.0) < 1e-12
         assert abs(finder.graph_handler.graph.edges[n_compounds[0], n_rxn_nodes[0]]["weight"] - 1.0) < 1e-12
 
+        # Check that correct warnings are raised when calling update twice
+        finder.update_graph_compound_costs()
+
+        # # Check that 2 warnings are raised when updating the graph again
+        with self.assertWarns(UserWarning) as w_handler:
+            finder.update_graph_compound_costs()
+        assert ("The following compounds have no cost assigned:" in str(w_handler.warnings[0]))
+        assert ("The graph has been updated with compound costs previously" in str(w_handler.warnings[1]))
+
     def test_pathfinder_export_to_files(self):
         manager = db_setup.get_clean_db("test_pathfinder_export")
         self.custom_setup(manager)
@@ -579,6 +573,7 @@ class PathfinderTests(unittest.TestCase, HoldsCollections):
         finder.options.model = db.Model("FAKE", "FAKE", "F-AKE")
         finder.options.barrierless_weight = 1e12
         finder.build_graph()
+
         n_compounds = [node for node in finder.graph_handler.graph.nodes if ';' not in node]
         # Check correct resetting of starting conditions
         start_conditions = {
@@ -591,24 +586,60 @@ class PathfinderTests(unittest.TestCase, HoldsCollections):
         finder.update_graph_compound_costs()
         assert finder.graph_updated_with_compound_costs is True
         graph_path = os.path.join(resources_root_path(), "test_graph.json")
+        # Export to file
         finder.export_graph(graph_path)
         assert os.path.isfile(graph_path)
 
-        loaded_graph = self._load_json_to_graph(graph_path)
+        loaded_graph = finder._import_graph(graph_path)
         loaded_graph_nodes = [node for node in loaded_graph.nodes(data=True)]
         loaded_graph_edges = [edge for edge in loaded_graph.edges(data=True)]
 
+        # Copy to compare with exported graph
+        finder_export = copy.copy(finder)
+        finder_export.reset_graph_compound_costs()
+
         # Check nodes in graph
-        for index, node in enumerate(finder.graph_handler.graph.nodes(data=True)):
+        for index, node in enumerate(finder_export.graph_handler.graph.nodes(data=True)):
             assert node == loaded_graph_nodes[index]
         # Check edges in graph
-        for index, edge in enumerate(finder.graph_handler.graph.edges(data=True)):
+        for index, edge in enumerate(finder_export.graph_handler.graph.edges(data=True)):
             assert edge == loaded_graph_edges[index]
 
         cc_path = os.path.join(resources_root_path(), "test_cc.json")
         finder.export_compound_costs(cc_path)
         assert os.path.isfile(cc_path)
-        assert finder.compound_costs == self._load_json_to_compound_costs(cc_path)
+        assert finder.compound_costs == finder._import_dictionary(cc_path)
+
+        # # # Test loading into Pathfinder
+
+        loaded_finder = pf(manager)
+        loaded_finder.load_graph(graph_path)
+        # Check for default basic graph handler
+        assert loaded_finder.graph_handler.graph
+        assert loaded_finder.options.graph_handler == "basic"
+        assert loaded_finder.options.model == db.Model("any", "any", "any")  # None
+
+        for node_org, node_loaded in zip(finder.graph_handler.graph.nodes(data=True),
+                                         loaded_finder.graph_handler.graph.nodes(data=True)):
+            assert node_org == node_loaded
+
+        for edge_org, edge_loaded in zip(finder.graph_handler.graph.edges(data=True),
+                                         loaded_finder.graph_handler.graph.edges(data=True)):
+            assert edge_org == edge_loaded
+
+        # Check that loaded graph is really copied
+        assert loaded_graph is not loaded_finder.graph_handler.graph
+
+        # Test loading graph and compound costs directly
+
+        loaded_complete_finder = pf(manager)
+        loaded_complete_finder.load_graph(graph_path, cc_path)
+
+        assert loaded_complete_finder.graph_handler.graph
+        assert loaded_complete_finder.compound_costs
+        assert loaded_complete_finder.compound_costs_solved is True
+        assert loaded_complete_finder.compound_costs == loaded_complete_finder._import_dictionary(cc_path)
+        assert loaded_complete_finder.graph_updated_with_compound_costs is True
 
         os.remove(graph_path)
         os.remove(cc_path)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -15,16 +15,17 @@ from scipy.special import comb
 
 # Third party imports
 from numpy import ndarray
+from scine_database.queries import calculation_exists_in_structure, get_calculation_id
 import scine_database as db
 import scine_utilities as utils
 import scine_molassembler as masm
 
 # Local application imports
-from ....utilities.queries import calculation_exists_in_structure, get_calculation_id
 from .connectivity_analyzer import ReactionType, ConnectivityAnalyzer
 from . import TrialGenerator, _sanity_check_wrapper
 
 from ....utilities.masm import deserialize_molecules
+from ....utilities.options import BaseOptions
 from scine_art.database import ReactionTemplateDatabase
 import ast
 
@@ -55,7 +56,7 @@ class TemplateBased(TrialGenerator):
             "enforce_atom_shapes"
         )
 
-        class BimolOptions:
+        class BimolOptions(BaseOptions):
             """
             The options for the generation and exploration of bimolecular reactions.
             """
@@ -68,6 +69,7 @@ class TemplateBased(TrialGenerator):
             )
 
             def __init__(self):
+                super().__init__()
                 self.job: db.Job = db.Job("scine_react_complex_nt2")
                 """
                 db.Job (Scine::Database::Calculation::Job)
@@ -96,7 +98,7 @@ class TemplateBased(TrialGenerator):
                     False: sum(multiplicities) - 1
                 """
 
-        class UnimolOptions:
+        class UnimolOptions(BaseOptions):
             """
             The options for the generation and exploration of unimolecular
             reactions.
@@ -110,6 +112,7 @@ class TemplateBased(TrialGenerator):
             )
 
             def __init__(self):
+                super().__init__()
                 self.job: db.Job = db.Job("scine_react_complex_nt2")
                 """
                 db.Job (Scine::Database::Calculation::Job)
@@ -263,20 +266,20 @@ class TemplateBased(TrialGenerator):
                     n_assos_inter += 1
                     if a[0][0] == 0:
                         reactive_inter_coords_unshifted.append((atom_idx_one, atom_idx_two))
-                        reactive_inter_coords.append((atom_idx_one+atom_offset_one, atom_idx_two+atom_offset_two))
+                        reactive_inter_coords.append((atom_idx_one + atom_offset_one, atom_idx_two + atom_offset_two))
                     else:
                         reactive_inter_coords_unshifted.append((atom_idx_two, atom_idx_one))
-                        reactive_inter_coords.append((atom_idx_two+atom_offset_two, atom_idx_one+atom_offset_one))
+                        reactive_inter_coords.append((atom_idx_two + atom_offset_two, atom_idx_one + atom_offset_one))
                 else:
                     n_assos_intra += 1
-                    reactive_intra_coords.append((atom_idx_one+atom_offset_one, atom_idx_two+atom_offset_two))
+                    reactive_intra_coords.append((atom_idx_one + atom_offset_one, atom_idx_two + atom_offset_two))
             reactive_diss_coords = []
             for d in template['dissos']:
                 atom_idx_one = masm_idx_maps[d[0][0]].index((0, d[0][1]))
                 atom_idx_two = masm_idx_maps[d[1][0]].index((0, d[1][1]))
                 atom_offset_one = atom_offset[d[0][0]]
                 atom_offset_two = atom_offset[d[1][0]]
-                reactive_diss_coords.append((atom_idx_one+atom_offset_one, atom_idx_two+atom_offset_two))
+                reactive_diss_coords.append((atom_idx_one + atom_offset_one, atom_idx_two + atom_offset_two))
 
             # Batch all trials before doing a final filter run and adding
             #  the remaining trials. This reduces the number of filter calls

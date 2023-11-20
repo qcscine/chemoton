@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -12,10 +12,10 @@ from typing import Dict
 
 # Third party imports
 import scine_database as db
+from scine_database.queries import stop_on_timeout
 
 # Local application imports
 from . import Gear
-from ..utilities.queries import stop_on_timeout
 
 
 class Scheduler(Gear):
@@ -46,18 +46,10 @@ class Scheduler(Gear):
         The options for the Scheduler Gear.
         """
 
-        __slots__ = ("cycle_time", "job_counts", "job_priorities")
+        __slots__ = ("job_counts", "job_priorities")
 
         def __init__(self):
             super().__init__()
-            self.cycle_time = 10
-            """
-            int
-                The minimum number of seconds between two cycles of the Gear.
-                Cycles are finished independent of this option, thus if a cycle
-                takes longer than the cycle_time will effectively lead to longer
-                cycle times and not cause multiple cycles of the same Gear.
-            """
             self.job_counts: Dict[str, int] = {
                 "scine_geometry_optimization": 50,
                 "scine_ts_optimization": 50,
@@ -73,6 +65,7 @@ class Scheduler(Gear):
                 "conformers": 2,
                 "final_conformer_deduplication": 2,
                 "kinetx_kinetic_modeling": 1,
+                "rms_kinetic_modeling": 1,
                 "scine_bspline_optimization_job": 50,
             }
             """
@@ -95,6 +88,7 @@ class Scheduler(Gear):
                 "conformers": 2,
                 "final_conformer_deduplication": 2,
                 "kinetx_kinetic_modeling": 1,
+                "rms_kinetic_modeling": 1,
                 "scine_bspline_optimization_job": 5
             }
             """

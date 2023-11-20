@@ -1,28 +1,36 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
 # Standard library imports
-from typing import Optional, Iterator, List, Tuple, Union, Dict
+from typing import Any, Optional, Iterator, List, Tuple, Union, Dict
+from abc import abstractmethod
 import networkx as nx
+import warnings
 import numpy as np
 import json
-import sys
+import copy
 from itertools import islice
 
 # Third party imports
 import scine_database as db
+from scine_database.energy_query_functions import (
+    get_energy_for_structure,
+    get_barriers_for_elementary_step_by_type,
+    get_elementary_step_with_min_ts_energy,
+    rate_constant_from_barrier,
+)
 
 # Local application imports
-from ..utilities.energy_query_functions import get_energy_for_structure, get_barriers_for_elementary_step_by_type, \
-    get_elementary_step_with_min_ts_energy, rate_constant_from_barrier
+from . import HoldsCollections
 from ..utilities.get_molecular_formula import get_molecular_formula_of_aggregate
+from ..utilities.options import BaseOptions
 
 
-class Pathfinder:
+class Pathfinder(HoldsCollections):
     """
     A class to represent a list of reactions as a graph and query this graph for simple paths between two nodes.
     In a simple path, every node part of the path is visited only once.
@@ -62,16 +70,11 @@ class Pathfinder:
     """
 
     def __init__(self, db_manager: db.Manager):
+        super().__init__()
         self.options = self.Options()
-        self.manager = db_manager
-        # Get required collections
-        self._calculations = db_manager.get_collection('calculations')
-        self._compounds = db_manager.get_collection('compounds')
-        self._flasks = db_manager.get_collection("flasks")
-        self._reactions = db_manager.get_collection('reactions')
-        self._elementary_steps = db_manager.get_collection('elementary_steps')
-        self._structures = db_manager.get_collection('structures')
-        self._properties = db_manager.get_collection('properties')
+        self._required_collections = ["manager", "calculations", "compounds", "flasks", "reactions",
+                                      "elementary_steps", "structures", "properties"]
+        self.initialize_collections(db_manager)
 
         self.graph_handler: Union[Pathfinder.BasicHandler, Pathfinder.BarrierBasedHandler, None] = None
         # attribute to store iterator employed in find_unique_paths; path_object, iterator
@@ -87,33 +90,46 @@ class Pathfinder:
         self.compound_costs_solved = False
         self.graph_updated_with_compound_costs = False
 
-    class Options:
+    class Options(BaseOptions):
         """
         A class to vary the setup of Pathfinder.
         """
         __slots__ = {"graph_handler", "barrierless_weight", "model", "filter_negative_barriers", "use_structure_model",
-                     "structure_model", "energy_threshold"}
+                     "structure_model", "temperature"
+                     #  "energy_threshold"
+                     }
 
         def __init__(self):
             self.graph_handler: str = "basic"  # pylint: disable=no-member
             """
-            A string indicating which graph handler to be used.
+            A string indicating which graph handler shall be used (available are : 'basic' and 'barrier').
             """
-            self.barrierless_weight: float = 1.0  # 0.01
+            self.barrierless_weight: float = 1e0  # 0.01
             """
             The weight for barrierless reactions (basic) and rate constant (barrier), respectively.
             """
-            self.model: Union[None, db.Model] = None
+            self.model: Union[None, db.Model] = db.Model("any", "any", "any")
             """
-            The model for the compounds to be included.
+            The model for the energies of compounds to be included in the graph.
             """
             # in kJ / mol
             self.filter_negative_barriers: bool = False
-
+            """
+            Forbid elementary steps with negative barriers or not.
+            """
             self.use_structure_model: bool = False
+            """
+            Allow only elementary steps with a given model.
+            """
+            #  TODO: fix, as this might be used as any
+            self.structure_model: Union[None, db.Model] = db.Model("any", "any", "any")
+            """
+            The model for the structures of compounds to be included in the graph.
+            """
 
-            self.structure_model: Union[None, db.Model] = None
-            self.energy_threshold: float = 100.0
+            self.temperature: float = 298.15
+            # #TODO: add docstring
+            # self.energy_threshold: float = 100.0
 
     @staticmethod
     def get_valid_graph_handler_options() -> List[str]:
@@ -129,19 +145,21 @@ class Pathfinder:
         RuntimeError
             Invalid options for graph handler.
         """
-        if not self.graph_handler:
-            if self.options.graph_handler not in self.get_valid_graph_handler_options():
-                raise RuntimeError("Invalid graph handler option.")
-            if self.options.graph_handler == "basic":
-                self.graph_handler = self.BasicHandler(self.manager, self.options.model, self.options.structure_model)
-                self.graph_handler.barrierless_weight = self.options.barrierless_weight
-            elif self.options.graph_handler == "barrier":
-                self.graph_handler = self.BarrierBasedHandler(
-                    self.manager, self.options.model, self.options.structure_model)
-                self.graph_handler.barrierless_weight = self.options.barrierless_weight
-                self.graph_handler.filter_negative_barriers = self.options.filter_negative_barriers
-                self.graph_handler._map_elementary_steps_to_reactions()
-                self.graph_handler._calculate_rate_constant_normalization()
+        if self.options.graph_handler not in self.get_valid_graph_handler_options():
+            raise RuntimeError("Invalid graph handler option.")
+        if self.options.graph_handler == "basic":
+            self.graph_handler = self.BasicHandler(self._manager, self.options.model, self.options.structure_model)
+            self.graph_handler.barrierless_weight = self.options.barrierless_weight
+        elif self.options.graph_handler == "barrier":
+            self.graph_handler = self.BarrierBasedHandler(
+                self._manager, self.options.model, self.options.structure_model)
+            # Option copying
+            self.graph_handler.barrierless_weight = self.options.barrierless_weight
+            self.graph_handler.filter_negative_barriers = self.options.filter_negative_barriers
+            self.graph_handler.set_temperature(self.options.temperature)
+            # Mapping of ESs and calculating normalization
+            self.graph_handler._map_elementary_steps_to_reactions()
+            self.graph_handler._calculate_rate_constant_normalization()
 
     def _reset_iterator_memory(self):
         """
@@ -155,11 +173,42 @@ class Pathfinder:
         Build the nx.DiGraph() from a list of filtered reactions.
         """
         self._reset_iterator_memory()
+        # # # Reset bools for compound costs
+        self.compound_costs_solved = False
+        self.graph_updated_with_compound_costs = False
+        # Build graph
         self._construct_graph_handler()
         assert self.graph_handler
         for rxn_id in self.graph_handler.get_valid_reaction_ids():
             rxn = db.Reaction(rxn_id, self._reactions)
             self.graph_handler.add_reaction(rxn)
+
+    def load_graph(self, graph_filename: str, compound_cost_filename=""):
+        """
+        Initialize a basic graph handler with default settings.
+        The graph is imported from the given file and set as the graph of the graph handler.
+        Optionally, the compound costs are imported and set as compound_cost.
+        The compound costs are considered to be solved.
+        The graph is automatically updated with the compound costs.
+
+        Parameters
+        ----------
+        graph_filename : str
+            Name of the .json file.
+        """
+        # only for basic graph handler, we don't want to calculate any kinetic
+        if self.options.graph_handler != "basic":
+            print("Can only load into default basic graph handler.")
+        graph = self._import_graph(graph_filename)
+        # Initialize basic graph handler
+        self._construct_graph_handler()
+        assert self.graph_handler is not None
+        self.graph_handler.graph = copy.deepcopy(graph)
+
+        if compound_cost_filename != "":
+            self.compound_costs = self._import_dictionary(compound_cost_filename)
+            self.compound_costs_solved = True
+            self.update_graph_compound_costs()
 
     def find_paths(self, source: str, target: str, n_requested_paths: int = 3,
                    n_skipped_paths: int = 0) -> List[Tuple[List[str], float]]:
@@ -573,7 +622,7 @@ class Pathfinder:
                         continue
                     # # # Add cost of the starting node
                     tmp_cost += self.compound_costs[tmp_start_node]
-                    # # # Check for value in compound_costs dict and
+                    # # # Check for value in compound_costs dict and indicate change
                     if (self.compound_costs[target] != self._pseudo_inf and
                             10e-6 < self.compound_costs[target] - tmp_cost):
                         compound_costs_opt_change += 1
@@ -631,11 +680,12 @@ class Pathfinder:
         # # # Check if all costs are available
         if not self.compound_costs_solved:
             unsolved_cmp = [key for key, value in self.compound_costs.items() if value == self._pseudo_inf]
-            sys.stderr.write("Warning: The following compounds have no cost assigned:\n" + str(unsolved_cmp) +
-                             "\nGraph will be updated anyway, but maybe reconsider the starting conditions.\n")
+            # TODO: change to warnings.warn
+            warnings.warn("The following compounds have no cost assigned:\n" + str(unsolved_cmp) +
+                          "\nGraph will be updated anyway, but maybe reconsider the starting conditions.\n")
         # # # Check if graph has been updated
         if self.graph_updated_with_compound_costs:
-            raise Warning("The graph has been updated previously.")
+            warnings.warn("The graph has been updated with compound costs previously, but will be updated anyway.")
         # # # Reset unique_iterator_list as graph changes
         self._reset_iterator_memory()
         for node in self.compound_costs.keys():
@@ -678,7 +728,7 @@ class Pathfinder:
 
     def export_graph(self, filename: str = "graph.json"):
         """
-        Export graph as dictionary to .json file.
+        Export the graph without compound costs as dictionary to .json file.
 
         Parameters
         ----------
@@ -686,10 +736,23 @@ class Pathfinder:
             Name of the file to write graph into, by default "graph.json".
         """
         assert self.graph_handler
-        graph_as_dict = nx.convert.to_dict_of_dicts(self.graph_handler.graph)
+        graph_copy = copy.deepcopy(self.graph_handler.graph)
+        if self.graph_updated_with_compound_costs:
+            for node in self.compound_costs.keys():
+                # # # Loop over all edges of compound and manipulate weight
+                for target_node in graph_copy[node].keys():
+                    # # # Get required compound costs from edge
+                    tot_required_compound_costs = graph_copy.edges[node, target_node]['required_compound_costs']
+                    # # # Subtract required compound costs from weight
+                    graph_copy.edges[node, target_node]['weight'] -= tot_required_compound_costs
+                    # # # Set required compound costs back to 0.0
+                    graph_copy.edges[node, target_node]['required_compound_costs'] = 0.0
+
+        graph_as_dict = nx.convert.to_dict_of_dicts(graph_copy)
         # # # Add node type to dictionary
-        for node in self.graph_handler.graph.nodes:
-            graph_as_dict[node]['type'] = self.graph_handler.graph.nodes[node]['type']
+        for node_key, prop_dict in graph_copy.nodes(data=True):
+            for prop_key in prop_dict.keys():
+                graph_as_dict[node_key][prop_key] = graph_copy.nodes[node_key][prop_key]
         with open(filename, 'w') as f:
             json.dump(graph_as_dict, f, indent=4)
 
@@ -706,7 +769,37 @@ class Pathfinder:
         with open(filename, 'w') as f:
             json.dump(self.compound_costs, f, indent=4)
 
-    class BasicHandler:
+    @staticmethod
+    def _import_graph(filename: str) -> nx.DiGraph:
+        with open(filename, "r") as f:
+            graph = json.load(f)
+        # # # Extract additional node type information
+        node_properties_dict: Dict[str, Any] = {}
+        for node_key, node in graph.items():
+            # Filter property keys
+            # Property keys are not allowed to end on ';' or to have 24 characters
+            # TODO: this filter is a bit doggy, no idea for alternativ though
+            node_property_keys = list(filter(lambda key: len(key) != 24 and key[-1] != ";", list(node.keys())))
+            for index, prop_key in enumerate(node_property_keys):
+                if index == 0:
+                    node_properties_dict[node_key] = {}
+                node_properties_dict[node_key][prop_key] = node[prop_key]
+                graph[node_key].pop(prop_key)
+        # # # Load NetworkX Digraph
+        nx_graph = nx.convert.from_dict_of_dicts(graph, create_using=nx.DiGraph)
+        for node_key, node_properties in node_properties_dict.items():
+            for prop_key, prop_value in node_properties.items():
+                nx_graph.nodes[node_key][prop_key] = prop_value
+
+        return nx_graph
+
+    @staticmethod
+    def _import_dictionary(filename: str) -> Dict[str, Any]:
+        with open(filename, "r") as f:
+            imported_dict = json.load(f)
+        return imported_dict
+
+    class BasicHandler(HoldsCollections):
         """
         A basic class to handle the construction of the nx.DiGraph.
         A list of reactions can be added differently, depending on the implementation of ``_get_weight`` and
@@ -727,22 +820,16 @@ class Pathfinder:
 
         def __init__(self, manager: db.Manager, model: Optional[db.Model] = None,
                      structure_model: Optional[db.Model] = None):
+            super().__init__()
             self.graph = nx.DiGraph()
-            self.db_manager = manager
+            self._required_collections = ["manager", "calculations", "compounds", "flasks", "reactions",
+                                          "elementary_steps", "structures", "properties"]
+            self.initialize_collections(manager)
             self.barrierless_weight = 1.0
             self.model: Union[None, db.Model] = model
             self.filter_negative_barriers = False
             self.use_structure_model = False
             self.structure_model: Union[None, db.Model] = structure_model
-            if self.structure_model is not None:
-                self.use_structure_model = True
-            # Collections
-            self._compounds = self.db_manager.get_collection("compounds")
-            self._flasks = self.db_manager.get_collection("flasks")
-            self._structures = self.db_manager.get_collection("structures")
-            self._properties = self.db_manager.get_collection("properties")
-            self._reactions = self.db_manager.get_collection("reactions")
-            self._elementary_steps = self.db_manager.get_collection("elementary_steps")
 
         def add_reaction(self, reaction: db.Reaction):
             """
@@ -796,7 +883,12 @@ class Pathfinder:
                 # Add rxn node between lhs and rhs compound
                 rxn_node = ';'.join([reaction_id, str(i)])
                 rxn_node += ';'
-                self.graph.add_node(rxn_node, type='rxn_node')
+                # Construct property dict of node
+                rxn_node_properties = {'type': 'rxn_node'}
+                es_id = self._get_mapped_es_of_reaction(reaction_id)
+                if es_id is not None:
+                    rxn_node_properties['elementary_step_id'] = es_id
+                self.graph.add_node(rxn_node, **rxn_node_properties)
                 rxn_nodes.append(rxn_node)
             # Convert to strings
             reactants = reaction.get_reactants(db.Side.BOTH)
@@ -845,7 +937,7 @@ class Pathfinder:
             Tuple[float, float]
                 Weight for connections to the LHS reaction node, weight for connections to the RHS reaction node
             """
-            for step in reaction.get_elementary_steps(self.db_manager):
+            for step in reaction.get_elementary_steps(self._manager):
                 # # # Barrierless weights for barrierless reactions
                 if step.get_type() == db.ElementaryStepType.BARRIERLESS:
                     return self.barrierless_weight, self.barrierless_weight
@@ -866,6 +958,10 @@ class Pathfinder:
                 if self._valid_reaction(reaction):
                     valid_ids.append(reaction.id())
             return valid_ids
+
+        @abstractmethod
+        def _get_mapped_es_of_reaction(self, rxn_id_string: str) -> str:
+            pass
 
         def _valid_reaction(self, reaction: db.Reaction) -> bool:
             """
@@ -947,7 +1043,6 @@ class Pathfinder:
         def __init__(self, db_manager: db.Manager, model: db.Model, structure_model: Union[None, db.Model] = None):
             super().__init__(db_manager, model, structure_model)
             self.temperature = 298.15
-            self.check_barriers = False
             self._rate_constant_normalization = 1.0
             self._rxn_to_es_map: Dict[str, db.ID] = {}
 
@@ -984,6 +1079,9 @@ class Pathfinder:
                     valid_ids.append(reaction.id())
             return valid_ids
 
+        def _get_mapped_es_of_reaction(self, rxn_id_string: str) -> str:
+            return self._rxn_to_es_map[rxn_id_string].string()
+
         def _map_elementary_steps_to_reactions(self):
             """
             Loop over all reactions to get the elementary step with the lowest TS energy for each reaction.
@@ -992,27 +1090,28 @@ class Pathfinder:
             for reaction_id in self._get_valid_reaction_ids():
                 reaction = db.Reaction(reaction_id, self._reactions)
                 # # # Go for gibbs energy first
-                es_id = get_elementary_step_with_min_ts_energy(
+                es = get_elementary_step_with_min_ts_energy(
                     reaction,
                     "gibbs_free_energy",
                     self.model,
                     self._elementary_steps,
                     self._structures,
                     self._properties,
-                    self.structure_model)
+                    structure_model=self.structure_model)
                 # # # If unsuccessful, attempt electronic energy
-                if es_id is None:
-                    es_id = get_elementary_step_with_min_ts_energy(
+                if es is None:
+                    es = get_elementary_step_with_min_ts_energy(
                         reaction,
                         "electronic_energy",
                         self.model,
                         self._elementary_steps,
                         self._structures,
                         self._properties,
-                        self.structure_model)
+                        structure_model=self.structure_model)
                     # # # If es_id still None, continue; pure safety measure
-                    if es_id is None:
+                    if es is None:
                         continue
+                es_id = es.id()
                 # Enforce non-negative barriers
                 if self.filter_negative_barriers:
                     es = db.ElementaryStep(es_id, self._elementary_steps)
@@ -1035,12 +1134,14 @@ class Pathfinder:
             """
 
             k_sum = 0.0
-
             for es_id in self._rxn_to_es_map.values():
                 es = db.ElementaryStep(es_id, self._elementary_steps)
                 if es.get_type() == db.ElementaryStepType.BARRIERLESS:
                     k_sum += self.barrierless_weight * 2
                 else:
+                    if not es.has_transition_state():
+                        raise RuntimeError("Elementary step " + es_id.string() + " has label " + es.get_type().name +
+                                           " but no transition state.")
                     # # # Retrieve barriers of elementary step in kJ/mol
                     barriers = get_barriers_for_elementary_step_by_type(
                         es, "gibbs_free_energy", self.model, self._structures, self._properties)
@@ -1088,6 +1189,9 @@ class Pathfinder:
                 k_lhs = self.barrierless_weight
                 k_rhs = self.barrierless_weight
             else:
+                if not es_step.has_transition_state():
+                    raise RuntimeError("Elementary step " + es_id.string() + " has label " + es_step.get_type().name +
+                                       " but no transition state.")
                 assert self.model
                 # # # Retrieve barriers of elementary step in kJ/mol
                 barriers = get_barriers_for_elementary_step_by_type(

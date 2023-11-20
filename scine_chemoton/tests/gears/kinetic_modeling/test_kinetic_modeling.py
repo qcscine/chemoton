@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
 # Standard library imports
 from json import dumps
+from typing import List, Optional
 
 # Third party imports
 import scine_database as db
 import scine_utilities as utils
+from scine_database import test_database_setup as db_setup
+from scine_database.insert_concentration import insert_concentration_for_compound
 
 # Local application tests imports
-from ... import test_database_setup as db_setup
-from ...test_database_setup import insert_single_empty_structure_aggregate
 from ....engine import Engine
-from ....gears.kinetic_modeling.kinetic_modeling import KineticModeling, KineticModelingJobFactory
+from ....gears.kinetic_modeling.kinetic_modeling import KineticModeling
+from .test_thermodynamic_properties import TestThermodynamicProperties
 
 
 def test_random_kinetic_model():
@@ -52,6 +54,8 @@ def test_random_kinetic_model():
     reactions = manager.get_collection("reactions")
     flasks = manager.get_collection("flasks")
 
+    n_initial_reactions = reactions.count(dumps({}))
+
     # Add three more reactions. Two barrierless and one regular one.
     # lhs_c_id -> lhs_f_id -> TS -> rhs_f_id -> rhs_c_id
     random_compounds = compounds.random_select_compounds(4)
@@ -64,12 +68,19 @@ def test_random_kinetic_model():
     rhs_compound_one = db.Compound(rhs_c_id_one, compounds)
     rhs_compound_two = db.Compound(rhs_c_id_two, compounds)
 
-    lhs_f_id, lhs_comp_id = insert_single_empty_structure_aggregate(manager, db.Label.COMPLEX_OPTIMIZED)
-    rhs_f_id, rhs_comp_id = insert_single_empty_structure_aggregate(manager, db.Label.COMPLEX_OPTIMIZED)
+    lhs_f_id, lhs_comp_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.COMPLEX_OPTIMIZED)
+    rhs_f_id, rhs_comp_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.COMPLEX_OPTIMIZED)
+    no_e_f_id, no_e_comp_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.COMPLEX_OPTIMIZED)
+    lhs_complex = db.Structure(lhs_comp_id, structures)
+    rhs_complex = db.Structure(rhs_comp_id, structures)
+    db_setup.add_random_energy(lhs_complex, (70.0, 71.0), properties)
+    db_setup.add_random_energy(rhs_complex, (70.0, 71.0), properties)
+
     lhs_s_id_one = lhs_compound_one.get_centroid()
     lhs_s_id_two = lhs_compound_two.get_centroid()
     rhs_s_id_one = rhs_compound_one.get_centroid()
     rhs_s_id_two = rhs_compound_two.get_centroid()
+    no_e_flask = db.Flask(no_e_f_id, flasks)
     for compound in compounds.iterate_all_compounds():
         compound.link(compounds)
         compound.enable_exploration()
@@ -92,6 +103,11 @@ def test_random_kinetic_model():
     step_central.link(steps)
     step_central.create([lhs_comp_id], [rhs_comp_id])
 
+    step_barrierless_incomplete = db.ElementaryStep()
+    step_barrierless_incomplete.link(steps)
+    step_barrierless_incomplete.create([no_e_comp_id], [rhs_s_id_one, rhs_s_id_two])
+    step_barrierless_incomplete.set_type(db.ElementaryStepType.BARRIERLESS)
+
     # set up TS and energies
     lhs_comp_structure = db.Structure(lhs_comp_id, structures)
     db_setup.add_random_energy(lhs_comp_structure, (0.0, 1.0), properties)
@@ -106,26 +122,41 @@ def test_random_kinetic_model():
                                     [db.CompoundOrFlask.COMPOUND, db.CompoundOrFlask.COMPOUND],
                                     [db.CompoundOrFlask.FLASK])
     reaction_barrierless_lhs.set_elementary_steps([step_barrierless_lhs.get_id()])
+    step_barrierless_lhs.set_reaction(reaction_barrierless_lhs.id())
 
     reaction_barrierless_rhs = db.Reaction()
     reaction_barrierless_rhs.link(reactions)
     reaction_barrierless_rhs.create([rhs_f_id], [rhs_c_id_one, rhs_c_id_two], [db.CompoundOrFlask.FLASK],
                                     [db.CompoundOrFlask.COMPOUND, db.CompoundOrFlask.COMPOUND])
     reaction_barrierless_rhs.set_elementary_steps([step_barrierless_rhs.get_id()])
+    step_barrierless_rhs.set_reaction(reaction_barrierless_rhs.id())
 
     reaction_central = db.Reaction()
     reaction_central.link(reactions)
     reaction_central.create([lhs_f_id], [rhs_f_id], [db.CompoundOrFlask.FLASK], [db.CompoundOrFlask.FLASK])
     reaction_central.set_elementary_steps([step_central.get_id()])
+    step_central.set_reaction(reaction_central.id())
+
+    reaction_incomplete = db.Reaction()
+    reaction_incomplete.link(reactions)
+    reaction_incomplete.create([no_e_f_id], [rhs_c_id_one, rhs_c_id_two], [db.CompoundOrFlask.FLASK],
+                               [db.CompoundOrFlask.COMPOUND, db.CompoundOrFlask.COMPOUND])
+    reaction_incomplete.set_elementary_steps([step_barrierless_incomplete.get_id()])
+    step_barrierless_incomplete.set_reaction(reaction_incomplete.id())
 
     lhs_flask = db.Flask(lhs_f_id, flasks)
     rhs_flask = db.Flask(rhs_f_id, flasks)
-    lhs_compound_one.set_reactions([reaction_barrierless_lhs.id()])
-    lhs_compound_two.set_reactions([reaction_barrierless_lhs.id()])
-    lhs_flask.set_reactions([reaction_barrierless_lhs.id(), reaction_central.id()])
-    rhs_flask.set_reactions([reaction_central.id(), reaction_barrierless_rhs.id()])
-    rhs_compound_one.set_reactions([reaction_barrierless_rhs.id()])
-    rhs_compound_two.set_reactions([reaction_barrierless_rhs.id()])
+    lhs_compound_one.add_reaction(reaction_barrierless_lhs.id())
+    lhs_compound_two.add_reaction(reaction_barrierless_lhs.id())
+    lhs_flask.add_reaction(reaction_barrierless_lhs.id())
+    lhs_flask.add_reaction(reaction_central.id())
+    rhs_flask.add_reaction(reaction_central.id())
+    rhs_flask.add_reaction(reaction_barrierless_rhs.id())
+    rhs_compound_one.add_reaction(reaction_barrierless_rhs.id())
+    rhs_compound_one.add_reaction(reaction_incomplete.id())
+    rhs_compound_two.add_reaction(reaction_barrierless_rhs.id())
+    rhs_compound_two.add_reaction(reaction_incomplete.id())
+    no_e_flask.add_reaction(reaction_incomplete.id())
 
     # Set the starting concentrations for all compounds.
     for structure in structures.iterate_all_structures():
@@ -136,12 +167,13 @@ def test_random_kinetic_model():
 
     # Check the job-set up.
     kinetic_modeling_gear = KineticModeling()
-    kinetic_modeling_gear.options.model = model
-    kinetic_modeling_gear.options.elementary_step_interval = 4
-    kinetic_modeling_gear.options.time_step = 1e-8
-    kinetic_modeling_gear.options.solver = "cash_karp_5"
-    kinetic_modeling_gear.options.batch_interval = 1000
-    kinetic_modeling_gear.options.diffusion_controlled_barrierless = False
+    kinetic_modeling_gear.options.electronic_model = model
+    kinetic_modeling_gear.options.hessian_model = model
+    kinetic_modeling_gear.options.job = db.Job("kinetx_kinetic_modeling")
+    kinetic_modeling_gear.options.job_settings = KineticModeling.get_default_settings(kinetic_modeling_gear.options.job)
+    kinetic_modeling_gear.options.cycle_time = 0.1
+    kinetic_modeling_gear.options.max_barrier = float("inf")
+    kinetic_modeling_gear.options.only_electronic = True
 
     kinetic_modeling_engine = Engine(manager.get_credentials(), fork=False)
     kinetic_modeling_engine.set_gear(kinetic_modeling_gear)
@@ -151,163 +183,195 @@ def test_random_kinetic_model():
     assert calculations.count(dumps({})) == 1
 
     # Test whether the gear notices that the same job is already in the database.
-    kinetic_modeling_gear2 = KineticModeling()
-    kinetic_modeling_gear2.options.model = model
-    kinetic_modeling_gear2.options.elementary_step_interval = 4
-    kinetic_modeling_gear2.options.time_step = 1e-8
-    kinetic_modeling_gear2.options.solver = "cash_karp_5"
-    kinetic_modeling_gear2.options.batch_interval = 1000
-    kinetic_modeling_gear2.options.diffusion_controlled_barrierless = False
+    gear2 = KineticModeling()
+    gear2.options.job_settings = KineticModeling.get_default_settings(kinetic_modeling_gear.options.job)
+    gear2.options.electronic_model = model
+    gear2.options.hessian_model = model
+    gear2.options.cycle_time = 0.1
+    gear2.options.only_electronic = True
 
     kinetic_modeling_engine2 = Engine(manager.get_credentials(), fork=False)
-    kinetic_modeling_engine2.set_gear(kinetic_modeling_gear2)
+    kinetic_modeling_engine2.set_gear(gear2)
     kinetic_modeling_engine2.run(single=True)
     assert calculations.count(dumps({})) == 1
+
+    for structure in structures.iterate_all_structures():
+        structure.link(structures)
+        con_prop = db.NumberProperty.make("concentration_flux", model, 0.1, properties)
+        con_prop.set_structure(structure.id())
+        structure.add_property("concentration_flux", con_prop.id())
 
     # Change the settings and test again.
     old_calc = calculations.find(dumps({}))
     old_calc.set_status(db.Status.COMPLETE)
-    kinetic_modeling_gear3 = KineticModeling()
-    kinetic_modeling_gear3.options.model = model
-    kinetic_modeling_gear3.options.elementary_step_interval = 4
-    kinetic_modeling_gear3.options.time_step = 1e-8
-    kinetic_modeling_gear3.options.solver = "explicit_euler"
-    kinetic_modeling_gear3.options.batch_interval = 1000
+    kinetic_modeling_engine2.run(single=True)
+    assert calculations.count(dumps({})) == 1
+
+    old_calculation_settings = old_calc.get_settings()
+    assert len(old_calculation_settings["reaction_ids"]) <= n_initial_reactions + 3  # one reaction should be incomplete
+    assert reactions.count(dumps({})) == n_initial_reactions + 4
+
+    gear3 = KineticModeling()
+    gear3.options.job_settings = KineticModeling.get_default_settings(kinetic_modeling_gear.options.job)
+    gear3.options.job_settings["t_max"] = 1e+5
+    gear3.options.electronic_model = model
+    gear3.options.hessian_model = model
+    gear3.options.cycle_time = 0.1
+    gear3.options.only_electronic = True
 
     kinetic_modeling_engine3 = Engine(manager.get_credentials(), fork=False)
-    kinetic_modeling_engine3.set_gear(kinetic_modeling_gear3)
+    kinetic_modeling_engine3.set_gear(gear3)
     kinetic_modeling_engine3.run(single=True)
     assert calculations.count(dumps({})) == 2
 
     kinetic_modeling_engine3.run(single=True)
     kinetic_modeling_engine3.run(single=True)
     assert calculations.count(dumps({})) == 2
+
+    old_calc = calculations.find(dumps({"status": "hold"}))
+    old_calc.set_status(db.Status.COMPLETE)
+    gear4 = KineticModeling()
+    gear4.options.job = db.Job("rms_kinetic_modeling")
+    gear4.options.job_settings = KineticModeling.get_default_settings(gear4.options.job)
+    gear4.options.electronic_model = model
+    gear4.options.hessian_model = model
+    gear4.options.cycle_time = 0.1
+    gear4.options.only_electronic = True
+
+    kinetic_modeling_engine4 = Engine(manager.get_credentials(), fork=False)
+    kinetic_modeling_engine4.set_gear(gear4)
+    kinetic_modeling_engine4.run(single=True)
+    assert calculations.count(dumps({})) == 3
 
     # Cleaning
     manager.wipe()
 
 
-def test_random_kinetic_model_sleepy():
-    n_compounds = 10
-    n_flasks = 2
-    n_reactions = 10
-    max_r_per_c = 10
-    max_n_products_per_r = 2
-    max_n_educts_per_r = 2
-    max_s_per_c = 1
-    max_steps_per_r = 1
-    barrier_limits = (10, 20)
-    n_inserts = 3
-    manager = db_setup.get_random_db(
-        n_compounds,
-        n_flasks,
-        n_reactions,
-        max_r_per_c,
-        "chemoton_test_random_kinetic_model_sleepy",
-        max_n_products_per_r,
-        max_n_educts_per_r,
-        max_s_per_c,
-        max_steps_per_r,
-        barrier_limits,
-        n_inserts,
-    )
-    model = db.Model("FAKE", "FAKE", "F-AKE")
+def add_reaction(manager: db.Manager, ts_energy: float, lhs_energies: Optional[List[float]] = None,
+                 rhs_energies: Optional[List[float]] = None, lhs_aggregate_ids: Optional[List[db.ID]] = None,
+                 rhs_aggregate_ids: Optional[List[db.ID]] = None):
     structures = manager.get_collection("structures")
     properties = manager.get_collection("properties")
-    calculations = manager.get_collection("calculations")
     compounds = manager.get_collection("compounds")
-    # Set the starting concentrations for all compounds.
-    for structure in structures.iterate_all_structures():
-        structure.link(structures)
-        con_prop = db.NumberProperty.make("start_concentration", model, 0.1, properties)
-        con_prop.set_structure(structure.id())
-        structure.add_property("start_concentration", con_prop.id())
-    for compound in compounds.iterate_all_compounds():
-        compound.link(compounds)
-        compound.enable_exploration()
+    model = db_setup.get_fake_model()
+    if lhs_aggregate_ids is None:
+        lhs_aggregate_ids = []
+        assert lhs_energies
+        for e in lhs_energies:
+            s, _ = TestThermodynamicProperties.get_OH_structures(model, e, structures, properties)
+            hessian_property = TestThermodynamicProperties.get_OH_hessian(model, properties)
+            s.add_property("hessian", hessian_property.id())
+            hessian_property.set_structure(s.id())
+            c = db.Compound()
+            c.link(compounds)
+            c.create([s.id()])
+            lhs_aggregate_ids.append(c.id())
+    if rhs_aggregate_ids is None:
+        rhs_aggregate_ids = []
+        assert rhs_energies
+        for e in rhs_energies:
+            s, _ = TestThermodynamicProperties.get_OH_structures(model, e, structures, properties)
+            hessian_property = TestThermodynamicProperties.get_OH_hessian(model, properties)
+            s.add_property("hessian", hessian_property.id())
+            hessian_property.set_structure(s.id())
+            c = db.Compound()
+            c.link(compounds)
+            c.create([s.id()])
+            rhs_aggregate_ids.append(c.id())
+    lhs_aggregates = [db.Compound(c_id, compounds) for c_id in lhs_aggregate_ids]
+    rhs_aggregates = [db.Compound(c_id, compounds) for c_id in rhs_aggregate_ids]
+    lhs_structure_ids = [c.get_centroid() for c in lhs_aggregates]
+    rhs_structure_ids = [c.get_centroid() for c in rhs_aggregates]
 
-    calculation = db.Calculation()
-    calculation.link(calculations)
-    calculation.create(model, db.Job("some_job"), [])
-    calculation.set_status(db.Status.PENDING)
+    elementary_steps = manager.get_collection("elementary_steps")
+    reactions = manager.get_collection("reactions")
+    ts, _ = TestThermodynamicProperties.get_OH_structures(model, ts_energy, structures, properties)
+    ts.set_label(db.Label.TS_OPTIMIZED)
+    hessian_property = TestThermodynamicProperties.get_OH_hessian(model, properties)
+    ts.add_property("hessian", hessian_property.id())
+    hessian_property.set_structure(ts.id())
+    new_step = db.ElementaryStep()
+    new_step.link(elementary_steps)
+    new_step.create(lhs_structure_ids, rhs_structure_ids)
+    new_step.set_transition_state(ts.id())
+    new_reaction = db.Reaction()
+    new_reaction.link(reactions)
+    new_reaction.create(lhs_aggregate_ids, rhs_aggregate_ids, [db.CompoundOrFlask.COMPOUND for _ in lhs_aggregate_ids],
+                        [db.CompoundOrFlask.COMPOUND for _ in rhs_aggregate_ids])
+    new_reaction.add_elementary_step(new_step.id())
+    new_step.set_reaction(new_reaction.id())
+    for c in lhs_aggregates + rhs_aggregates:
+        c.add_reaction(new_reaction.id())
 
-    # Check the job-set up.
-    kinetic_modeling_gear = KineticModeling()
-    kinetic_modeling_gear.options.model = model
-    kinetic_modeling_gear.options.elementary_step_interval = 4
-    kinetic_modeling_gear.options.time_step = 1e-8
-    kinetic_modeling_gear.options.solver = "cash_karp_5"
-    kinetic_modeling_gear.options.batch_interval = 1000
-    kinetic_modeling_gear.options.sleeper_mode = True
+    return new_reaction, lhs_aggregates, rhs_aggregates
 
+
+def test_single_reaction():
+    manager = db_setup.get_clean_db("chemoton_test_kinetic_modeling_single_reaction")
+    compounds = manager.get_collection("compounds")
+    calculations = manager.get_collection("calculations")
+    model = db_setup.get_fake_model()
+
+    e1 = -634.6730820353
+    e2 = -634.6568134574
+    ets = -634.6145146309
+    barrier_eh = ets - e1
+    barrier = barrier_eh * utils.KJPERMOL_PER_HARTREE * 1e+3
+    low_barrier = 0.9 * barrier
+    _, lhs_a1, rhs_a1 = add_reaction(manager, ets, [e1], [e2])
+    insert_concentration_for_compound(manager, 0.1, model, lhs_a1[0].id(), False, "start_concentration")
+
+    gear = KineticModeling()
+    gear.options.job = db.Job("rms_kinetic_modeling")
+    gear.options.job_settings = KineticModeling.get_default_settings(gear.options.job)
+    gear.options.electronic_model = model
+    gear.options.hessian_model = model
+    gear.options.cycle_time = 0.1
     kinetic_modeling_engine = Engine(manager.get_credentials(), fork=False)
-    kinetic_modeling_engine.set_gear(kinetic_modeling_gear)
+    kinetic_modeling_engine.set_gear(gear)
     kinetic_modeling_engine.run(single=True)
     assert calculations.count(dumps({})) == 1
     kinetic_modeling_engine.run(single=True)
     assert calculations.count(dumps({})) == 1
 
-    calculation.set_status(db.Status.COMPLETE)
-    kinetic_modeling_engine.run(single=True)
+    calc = calculations.find(dumps({"status": "hold"}))
+    calc_settings = calc.get_settings()
+    assert len(calc_settings["ea"]) == 1
+    assert abs(calc_settings["ea"][0] - barrier) < 1e-9
+
+    calc.set_status(db.Status.COMPLETE)
+    for c in compounds.iterate_all_compounds():
+        c.link(compounds)
+        insert_concentration_for_compound(manager, 0.1, model, c.id(), False, "concentration_flux")
+
+    _, _, _ = add_reaction(manager, ets, [e1], [e2])  # add  disconnected reaction.
+    kinetic_modeling_engine.run(single=True)  # this should not add a new calculation (already set up)
+    assert calculations.count(dumps({})) == 1
+    assert len(calc_settings["ea"]) == 1
+    assert abs(calc_settings["ea"][0] - barrier) < 1e-3  # barrier in J/mol, so 1e-3 is approx 1e-6 E_h
+
+    _, _, _ = add_reaction(manager, ets + 2 * barrier_eh, None, [e2],
+                           lhs_aggregate_ids=[lhs_a1[0].id()])  # add  reaction with high barrier.
+    gear.options.max_barrier = 2 * barrier * 1e-3
+    kinetic_modeling_engine.run(single=True)  # this should not add a new calculation (already set up)
+    assert calculations.count(dumps({})) == 1
+
+    _, _, _ = add_reaction(manager, ets - 0.1 * barrier_eh, None, [e2],
+                           lhs_aggregate_ids=[lhs_a1[0].id()])  # add  reaction with low barrier.
+    kinetic_modeling_engine.run(single=True)  # this should add a new calculation with two reactions
     assert calculations.count(dumps({})) == 2
+    calc = calculations.find(dumps({"status": "hold"}))
+    calc_settings = calc.get_settings()
+    assert len(calc_settings["ea"]) == 2
+    calc.set_status(db.Status.COMPLETE)
+    for c in compounds.iterate_all_compounds():
+        c.link(compounds)
+        insert_concentration_for_compound(manager, 0.1, model, c.id(), False, "concentration_flux")
 
-    # Cleaning
-    manager.wipe()
-
-
-def test_random_kinetic_model_local_barrier_analysis():
-    n_compounds = 10
-    n_flasks = 2
-    n_reactions = 10
-    max_r_per_c = 10
-    max_n_products_per_r = 2
-    max_n_educts_per_r = 2
-    max_s_per_c = 1
-    max_steps_per_r = 1
-    barrier_limits = (10, 20)
-    n_inserts = 3
-    manager = db_setup.get_random_db(
-        n_compounds,
-        n_flasks,
-        n_reactions,
-        max_r_per_c,
-        "chemoton_test_random_kinetic_model_local_barrier_analysis",
-        max_n_products_per_r,
-        max_n_educts_per_r,
-        max_s_per_c,
-        max_steps_per_r,
-        barrier_limits,
-        n_inserts,
-    )
-    model = db.Model("FAKE", "FAKE", "F-AKE")
-    structures = manager.get_collection("structures")
-    properties = manager.get_collection("properties")
-    calculations = manager.get_collection("calculations")
-    compounds = manager.get_collection("compounds")
-    # Set the starting concentrations for all compounds.
-    for structure in structures.iterate_all_structures():
-        structure.link(structures)
-        con_prop = db.NumberProperty.make("start_concentration", model, 0.1, properties)
-        con_prop.set_structure(structure.id())
-        structure.add_property("start_concentration", con_prop.id())
-    for compound in compounds.iterate_all_compounds():
-        compound.link(compounds)
-        compound.enable_exploration()
-
-    # Check the job-set up.
-    job_factory = KineticModelingJobFactory(model, manager, "electronic_energy", db.Job('fake_kinetic_modeling'),
-                                            1e-5, True, False, 200.0, 0.0, 0.0, 0.0, "_test", True, False)
-    settings = utils.ValueCollection({})
-    settings["time_step"] = 1e-14
-    settings["solver"] = "cash_carp_5"
-    settings["batch_interval"] = 10000
-    settings["n_batches"] = 10000
-    settings["energy_label"] = "electronic_energy"
-    settings["convergence"] = 1e-8
-
-    job_factory.create_local_barrier_analysis_jobs(settings)
-
-    assert calculations.count(dumps({})) == n_reactions
-
-    # Cleaning
-    manager.wipe()
+    insert_concentration_for_compound(manager, 0.0, model, rhs_a1[0].id(), True, "concentration_flux")
+    kinetic_modeling_engine.run(single=True)  # this should add a new calculation with one reaction and the low barrier
+    assert calculations.count(dumps({})) == 3
+    calc = calculations.find(dumps({"status": "hold"}))
+    calc_settings = calc.get_settings()
+    assert len(calc_settings["ea"]) == 1
+    assert abs(calc_settings["ea"][0] - low_barrier) < 1e-3

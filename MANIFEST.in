@@ -11,5 +11,8 @@ recursive-include docs *.rst conf.py Makefile make.bat
 include versioneer.py
 include scine_chemoton/_version.py
 
+# Remove test files from install:
+prune tests
+
 # If including data files in the package, add them like:
-include scine_chemoton/tests/resources
+include scine_chemoton/resources/*xyz

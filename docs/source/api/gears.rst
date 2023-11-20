@@ -23,6 +23,7 @@ Elementary Steps Exploration
 .. automodule:: scine_chemoton.gears.elementary_steps.brute_force
 .. automodule:: scine_chemoton.gears.elementary_steps.minimal
 .. automodule:: scine_chemoton.gears.elementary_steps.minimum_energy_conformer
+.. automodule:: scine_chemoton.gears.elementary_steps.selected_structures
 .. autoclass:: scine_chemoton.gears.elementary_steps.trial_generator.TrialGenerator
 .. automodule:: scine_chemoton.gears.elementary_steps.trial_generator.bond_based
 .. automodule:: scine_chemoton.gears.elementary_steps.trial_generator.fragment_based

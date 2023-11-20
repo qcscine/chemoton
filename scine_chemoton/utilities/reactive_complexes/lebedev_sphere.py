@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 import numpy as np
@@ -22,6 +22,9 @@ class LebedevSphere:
     def nearest_neighbors(self) -> List[List[int]]:
         """List[List[int]] :: The nearest neighbors of all points on the sphere."""
         return self._nearest_neighbors
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}()"
 
     def __init__(self):
         self._points = np.array(

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -10,6 +10,7 @@ from typing import List
 
 # Third party imports
 import scine_database as db
+from scine_database.queries import optimized_labels_enums
 
 # Local application imports
 from . import ElementaryStepGear
@@ -54,11 +55,10 @@ class BruteForceElementarySteps(ElementaryStepGear):
         eligible = []
         for sid in compound.get_structures():
             structure = db.Structure(sid, self._structures)
+            if not self._check_structure_model(structure):
+                continue
             # Only consider optimized structures, no guess structures or duplicates
-            if not structure.explore() or structure.get_label() not in [
-                db.Label.MINIMUM_OPTIMIZED,
-                db.Label.USER_OPTIMIZED,
-            ]:
+            if not structure.explore() or structure.get_label() not in optimized_labels_enums():
                 continue
             eligible.append(sid)
         return eligible

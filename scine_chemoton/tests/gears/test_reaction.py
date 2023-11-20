@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
@@ -14,11 +14,11 @@ import unittest
 
 # Local application tests imports
 from scine_chemoton.gears import HoldsCollections
-from .. import test_database_setup as db_setup
 
 # Third party imports
 import scine_database as db
 import scine_utilities as utils
+from scine_database import test_database_setup as db_setup
 
 # Local application imports
 from ...engine import Engine

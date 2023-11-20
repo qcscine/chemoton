@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
-Copyright ETH Zurich, Laboratory of Physical Chemistry, Reiher Group.
+Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
 # Standard library imports
 from typing import List, Tuple
+import pytest
 import unittest
 import os
-import pytest
 from json import dumps
 
 # Third party imports
 import scine_database as db
+from scine_database import test_database_setup as db_setup
 
 # Local application tests imports
-from .. import test_database_setup as db_setup
 from ...gears import HoldsCollections
 
 # Local application imports
@@ -700,8 +700,4 @@ def test_concentration_based_selection_chained_flasks():
     kinetics_engine.set_gear(kinetics_gear)
     for _ in range(2):
         kinetics_engine.run(single=True)
-    print(lhs_compound.explore())
-    print(rhs_compound.explore())
-    print(lhs_flask.explore())
-    print(rhs_flask.explore())
     assert lhs_compound.explore() and rhs_compound.explore() and not lhs_flask.explore() and not rhs_flask.explore()
