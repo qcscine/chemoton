@@ -8,7 +8,6 @@ recursive-exclude * *.py[co]
 
 recursive-include docs *.rst conf.py Makefile make.bat
 
-include versioneer.py
 include scine_chemoton/_version.py
 
 # Remove test files from install:

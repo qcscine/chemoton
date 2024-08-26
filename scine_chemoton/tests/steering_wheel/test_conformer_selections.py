@@ -224,7 +224,7 @@ class ConformerSelectionTests(unittest.TestCase):
 
     def test_correct_cluster_num(self):
         step_result = NetworkExpansionResult(compounds=[self.compound.id()])
-        random_n_cluster = random.randint(1, len(self.compound.get_structures()) - 1)
+        random_n_cluster = random.randint(1, len(self.compound.get_structures()) - 2)
 
         sele = ClusterCentroidConformerSelection(self.model, n_clusters=random_n_cluster)
         result = sele(self.credentials, step_result)

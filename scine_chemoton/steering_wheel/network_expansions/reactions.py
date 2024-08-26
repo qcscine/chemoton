@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
 Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
@@ -21,9 +22,10 @@ from scine_chemoton.gears.elementary_steps.selected_structures import SelectedSt
 from scine_chemoton.gears.elementary_steps.minimal import MinimalElementarySteps
 from scine_chemoton.gears.elementary_steps.trial_generator.bond_based import BondBased
 from scine_chemoton.gears.elementary_steps.trial_generator.fast_dissociations import (
-    FastDissociations,
-    ReactionCoordinateMaxDissociationEnergyFilter
+    FastDissociations
 )
+from scine_chemoton.filters.further_exploration_filters import \
+    ReactionCoordinateMaxDissociationEnergyFilter
 
 
 class ChemicalReaction(NetworkExpansion):
@@ -39,7 +41,7 @@ class ChemicalReaction(NetworkExpansion):
             self.general_react_job = db.Job('scine_react_complex_nt2')
             self.general_react_job_settings = ValueCollection({})
 
-    options: Options  # required for mypy checks, so it knows which options object to check
+    options: ChemicalReaction.Options  # required for mypy checks, so it knows which options object to check
 
     def __init__(self, model: db.Model,  # pylint: disable=keyword-arg-before-vararg
                  gear_options: Optional[GearOptions] = None,
@@ -48,11 +50,13 @@ class ChemicalReaction(NetworkExpansion):
                  general_settings: Optional[Dict[str, Any]] = None,
                  add_default_chemoton_nt_settings: bool = True,
                  exact_settings_check: bool = False,
+                 react_flasks: bool = False,
                  *args, **kwargs):
         super().__init__(model, gear_options, status_cycle_time, include_thermochemistry, general_settings,
                          *args, **kwargs)
         self._exact_settings_check = exact_settings_check
         self._add_default_chemoton_nt_settings = add_default_chemoton_nt_settings
+        self._react_flasks = react_flasks
         if add_default_chemoton_nt_settings:
             self.options.general_react_job_settings.update(default_nt_settings().as_dict())
 
@@ -64,13 +68,13 @@ class ChemicalReaction(NetworkExpansion):
     def _set_protocol(self, credentials: db.Credentials) -> None:
         pass
 
-    def _execute(self) -> NetworkExpansionResult:
+    def _execute(self, n_already_executed_protocol_steps: int) -> NetworkExpansionResult:
         """
         Convenience implementation of execution.
         First basic execute and then query for all modified reactions and add their reactants and products
         to the result.
         """
-        self._basic_execute()
+        self._basic_execute(n_already_executed_protocol_steps)
         result = NetworkExpansionResult()
         self._add_modified_reactions_to_results(result, include_reactants=True)
         return result
@@ -89,6 +93,10 @@ class ChemicalReaction(NetworkExpansion):
         else:
             elementary_step_gear = MinimalElementarySteps()  # type: ignore
         elementary_step_gear.trial_generator = trial_generator
+        if self._react_flasks:
+            elementary_step_gear.options.looped_collection = "flasks"
+        else:
+            elementary_step_gear.options.looped_collection = "compounds"
 
         # unimolecular job + settings
         elementary_step_gear.trial_generator.options.unimolecular_options.job = self.options.general_react_job
@@ -117,6 +125,7 @@ class ChemicalReaction(NetworkExpansion):
         )
 
         elementary_step_gear.options.run_one_cycle_with_settings_enhancement = self._exact_settings_check
+        elementary_step_gear.disable_caching()
 
         return elementary_step_gear
 
@@ -143,7 +152,7 @@ class Dissociation(ChemicalReaction):
             self.dissociation_job = db.Job('scine_dissociation_cut')
             self.further_explore_dissociations_barrier = further_explore_dissociations_barrier
 
-    options: Options  # required for mypy checks, so it knows which options object to check
+    options: Dissociation.Options  # required for mypy checks, so it knows which options object to check
 
     def __init__(self, model: db.Model,  # pylint: disable=keyword-arg-before-vararg
                  gear_options: Optional[GearOptions] = None,
@@ -152,11 +161,12 @@ class Dissociation(ChemicalReaction):
                  general_settings: Optional[Dict[str, Any]] = None,
                  add_default_chemoton_nt_settings: bool = True,
                  exact_settings_check: bool = False,
+                 react_flasks: bool = False,
                  max_bond_dissociations: int = 1,
                  further_explore_dissociations_barrier: float = 200.0,
                  *args, **kwargs):
         super().__init__(model, gear_options, status_cycle_time, include_thermochemistry, general_settings,
-                         add_default_chemoton_nt_settings, exact_settings_check,
+                         add_default_chemoton_nt_settings, exact_settings_check, react_flasks,
                          max_bond_dissociations, further_explore_dissociations_barrier, *args, **kwargs)
 
     @thermochemistry_job_wrapper
@@ -219,7 +229,7 @@ class Association(Dissociation):
             self.max_bond_associations = max_bond_associations
             self.max_intra_associations = max_intra_associations
 
-    options: Options  # required for mypy checks, so it knows which options object to check
+    options: Association.Options  # required for mypy checks, so it knows which options object to check
 
     def __init__(self, model: db.Model,  # pylint: disable=keyword-arg-before-vararg
                  gear_options: Optional[GearOptions] = None,
@@ -228,10 +238,12 @@ class Association(Dissociation):
                  general_settings: Optional[Dict[str, Any]] = None,
                  add_default_chemoton_nt_settings: bool = True,
                  exact_settings_check: bool = False,
+                 react_flasks: bool = False,
                  max_bond_associations: int = 1, max_bond_dissociations: int = 0,
                  max_intra_associations: int = 0, *args, **kwargs):
         super().__init__(model, gear_options, status_cycle_time, include_thermochemistry, general_settings,
                          add_default_chemoton_nt_settings, exact_settings_check,
+                         react_flasks,  # react_flasks
                          max_bond_dissociations,  # max_bond_dissociations
                          np.inf,  # further_explore_dissociations_barrier
                          max_bond_associations,  # max_bond_associations
@@ -270,6 +282,8 @@ class Rearrangement(Association):
     Represents the unimolecular rearrangement of a compound into another compound
     or multiple separate compounds.
     """
+
+    options: Rearrangement.Options
 
     def _set_protocol(self, credentials: db.Credentials) -> None:
         elementary_step_gear = self._basic_elementary_step_gear_setup(credentials)

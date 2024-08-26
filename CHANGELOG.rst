@@ -1,6 +1,68 @@
 Changelog
 =========
 
+Release 4.0.0
+-------------
+
+API Changes:
+ - Move network refinement to separate folder
+ - Move all filters to separate folder
+ - Move reaction rules to separate folder
+ - Remove deprecated database queries
+ - Removed some gear options such as `pre_refine_model` in favor of the default `model` field
+ - Set the default `model` option with `PlaceHolderModel` and check if it is still present before launching the gear to make sure that an intended model is used
+ - Small changes to the default arguments of the kinetic modeling gear to facilitate its use in SCINE Heron
+
+New features
+ - Add StructureFilters derived from fitting AggregatesFilters.
+ - Assemble reactive complexes from two given molecules easily with an CLI.
+ - Elementary Step Gears can set up reaction trials for flasks.
+ - Almost all Aggregate and ReactiveSiteFilters are made suitable for flasks. If not, a note is included in the documentation.
+ - Add an AggregateFilter that filters based on substructure searches.
+ - Add an AggregateFilter that filters based on allowed / disallowed molecular charges.
+ - Add reverse option for some existing AggregateFilters.
+ - KineticsGear now has an option that allows to run it as many cycles as long as no new aggregates are activated and then stops itself. 
+ - Add gear to carry out additional energy calculations.
+ - Kinetic modeling may now work with a mixture of electronic structure models.
+ - Energies may now be automatically referenced as formation energies from the atoms.
+ - The bond-based trial generator is now able to enable (enable exploration/analysis) the analysis of structures,
+   elementary steps, etc. in the results of already completed calculations, i.e., the trial generator detects that
+   it already set up a calculation previously. Instead of just continuing, it may then enable the results of this
+   calculation. This simulates a step-wise exploration of already existing data in the DB that was disabled before
+   and is intended to allow re-exploration with different reaction conditions such as temperature and pressure or
+   recycle existing data after changing the kinetics gear (or kinetic modeling, pathfinder etc.).
+ - Add a framework to filter reactions (analogous to the aggregates filters) and filter elementary steps. These
+   new filters can be applied to the refinement framework (e.g., barrier-screening, barrier-less reaction selection,
+   concentrations etc.).
+ - The refinement is now split into 3 gears:
+    - Calculation-based refinement looping over the calculations and refining elementary steps (structures etc).
+    - Reaction-based refinement looping over reactions and selects elementary steps to be refined for each reaction
+      (including energy window for the step selection).
+    - Aggregate-based refinement looping over aggregates and refining the structures of these aggregates (including
+      energy window for the selection of the structure).
+ - All refinement gears support the same enabling strategy as introduced to the bond-based trial generator.
+ - Add reaction filter-based kinetics gear.
+ - Add reaction filter to constrain the maximum energy encountered when exploring a single potential energy surface.
+ - Add an aggregate filter to enforce that the particle number is conserved during the exploration.
+ - Add feature that a running Network Expansion of the Steering Wheel can be interrupted and continued later.
+
+Changes
+ - Rework the Engine / Gear interaction, by replacing the sent signals with shared memory members
+ - Add EngineHandler class to join any forked engines if a signal is sent, replacing the custom code in the main script; the class also allows for running all engines and stopping the processes gracefully
+ - Change the internal representation of some AggregateFilters from strings to enums in order to be faster.
+ - Add additional caches to some AggregateFilters for increased performance.
+ - Add more default settings.
+
+Bugfixes
+ - The MinimalConnectivityKinetics and BasicBarrierHeightKinetics did not consider reactions where all reactants on the right hand side were available, which lead to fewer activated aggregates
+ - GearOptions of the NetworkExpansion did not consider that there could be multiple gears of the same type but with different options in a protocol, hence their datastructure (including access keys) are now changed.
+ - Fix type annotations in the documentation.
+
+Technical changes
+ - `get_transition_state_free_energy` in the reaction_wrapper now returns `max(e_lhs, e_rhs)` if the reaction is
+   barrier-less.
+ - Add more typehints
+
 Release 3.1.0
 -------------
 

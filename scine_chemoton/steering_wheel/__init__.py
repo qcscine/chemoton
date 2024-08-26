@@ -37,7 +37,14 @@ from .selections import (
     PredeterminedSelection,
 )
 from .selections.input_selections import InputSelection
-from .datastructures import Status, ExplorationSchemeStep, ExplorationResult, LogicCoupling
+from .datastructures import (
+    Status,
+    ExplorationSchemeStep,
+    ExplorationResult,
+    LogicCoupling,
+    RestartPartialExpansionInfo,
+    NoRestartInfoPresent,
+)
 from .result_transfer import receive_multiple_results_from_pipe, send_multiple_results_in_pipe, WaitForFurtherResults
 
 
@@ -59,7 +66,7 @@ class SteeringWheel(HasName):
 
     def __init__(self, credentials: db.Credentials, exploration_scheme: List[ExplorationSchemeStep],
                  global_selection: Optional[Selection] = None, global_for_first_selection: bool = False,
-                 restart_file: Optional[str] = None, callable_input: Callable = input):
+                 restart_file: Optional[str] = None, callable_input: Callable = input) -> None:
         """
         Initialize the steering wheel to a database with the given credentials and an exploration scheme.
         The exploration scheme can still be empty and added later with `+=`.
@@ -82,6 +89,7 @@ class SteeringWheel(HasName):
         super().__init__()
         self.credentials = credentials
         self.manager: Optional[db.Manager] = connect_to_db(credentials)
+        self._partial_protocol_restart_info: Optional[RestartPartialExpansionInfo] = None
         self._default_name = copy(self._name)
         self._external_restart_file: Optional[str] = restart_file
         self._input = callable_input
@@ -93,6 +101,7 @@ class SteeringWheel(HasName):
         self._process: Optional[Process] = None
         self._process_manager: Optional[Connection] = None
         self._results_connection_recv: Optional[ReadAble] = None
+        self._partial_steps_connection_recv: Optional[ReadAble] = None
         self._status_connection_recv: Optional[Connection] = None
         self._status_connection_send: Optional[Connection] = None
         self._reusing_prev_selection: Dict[int, int] = {}
@@ -100,14 +109,14 @@ class SteeringWheel(HasName):
         self.scheme: List[ExplorationSchemeStep] = []
         if exploration_scheme:
             last_selection = self._first_step_sanity_checks(exploration_scheme)
-            # first step has been added with if/else before
+            # the first step has been added with if/else before
             self._add_exploration_steps_to_scheme(exploration_scheme, last_selection, first_has_been_added=True)
 
     def _first_step_sanity_checks(self, exploration_scheme: List[ExplorationSchemeStep]) \
             -> Tuple[Optional[Selection], int]:
         """
         Method to check the first step of the exploration scheme and add it to the scheme if it is valid.
-        First step is special because it must fulfill some requirements,
+        The first step is special because it must fulfill some requirements,
         e.g., it must be a selection that inputs structures
         or the database must already contain structures.
 
@@ -171,7 +180,7 @@ class SteeringWheel(HasName):
                 last_selection = (default_first, 0)
             else:
                 self.stop(save_progress=False)
-            # first step in given scheme is now safe to add
+            # the first step in the given scheme is now safe to add
             self.scheme.append(first_step)
         if last_selection is not None and last_selection[0] is not None:
             result = last_selection[0].get_result()
@@ -215,7 +224,7 @@ class SteeringWheel(HasName):
         last_selection : Optional[Tuple[Optional[Selection], int]]
             The last selection in the existing scheme and its index. None if no selection yet.
         first_has_been_added : bool
-            _description_
+            If the first step has been added already.
 
         Raises
         ------
@@ -288,12 +297,16 @@ class SteeringWheel(HasName):
         if result is not None:
             total_results = self.get_results()
             if isinstance(step, PredeterminedSelection):
-                # fine that this one is holding a results object
-                step.status = Status.WAITING
-            elif total_results is None:
+                # adapt status to what is expected depending on the steps before
+                all_finished = all(s.status in [Status.FINISHED, Status.FAILED] for s in self.scheme[:scheme_index])
+                step.status = Status.FINISHED if all_finished else Status.WAITING
+            if total_results is None:
                 if not self.scheme:
                     # fine for first entry if we don't have any results yet, but added step has a result
                     self._set_results([result])
+                elif isinstance(step, PredeterminedSelection):
+                    # fine that this one is holding a results object
+                    pass
                 else:
                     warn(f"Added step {step.name} to scheme, which has a result, but the total scheme "
                          f"does not have any results yet. We are discarding the result of this step.")
@@ -302,6 +315,9 @@ class SteeringWheel(HasName):
             elif len(total_results) == scheme_index:
                 # fine for last entry if we have results and added step has a result
                 total_results.append(result)
+            elif isinstance(step, PredeterminedSelection):
+                # fine that this one is holding a results object
+                pass
             else:
                 warn(f"Added step {step.name} to scheme at index {scheme_index}, which has a result, "
                      f"but the total scheme only has {len(total_results)} results. "
@@ -310,38 +326,43 @@ class SteeringWheel(HasName):
                 step.set_result(None)
 
     def __getstate__(self) -> Tuple[db.Credentials, List[ExplorationSchemeStep], Optional[Selection], bool,
-                                    Optional[str], Callable, Optional[List[ExplorationResult]]]:
+                                    Optional[str], Callable, Optional[List[ExplorationResult]],
+                                    Optional[RestartPartialExpansionInfo]]:
         """
         Defined dunder method to make the ExplorationProtocol picklable.
 
         Returns
         -------
         Tuple[db.Credentials, List[ExplorationSchemeStep], Optional[Selection], bool,
-              Optional[str], Callable, Optional[List[ExplorationResult]]]
+              Optional[str], Callable, Optional[List[ExplorationResult]],
+              Optional[RestartPartialExpansionInfo]]
             The state information to be pickled.
         """
         results = self.get_results()
+        partial_steps = self.get_partial_restart_info()
         self.manager = None  # cannot be pickled
         make_picklable(self)
         # we only want to specify the restart file if it was something special, otherwise keep the rolling restart name
         restart_file = self.restart_file if self._external_restart_file is not None else None
         return self.credentials, self.scheme, self._global_selection, \
-            self._global_for_first_selection, restart_file, self._input, results  # type: ignore
+            self._global_for_first_selection, restart_file, self._input, results, partial_steps  # type: ignore
 
     def __setstate__(self, state: Tuple[db.Credentials, List[ExplorationSchemeStep], Optional[Selection], bool,
-                                        Optional[str], Callable, Optional[List[ExplorationResult]]]):
+                                        Optional[str], Callable, Optional[List[ExplorationResult]],
+                                        Optional[RestartPartialExpansionInfo]]) -> None:
         """
         Defined dunder method to make the ExplorationProtocol picklable.
 
         Parameters
         ----------
-        Tuple[db.Credentials, List[ExplorationSchemeStep], Optional[Selection], bool,
-              Optional[str], Callable, Optional[List[ExplorationResult]]]
+        state : Tuple[db.Credentials, List[ExplorationSchemeStep], Optional[Selection], bool,
+                      Optional[str], Callable, Optional[List[ExplorationResult]], Optional[RestartPartialExpansionInfo]]
             The state information to be unpickled.
         """
         self.__init__(credentials=state[0], exploration_scheme=state[1], global_selection=state[2],  # type: ignore
                       global_for_first_selection=state[3], restart_file=state[4], callable_input=state[5])
         self._results = state[6]
+        self.set_partial_restart_info(state[7])
 
     def set_global_selection(self, global_selection: Selection, global_for_first_selection: bool = False) -> None:
         """
@@ -438,7 +459,7 @@ class SteeringWheel(HasName):
             raise TypeError(f"Given exploration scheme {other} is not valid")
         if self.is_running():
             self.stop(save_progress=True)
-            self.start(allow_restart=True, additional_steps=other)
+            self.run(allow_restart=True, additional_steps=other)
         else:
             self._add_exploration_steps_to_scheme(other, None, first_has_been_added=False)
         if len(self.scheme) == previous_scheme_length and \
@@ -534,6 +555,7 @@ class SteeringWheel(HasName):
             The exploration protocol is already running.
         """
         self.get_results()
+        self.get_partial_restart_info()
         if add_global_selection:
             # make sure that set global selection is not overwritten back by loading previous wheel
             current_global = self._global_selection
@@ -574,10 +596,19 @@ class SteeringWheel(HasName):
             existing_results_send.send(WaitForFurtherResults())
         else:
             existing_results_recv = None
+        # same for partial steps, but we don't need waiting procedure, because we are sending only a single integer
+        # we are constructing it with our ProxyWrapper, because the worker might spam the same integer multiple times
+        self._partial_steps_connection_recv, worker_partial_step_send = \
+            MultiProcessingConnectionsWithProxyThread.construct_connections()
+        worker_partial_steps_recv, initial_partial_step_send = Pipe(duplex=False)
+        if self._partial_protocol_restart_info is None:
+            initial_partial_step_send.send(NoRestartInfoPresent())
+        else:
+            initial_partial_step_send.send(self._partial_protocol_restart_info)
         self._process = Process(name=self.name, target=_worker,
                                 args=(self.credentials, self.scheme, self.name, self._reusing_prev_selection,
                                       existing_results_recv, results_send,
-                                      status_recv, status_send))
+                                      status_recv, status_send, worker_partial_steps_recv, worker_partial_step_send))
         self._process.start()
         if self._results is not None:
             send_multiple_results_in_pipe(self._results, existing_results_send)
@@ -620,11 +651,13 @@ class SteeringWheel(HasName):
             if path.exists(path.join(self._save_dir, restart_file)):
                 protocol_name = self._protocol_name_from_restart_file(restart_file, restart_info)
                 if allow_restart is None:
-                    allow_restart = yes_or_no_question(f"Found restart file '{protocol_name}'.\n"
+                    split_protocol_name = self._split_protocol_name(protocol_name)
+                    allow_restart = yes_or_no_question(f"Found restart file '{split_protocol_name}'.\n"
                                                        f"Do you want to continue with this", self._input)
                 if have_triggered_warning:
-                    allow_restart = yes_or_no_question(f"Could now find the restart file '{protocol_name}'.\n"
-                                                       f"Do you want to load it", self._input)
+                    split_protocol_name = self._split_protocol_name(protocol_name)
+                    allow_restart = yes_or_no_question(f"Could now find the restart file '{split_protocol_name}'"
+                                                       f".\nDo you want to load it", self._input)
                 break
             elif not restart_file:
                 # no names left to search for
@@ -640,10 +673,7 @@ class SteeringWheel(HasName):
                 except ValueError:
                     allow_restart = False
                     break
-                restart_file = restart_info.get(protocol_name,
-                                                restart_info.get(
-                                                    self._cut_last_exploration_step_from_fileinfo(protocol_name), "")
-                                                )
+                restart_file = restart_info.get(self._cut_last_exploration_step_from_fileinfo(protocol_name), "")
             else:
                 break
         assert isinstance(restart_file, str)
@@ -692,11 +722,33 @@ class SteeringWheel(HasName):
         if self.is_running():
             self.terminate(try_save_progress=False)
         self._set_results(None)
+        self.set_partial_restart_info(None)
         for step in self.scheme:
             step.set_result(None)
             step.status = Status.WAITING
         # remove information written to disk
         self.clear_cache()
+
+    def get_partial_restart_info(self) -> Optional[RestartPartialExpansionInfo]:
+        if self._partial_steps_connection_recv is None:
+            return self._partial_protocol_restart_info
+        read_steps = read_connection(self._partial_steps_connection_recv)
+        if read_steps is None:
+            if self._partial_steps_connection_recv.was_closed():  # pylint: disable=(no-member)
+                # we cannot read from our proxy thread anymore, so we avoid senselessly trying to read
+                self._partial_steps_connection_recv = None
+            return self._partial_protocol_restart_info
+        if isinstance(read_steps, NoRestartInfoPresent):
+            read_steps = None
+        self.set_partial_restart_info(read_steps)  # this updates our own members
+        return read_steps
+
+    def set_partial_restart_info(self, restart_info: Optional[RestartPartialExpansionInfo]) -> None:
+        if restart_info is not None and self._results is not None and len(self._results) == len(self.scheme):
+            raise RuntimeError(
+                f"Wanted to set partial protocol steps to {restart_info}, but all exploration steps have a "
+                f"result already")
+        self._partial_protocol_restart_info = restart_info
 
     def clear_cache(self) -> None:
         if path.exists(self._save_dir):
@@ -721,14 +773,13 @@ class SteeringWheel(HasName):
             self._process.join()
             try:
                 self._results = self.get_results()
+                self.get_partial_restart_info()
                 self.get_status_report()
             except ConnectionResetError:
                 pass
             if save_progress:
                 self.save()
-            if self._results_connection_recv is not None:
-                self._results_connection_recv.close()  # pylint: disable=(no-member)
-                self._results_connection_recv = None
+            self._close_receiving_connections()
         else:
             warn(f"Tried to stop steering wheel {self.name}, but it was not running anyways")
 
@@ -737,6 +788,7 @@ class SteeringWheel(HasName):
         Save the current exploration progress.
         """
         try:
+            self.get_partial_restart_info()
             self._results = self.get_results()
             self.get_status_report()
         except ConnectionResetError:
@@ -744,6 +796,7 @@ class SteeringWheel(HasName):
         # copy things before we wipe them
         credentials = copy(self.credentials)
         results = self._results.copy() if self._results is not None else None
+        partial_restart_info = self._partial_protocol_restart_info
         # save
         self._save_impl()
         # load back
@@ -751,10 +804,11 @@ class SteeringWheel(HasName):
         self.manager = connect_to_db(credentials)
         self._results = results
         self._set_results(results)
+        self.set_partial_restart_info(partial_restart_info)
 
     def _save_impl(self):
         """
-        The implementation of the save function that handles the two file system.
+        The implementation of the save function that handles the two-file system.
 
         Notes
         -----
@@ -784,14 +838,14 @@ class SteeringWheel(HasName):
 
     def _load_impl(self, file_name: str, ask_for_how_many_results: bool) -> None:
         """
-        Implementation of the loading process from an unique id file name with the information if we should ask if we
+        Implementation of the loading process from a unique id file name with the information if we should ask if we
         want all results from the file.
 
         Parameters
         ----------
         file_name : str
             The unique id file name.
-        ask_for_how_many_results : _type_
+        ask_for_how_many_results : bool
             If we should ask for how many results we want to load.
         """
         protocol_name = self._protocol_name_from_restart_file(file_name)
@@ -801,22 +855,56 @@ class SteeringWheel(HasName):
         if self._results is not None and obj_results is None:
             warn(f"Don't remove existing results while loading {protocol_name}")
         elif obj_results is not None and obj_results:
+            partial_restart = obj.get_partial_restart_info()
             if ask_for_how_many_results:
-                q = f"Found results for {len(obj_results)} steps, from the protocol\n{protocol_name}\n" \
-                    f"that contains {len(obj)} exploration steps\nHow many results do you want to load?"
-                how_many_results = integer_question(q, limits=(0, len(obj_results)), callable_input=self._input)
+                split_protocol_name = self._split_protocol_name(protocol_name)
+                n_avail = len(obj_results)
+                sure = False
+                how_many_results = n_avail
+                while not sure:
+                    q = f"Found results for {n_avail} steps, from the protocol\n{split_protocol_name}\n" \
+                        f"that contains {len(obj)} exploration steps.\nHow many results do you want to load"
+                    how_many_results = integer_question(q, limits=(0, len(obj_results)), callable_input=self._input)
+                    if how_many_results == n_avail:
+                        # assume that it is safe to pick all the results and don't ask twice
+                        break
+                    q = f"Only selected {how_many_results} results from {n_avail} available results\n" \
+                        f"Are you sure"
+                    sure = yes_or_no_question(q, callable_input=self._input)
+
+                if how_many_results < n_avail and partial_restart is not None:
+                    warn("Did not load all results, "
+                         "hence we restart the partially executed exploration step from scratch")
+                    wanted_partial_restart = None
+                elif partial_restart is not None:
+                    q = f"The exploration protocol also contains a partially executed step with " \
+                        f"{partial_restart.n_already_executed_protocol_steps} engines of its protocol executed.\n" \
+                        f"Do you want to continue from the partial execution (y) or restart the step (n)"
+                    honor_partial_restart = yes_or_no_question(q, callable_input=self._input)
+                    wanted_partial_restart = partial_restart if honor_partial_restart else None
+                else:
+                    wanted_partial_restart = None
                 wanted_results = obj_results[:how_many_results]
             else:
                 wanted_results = obj_results
+                wanted_partial_restart = partial_restart
             if self._results is not None and len(wanted_results) < len(self._results):
                 kept_results = self._results[len(wanted_results):]
             else:
                 kept_results = []
             self.__dict__.update(obj.__dict__)
             self._set_results(wanted_results + kept_results)
+            self.set_partial_restart_info(wanted_partial_restart)
         else:
             self.__dict__.update(obj.__dict__)
             self._set_results(obj_results)
+
+    @staticmethod
+    def _split_protocol_name(protocol_name: str, split_size: int = 5) -> str:
+        split_protocol_name = ""
+        for i in range(0, protocol_name.count('-'), split_size):
+            split_protocol_name += "-".join(protocol_name.split("-")[i:i + split_size]) + "-\n"
+        return split_protocol_name
 
     def _protocol_name_from_restart_file(self, restart_file: str, restart_info: Optional[Dict[str, str]] = None) \
             -> str:
@@ -863,29 +951,34 @@ class SteeringWheel(HasName):
     @staticmethod
     def _cut_last_exploration_step_from_fileinfo(filename: str) -> str:
         """
-        Remove last step from the file name.
+        Remove the last step from the file name.
         """
         filename, suffix = path.splitext(filename)
         return "-".join(filename.split("-")[:-1]) + suffix
 
-    def terminate(self, try_save_progress: bool = True):
+    def terminate(self, try_save_progress: bool = True, suppress_warning: bool = False) -> None:
         """
-        Immediately terminate the exploring subprocess and don't wait for current step to finish.
+        Immediately terminate the exploring subprocess and don't wait for the current step to finish.
 
         Parameters
         ----------
         try_save_progress : bool, optional
             Whether we should still try to save the current state, by default True
+        suppress_warning : bool, optional
+            Whether we should suppress the warning if the wheel was not running, by default False
         """
         if self.is_running() and self._process is not None:
             if try_save_progress:
+                try:
+                    self._results = self.get_results()
+                    self.get_partial_restart_info()
+                except ConnectionResetError:
+                    pass
                 self._save_impl()
             self._process.terminate()
-            if self._results_connection_recv is not None:
-                self._results_connection_recv.close()  # pylint: disable=(no-member)
-                self._results_connection_recv = None
+            self._close_receiving_connections()
             self._process.join()
-        else:
+        elif not suppress_warning:
             warn(f"Tried to stop steering wheel {self.name}, but it was not running anyways")
 
     def join(self):
@@ -935,6 +1028,7 @@ class SteeringWheel(HasName):
         Dict[str, Status]
             The status report.
         """
+        self.get_partial_restart_info()  # this makes sure that status and partial steps are not conflicting
         if self._status_connection_recv is None:
             return self._construct_status_report()
         status = read_connection(self._status_connection_recv)
@@ -974,19 +1068,31 @@ class SteeringWheel(HasName):
         """
         return len(self.scheme)
 
-    def __del__(self) -> None:
+    def _close_receiving_connections(self) -> None:
         if self._results_connection_recv is not None:
             self._results_connection_recv.close()  # pylint: disable=(no-member)
-        if self.is_running():
-            self.terminate(try_save_progress=False)
-        else:
-            self.join()
+            self._results_connection_recv = None
+        if self._partial_steps_connection_recv is not None:
+            self._partial_steps_connection_recv.close()  # pylint: disable=(no-member)
+            self._partial_steps_connection_recv = None
+
+    def __del__(self) -> None:
+        try:
+            self._close_receiving_connections()
+            if self.is_running():
+                self.terminate(try_save_progress=False)
+            else:
+                self.join()
+        except BaseException:
+            pass
 
 
 def _worker(credentials: db.Credentials, scheme: List[ExplorationSchemeStep], name: str,
             reusing_prev_selection: Dict[int, int],
             results_connection_recv: Optional[ReadAble], results_connection_send: Connection,
-            stop_status_connection: Connection, status_connection: Connection) -> None:
+            stop_status_connection: Connection, status_connection: Connection,
+            worker_partial_steps_recv: Connection, worker_partial_step_send: Connection
+            ) -> None:
     """
     The worker function for the exploration process, that is forked to execute the exploration protocol.
 
@@ -1002,7 +1108,7 @@ def _worker(credentials: db.Credentials, scheme: List[ExplorationSchemeStep], na
         A dictionary telling at which step we should reuse the previous selection from the given index.
     results_connection_recv : Optional[ReadAble]
         The connection to receive existing results from.
-    results_connection_send : Conncection
+    results_connection_send : Connection
         The connection to send the results to.
     stop_status_connection : Connection
         The connection to receive potential stop signal from at end of each step.
@@ -1015,6 +1121,11 @@ def _worker(credentials: db.Credentials, scheme: List[ExplorationSchemeStep], na
         The existing results are not compatible with the status of the step or the reusing of previous results
         is not possible.
     """
+    partial_restart_info = read_connection(worker_partial_steps_recv)
+    if partial_restart_info is None:
+        raise RuntimeError("Received no information about the partial restart state")
+    if isinstance(partial_restart_info, NoRestartInfoPresent):
+        partial_restart_info = None
     results: List[ExplorationResult] = receive_multiple_results_from_pipe(results_connection_recv)
     if results_connection_recv is not None:
         results_connection_recv.close()
@@ -1030,9 +1141,20 @@ def _worker(credentials: db.Credentials, scheme: List[ExplorationSchemeStep], na
             else:
                 raise RuntimeError(f"ExplorationScheme {name} was incorrectly deduced.\n"
                                    f"Step {s.name} has already results, but its status is {s.status}")
+
+    def _send_partial_steps(restart_info_: Union[NoRestartInfoPresent, RestartPartialExpansionInfo]) -> None:
+        # we don't want to send the step index but the number of executed steps,
+        # so we add 1
+        worker_partial_step_send.send(restart_info_)
+
+    have_given_partial_steps = False
     for i, step in enumerate(scheme[n:], n):
         step.status = Status.CALCULATING
         status_connection.send([s.status for s in scheme])
+        have_expansion = isinstance(step, NetworkExpansion)
+        callback = _send_partial_steps if have_expansion else None
+        restart_info = partial_restart_info if not have_given_partial_steps and have_expansion else None
+        have_given_partial_steps = have_expansion
         if i in reusing_prev_selection:
             wanted_result_index = reusing_prev_selection[i]
             if wanted_result_index >= len(results):
@@ -1040,14 +1162,16 @@ def _worker(credentials: db.Credentials, scheme: List[ExplorationSchemeStep], na
                                    f"Wanted to take the selection result {wanted_result_index} "
                                    f"({scheme[wanted_result_index].name}) for step {i} ({step.name}), "
                                    f"but we only have {len(results)} so far.")
-            last_output = step(credentials, results[wanted_result_index])
+            last_output = step(credentials, results[wanted_result_index], callback, restart_info)
         elif last_output is None:
-            last_output = step(credentials)
+            last_output = step(credentials, notify_partial_steps_callback=callback,
+                               restart_information=restart_info)
         else:
-            last_output = step(credentials, last_output)
+            last_output = step(credentials, last_output, callback, restart_info)
         if not isinstance(last_output, ExplorationResult):
             raise TypeError(f"ExplorationScheme {name} was incorrectly deduced.\n"
                             f"Step {step.name} did not return an ExplorationResult, but a {type(last_output)}")
+        _send_partial_steps(NoRestartInfoPresent())  # because step is finished
         results.append(last_output)
         # copy because we remove things for pickling which we do for sending across connections
         send_multiple_results_in_pipe(results.copy(), results_connection_send)

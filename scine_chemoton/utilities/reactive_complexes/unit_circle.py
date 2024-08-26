@@ -15,15 +15,15 @@ class UnitCircle:
 
     @property
     def points(self) -> np.ndarray:
-        """np.ndarray :: The points of the circle."""
+        """np.ndarray : The points of the circle."""
         return self._points
 
     @property
     def nearest_neighbors(self) -> List[List[int]]:
-        """List[List[int]] :: The nearest neighbors of all points on the circle."""
+        """List[List[int]] : The nearest neighbors of all points on the circle."""
         return self._nearest_neighbors
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._points = np.array(
             [
                 [1.00000000e00, 0.00000000e00],

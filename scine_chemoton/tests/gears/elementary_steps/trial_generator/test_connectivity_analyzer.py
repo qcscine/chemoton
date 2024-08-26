@@ -21,7 +21,7 @@ class MockStructure(object):
     graph: dict = {}
     n_atoms: int = 0
 
-    def __init__(self, graph: dict, n_atoms: int):
+    def __init__(self, graph: dict, n_atoms: int) -> None:
         self.graph = graph
         self.n_atoms = n_atoms
 

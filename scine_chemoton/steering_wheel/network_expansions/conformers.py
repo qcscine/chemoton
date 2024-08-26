@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
 Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
@@ -22,6 +23,7 @@ class ConformerCreation(NetworkExpansion):
     """
 
     _conformer_gear: Optional[BruteForceConformers] = None  # so we can address the gear for results parsing
+    options: ConformerCreation.Options
 
     @thermochemistry_job_wrapper
     def _relevant_puffin_jobs(self) -> List[str]:
@@ -39,12 +41,12 @@ class ConformerCreation(NetworkExpansion):
             ])
         self._extra_manual_cycles_to_avoid_race_condition(credentials, aggregate_reactions=False)
 
-    def _execute(self) -> NetworkExpansionResult:
+    def _execute(self, n_already_executed_protocol_steps: int) -> NetworkExpansionResult:
         result = NetworkExpansionResult()
         if self._conformer_gear is None:
             raise RuntimeError(f"Error in {self.name}, conformer gear was not saved in class")
         valid_compounds = self._conformer_gear.valid_compounds()
-        self._basic_execute()
+        self._basic_execute(n_already_executed_protocol_steps)
         result.compounds = valid_compounds
 
         desired_labels = optimized_labels_enums()

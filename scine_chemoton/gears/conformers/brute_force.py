@@ -7,7 +7,7 @@ See LICENSE.txt for details.
 
 # Standard library imports
 from json import dumps
-from typing import List
+from typing import List, Set
 import math
 import time
 
@@ -18,7 +18,7 @@ import scine_utilities as utils
 
 # Local application imports
 from .. import Gear
-from ..elementary_steps.aggregate_filters import AggregateFilter
+from scine_chemoton.filters.aggregate_filters import AggregateFilter
 
 
 class BruteForceConformers(Gear):
@@ -29,7 +29,7 @@ class BruteForceConformers(Gear):
 
     Attributes
     ----------
-    options :: BruteForceConformers.Options
+    options : BruteForceConformers.Options
         The options for the BruteForceConformers Gear.
 
     Notes
@@ -55,7 +55,7 @@ class BruteForceConformers(Gear):
             "temperature"
         )
 
-        def __init__(self):
+        def __init__(self) -> None:
             super().__init__()
             self.conformer_job: db.Job = db.Job("conformers")
             """
@@ -89,12 +89,14 @@ class BruteForceConformers(Gear):
                 Temperature for Boltzmann evaluations
             """
 
-    def __init__(self):
+    options: Options
+
+    def __init__(self) -> None:
         super().__init__()
         self.aggregate_filter = AggregateFilter()
         self._required_collections = ["calculations", "compounds", "properties", "structures"]
         # local cache variables
-        self._completed = set()
+        self._completed: Set[str] = set()
 
     def _propagate_db_manager(self, manager: db.Manager):
         self._sanity_check_configuration()
@@ -113,7 +115,7 @@ class BruteForceConformers(Gear):
         # Loop over all compounds
         for compound in stop_on_timeout(self._compounds.iterate_all_compounds()):
             compound.link(self._compounds)
-            if self.stop_at_next_break_point:
+            if self.have_to_stop_at_next_break_point():
                 return result
             # Check for initial reasons to skip
             compound_id = compound.id()
@@ -127,7 +129,7 @@ class BruteForceConformers(Gear):
         # Loop over all compounds
         for compound in stop_on_timeout(self._compounds.iterate_all_compounds()):
             compound.link(self._compounds)
-            if self.stop_at_next_break_point:
+            if self.have_to_stop_at_next_break_point():
                 return
             # Check for initial reasons to skip
             if not compound.explore():
@@ -248,7 +250,7 @@ class BruteForceConformers(Gear):
                 reference_energy = energy
             energy -= reference_energy
             temperature_model = db.Model.__copy__(self.options.model)
-            temperature_model.temperature = self.options.temperature
+            temperature_model.temperature = str(self.options.temperature)
             boltzmann_property = db.NumberProperty.make("boltzmann_weight", temperature_model,
                                                         math.exp(-beta * energy), self._properties)
             boltzmann_property.set_comment("Energy 0-point: " + str(reference_energy))

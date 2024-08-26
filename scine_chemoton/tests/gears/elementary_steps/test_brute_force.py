@@ -65,6 +65,7 @@ class ElementaryStepBruteForceTests(unittest.TestCase, HoldsCollections):
         # Setup gear
         es_gear = BruteForceElementarySteps()
         es_gear.trial_generator = MockGenerator()
+        es_gear.options.model = cheap_model
         es_gear.options.enable_unimolecular_trials = False
         es_gear.options.enable_bimolecular_trials = True
         es_gear.options.structure_model = db.Model("expensive", "EXPENSIVE", "")
@@ -121,6 +122,7 @@ class ElementaryStepBruteForceTests(unittest.TestCase, HoldsCollections):
         # Setup gear
         es_gear = BruteForceElementarySteps()
         es_gear.trial_generator = MockGenerator()
+        es_gear.options.model = cheap_model
         es_gear.options.enable_unimolecular_trials = True
         es_gear.options.enable_bimolecular_trials = False
         es_gear.options.structure_model = db.Model("expensive", "EXPENSIVE", "")
@@ -177,6 +179,8 @@ class ElementaryStepBruteForceTests(unittest.TestCase, HoldsCollections):
         # Setup gear
         es_gear = BruteForceElementarySteps()
         es_gear.trial_generator = MockGenerator()
+        cheap_model = db.Model("cheap", "CHEAP", "")
+        es_gear.options.model = cheap_model
         es_gear.options.enable_unimolecular_trials = True
         es_gear.options.enable_bimolecular_trials = True
         es_engine = Engine(manager.get_credentials(), fork=False)

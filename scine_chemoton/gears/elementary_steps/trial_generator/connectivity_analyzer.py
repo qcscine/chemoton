@@ -8,7 +8,9 @@ See LICENSE.txt for details.
 import ast
 from copy import deepcopy
 from enum import Enum
+from math import inf
 from typing import Tuple, List
+
 from scipy.sparse import lil_matrix
 
 # Third party imports
@@ -44,12 +46,12 @@ class ConnectivityAnalyzer:
 
     Attributes
     ----------
-    structure :: db.Structure
+    structure : db.Structure
         The structure of interest. It has to be connected to a database and has
         to have a graph attached.
     """
 
-    def __init__(self, structure: db.Structure):
+    def __init__(self, structure: db.Structure) -> None:
         self.structure = structure
         self.molecules = deserialize_molecules(self.structure)
         self.graphs = [m.graph for m in self.molecules]
@@ -93,12 +95,12 @@ class ConnectivityAnalyzer:
 
         Parameters
         ----------
-        reactive_pair_list :: List[Tuple[int]]
+        reactive_pair_list : List[Tuple[int]]
             List of reacting atom index pairs
 
         Returns
         -------
-        reaction_type :: ElementaryStepGear.ElementaryStepType
+        reaction_type : ElementaryStepGear.ElementaryStepType
             What kind of reaction is initiated by this reactive complex.
 
         """
@@ -183,16 +185,16 @@ class ConnectivityAnalyzer:
         int
             The graph distance between atoms 1 and 2.
 
-        Raises
-        ------
-        RuntimeError
-            Raises an error if the two atoms belong to different molecules.
+        Notes
+        -----
+        Return infinity if the two atoms do not belong to the same graph
         """
         component_idx1, mol_idx_1 = self.idx_map[atom1]
         component_idx2, mol_idx_2 = self.idx_map[atom2]
 
         if component_idx1 != component_idx2:
-            raise RuntimeError("Graph distance between different Molecules is not defined.")
+            # Graph distance between different Molecules is not defined
+            return inf
         return masm.distance(mol_idx_1, self.graphs[component_idx1])[mol_idx_2]
 
     def _get_structure_idx(self, component_idx: int, mol_idx: int) -> int:

@@ -18,7 +18,10 @@ from scine_database.insert_concentration import insert_concentration_for_compoun
 # Local application tests imports
 from ....engine import Engine
 from ....gears.kinetic_modeling.kinetic_modeling import KineticModeling
-from .test_thermodynamic_properties import TestThermodynamicProperties
+from ...utilities.db_object_wrappers.test_thermodynamic_properties import TestThermodynamicProperties
+from ....utilities.model_combinations import ModelCombination
+from ....utilities.db_object_wrappers.wrapper_caches import MultiModelCacheFactory
+from ....gears.kinetic_modeling.rms_network_extractor import ReactionNetworkData
 
 
 def test_random_kinetic_model():
@@ -32,6 +35,7 @@ def test_random_kinetic_model():
     max_steps_per_r = 1
     barrier_limits = (10, 20)
     n_inserts = 3
+    MultiModelCacheFactory().clear()
     manager = db_setup.get_random_db(
         n_compounds,
         n_flasks,
@@ -167,8 +171,7 @@ def test_random_kinetic_model():
 
     # Check the job-set up.
     kinetic_modeling_gear = KineticModeling()
-    kinetic_modeling_gear.options.electronic_model = model
-    kinetic_modeling_gear.options.hessian_model = model
+    kinetic_modeling_gear.options.model_combinations = [ModelCombination(model, model)]
     kinetic_modeling_gear.options.job = db.Job("kinetx_kinetic_modeling")
     kinetic_modeling_gear.options.job_settings = KineticModeling.get_default_settings(kinetic_modeling_gear.options.job)
     kinetic_modeling_gear.options.cycle_time = 0.1
@@ -185,8 +188,7 @@ def test_random_kinetic_model():
     # Test whether the gear notices that the same job is already in the database.
     gear2 = KineticModeling()
     gear2.options.job_settings = KineticModeling.get_default_settings(kinetic_modeling_gear.options.job)
-    gear2.options.electronic_model = model
-    gear2.options.hessian_model = model
+    gear2.options.model_combinations = [ModelCombination(model, model)]
     gear2.options.cycle_time = 0.1
     gear2.options.only_electronic = True
 
@@ -214,8 +216,7 @@ def test_random_kinetic_model():
     gear3 = KineticModeling()
     gear3.options.job_settings = KineticModeling.get_default_settings(kinetic_modeling_gear.options.job)
     gear3.options.job_settings["t_max"] = 1e+5
-    gear3.options.electronic_model = model
-    gear3.options.hessian_model = model
+    gear3.options.model_combinations = [ModelCombination(model, model)]
     gear3.options.cycle_time = 0.1
     gear3.options.only_electronic = True
 
@@ -233,8 +234,7 @@ def test_random_kinetic_model():
     gear4 = KineticModeling()
     gear4.options.job = db.Job("rms_kinetic_modeling")
     gear4.options.job_settings = KineticModeling.get_default_settings(gear4.options.job)
-    gear4.options.electronic_model = model
-    gear4.options.hessian_model = model
+    gear4.options.model_combinations = [ModelCombination(model, model)]
     gear4.options.cycle_time = 0.1
     gear4.options.only_electronic = True
 
@@ -242,6 +242,53 @@ def test_random_kinetic_model():
     kinetic_modeling_engine4.set_gear(gear4)
     kinetic_modeling_engine4.run(single=True)
     assert calculations.count(dumps({})) == 3
+    old_calc = calculations.find(dumps({"status": "hold"}))
+    old_calc.set_status(db.Status.COMPLETE)
+
+    # disable one reaction
+    reaction_barrierless_lhs.disable_exploration()
+    reaction_barrierless_lhs.disable_analysis()
+    kinetic_modeling_engine4.run(single=True)
+    old_calc = calculations.find(dumps({"status": "hold"}))
+    old_calculation_settings = old_calc.get_settings()
+    assert len(old_calculation_settings["reaction_ids"]) <= n_initial_reactions + 2
+    assert reaction_barrierless_lhs.id().string() not in old_calculation_settings["reaction_ids"]
+    assert calculations.count(dumps({})) == 4
+    old_calc.set_status(db.Status.COMPLETE)
+
+    # disable all reactions
+    for reaction in reactions.iterate_all_reactions():
+        reaction.link(reactions)
+        reaction.disable_analysis()
+        reaction.disable_exploration()
+    kinetic_modeling_engine4.run(single=True)
+    assert calculations.count(dumps({})) == 4  # no reaction left. Therefore, there cannot be a new calculation.
+
+    # disable one aggregate
+    for reaction in reactions.iterate_all_reactions():
+        reaction.link(reactions)
+        reaction.enable_exploration()
+        reaction.enable_analysis()
+    lhs_flask.disable_exploration()
+    lhs_flask.disable_analysis()
+    kinetic_modeling_engine4.run(single=True)
+    assert calculations.count(dumps({})) == 5
+    old_calc = calculations.find(dumps({"status": "hold"}))
+    old_calculation_settings = old_calc.get_settings()
+    assert lhs_flask.id().string() not in old_calculation_settings["aggregate_ids"]
+    old_calc.set_status(db.Status.COMPLETE)
+
+    # disable all aggregates
+    for compound in compounds.iterate_all_compounds():
+        compound.link(compounds)
+        compound.disable_exploration()
+        compound.disable_analysis()
+    for flask in flasks.iterate_all_flasks():
+        flask.link(flasks)
+        flask.disable_exploration()
+        flask.disable_analysis()
+    kinetic_modeling_engine4.run(single=True)
+    assert calculations.count(dumps({})) == 5  # no aggregates left. Therefore, there cannot be a new calculation.
 
     # Cleaning
     manager.wipe()
@@ -249,11 +296,12 @@ def test_random_kinetic_model():
 
 def add_reaction(manager: db.Manager, ts_energy: float, lhs_energies: Optional[List[float]] = None,
                  rhs_energies: Optional[List[float]] = None, lhs_aggregate_ids: Optional[List[db.ID]] = None,
-                 rhs_aggregate_ids: Optional[List[db.ID]] = None):
+                 rhs_aggregate_ids: Optional[List[db.ID]] = None, model: Optional[db.Model] = None):
     structures = manager.get_collection("structures")
     properties = manager.get_collection("properties")
     compounds = manager.get_collection("compounds")
-    model = db_setup.get_fake_model()
+    if model is None:
+        model = db_setup.get_fake_model()
     if lhs_aggregate_ids is None:
         lhs_aggregate_ids = []
         assert lhs_energies
@@ -307,25 +355,29 @@ def add_reaction(manager: db.Manager, ts_energy: float, lhs_energies: Optional[L
 
 
 def test_single_reaction():
+    MultiModelCacheFactory().clear()
     manager = db_setup.get_clean_db("chemoton_test_kinetic_modeling_single_reaction")
     compounds = manager.get_collection("compounds")
     calculations = manager.get_collection("calculations")
     model = db_setup.get_fake_model()
 
+    hess_contribution = 28315.14304
     e1 = -634.6730820353
+    e1_jpermol = e1 * utils.KJPERMOL_PER_HARTREE * 1e+3
     e2 = -634.6568134574
+    e2_jpermol = e2 * utils.KJPERMOL_PER_HARTREE * 1e+3
     ets = -634.6145146309
     barrier_eh = ets - e1
     barrier = barrier_eh * utils.KJPERMOL_PER_HARTREE * 1e+3
     low_barrier = 0.9 * barrier
+    low_barrier_2 = 0.8 * barrier
     _, lhs_a1, rhs_a1 = add_reaction(manager, ets, [e1], [e2])
     insert_concentration_for_compound(manager, 0.1, model, lhs_a1[0].id(), False, "start_concentration")
 
     gear = KineticModeling()
     gear.options.job = db.Job("rms_kinetic_modeling")
     gear.options.job_settings = KineticModeling.get_default_settings(gear.options.job)
-    gear.options.electronic_model = model
-    gear.options.hessian_model = model
+    gear.options.model_combinations = [ModelCombination(model, model)]
     gear.options.cycle_time = 0.1
     kinetic_modeling_engine = Engine(manager.get_credentials(), fork=False)
     kinetic_modeling_engine.set_gear(gear)
@@ -337,7 +389,10 @@ def test_single_reaction():
     calc = calculations.find(dumps({"status": "hold"}))
     calc_settings = calc.get_settings()
     assert len(calc_settings["ea"]) == 1
-    assert abs(calc_settings["ea"][0] - barrier) < 1e-9
+    assert abs(calc_settings["ea"][0] - barrier) < 1e-2
+    assert len(calc_settings["enthalpies"]) == 2
+    assert abs(calc_settings["enthalpies"][0] - e1_jpermol - hess_contribution) < 1e-2
+    assert abs(calc_settings["enthalpies"][1] - e2_jpermol - hess_contribution) < 1e-2
 
     calc.set_status(db.Status.COMPLETE)
     for c in compounds.iterate_all_compounds():
@@ -348,7 +403,7 @@ def test_single_reaction():
     kinetic_modeling_engine.run(single=True)  # this should not add a new calculation (already set up)
     assert calculations.count(dumps({})) == 1
     assert len(calc_settings["ea"]) == 1
-    assert abs(calc_settings["ea"][0] - barrier) < 1e-3  # barrier in J/mol, so 1e-3 is approx 1e-6 E_h
+    assert abs(calc_settings["ea"][0] - barrier) < 1e-2  # barrier in J/mol, so 1e-2 is approx 1e-8 E_h
 
     _, _, _ = add_reaction(manager, ets + 2 * barrier_eh, None, [e2],
                            lhs_aggregate_ids=[lhs_a1[0].id()])  # add  reaction with high barrier.
@@ -375,3 +430,77 @@ def test_single_reaction():
     calc_settings = calc.get_settings()
     assert len(calc_settings["ea"]) == 1
     assert abs(calc_settings["ea"][0] - low_barrier) < 1e-3
+    calc.set_status(db.Status.COMPLETE)
+
+    only_barriers_model = db.Model("Only", "barriers", "model")
+    _, _, _ = add_reaction(manager, ets - 0.2 * barrier_eh, None, [e2],
+                           lhs_aggregate_ids=[lhs_a1[0].id()], rhs_aggregate_ids=[rhs_a1[0].id()],
+                           model=only_barriers_model)
+    structures = manager.get_collection("structures")
+    properties = manager.get_collection("properties")
+    for c, e in zip([lhs_a1[0], rhs_a1[0]], [e1, e2]):
+        s, _ = TestThermodynamicProperties.get_OH_structures(only_barriers_model, e, structures, properties)
+        hessian_property = TestThermodynamicProperties.get_OH_hessian(only_barriers_model, properties)
+        s.add_property("hessian", hessian_property.id())
+        hessian_property.set_structure(s.id())
+        c.add_structure(s.id())
+
+    gear2 = KineticModeling()
+    gear2.options.job = db.Job("rms_kinetic_modeling")
+    gear2.options.job_settings = KineticModeling.get_default_settings(gear.options.job)
+    gear2.options.model_combinations = [ModelCombination(model)]
+    gear2.options.model_combinations_reactions = [ModelCombination(only_barriers_model)]
+    gear2.options.cycle_time = 0.1
+    kinetic_modeling_engine2 = Engine(manager.get_credentials(), fork=False)
+    kinetic_modeling_engine2.set_gear(gear2)
+    kinetic_modeling_engine2.run(single=True)
+    assert calculations.count(dumps({})) == 4
+
+    calc = calculations.find(dumps({"status": "hold"}))
+    calc_settings = calc.get_settings()
+    assert len(calc_settings["ea"]) == 1
+    assert abs(calc_settings["ea"][0] - low_barrier_2) < 1e-2
+    assert len(calc_settings["enthalpies"]) == 2
+    assert abs(calc_settings["enthalpies"][0] - e1_jpermol - hess_contribution) < 1e-2
+    assert abs(calc_settings["enthalpies"][1] - e2_jpermol - hess_contribution) < 1e-2
+    calc.set_status(db.Status.COMPLETE)
+
+    for c in compounds.iterate_all_compounds():
+        c.link(compounds)
+        insert_concentration_for_compound(manager, 0.1, model, c.id(), False, "concentration_flux")
+    gear2.options.model_combinations_reactions = [ModelCombination(only_barriers_model), ModelCombination(model)]
+    gear2.reset_job_factory()
+    kinetic_modeling_engine2.set_gear(gear2)
+    kinetic_modeling_engine2.run(single=True)
+    assert calculations.count(dumps({})) == 5
+
+    calc = calculations.find(dumps({"status": "hold"}))
+    calc_settings = calc.get_settings()
+    assert len(calc_settings["ea"]) == 3
+    assert abs(calc_settings["ea"][0] - barrier) < 1e-2 or abs(calc_settings["ea"][1] - barrier) < 1e-2 or abs(
+        calc_settings["ea"][2] - barrier) < 1e-2
+    assert abs(calc_settings["ea"][0] - low_barrier_2) < 1e-2 or abs(calc_settings["ea"][1] - low_barrier_2) < 1e-2\
+        or abs(calc_settings["ea"][2] - low_barrier_2) < 1e-2
+    assert abs(calc_settings["ea"][0] - low_barrier) < 1e-2 or abs(calc_settings["ea"][1] - low_barrier) < 1e-2 or\
+        abs(calc_settings["ea"][2] - low_barrier) < 1e-2
+    assert len(calc_settings["enthalpies"]) == 3
+    assert abs(calc_settings["enthalpies"][0] - e1_jpermol - hess_contribution) < 1e-2 or abs(
+        calc_settings["enthalpies"][1] - e1_jpermol - hess_contribution) < 1e-2 or abs(
+        calc_settings["enthalpies"][2] - e1_jpermol - hess_contribution) < 1e-2
+
+    # Test if the same data is provided by the explicit network extraction.
+    data = ReactionNetworkData(manager, gear2.options, gear2.options.energy_references)
+    assert len(data.ea) == 3
+    assert abs(data.ea[0] - barrier) < 1e-2 or abs(data.ea[1] - barrier) < 1e-2 or abs(data.ea[2] - barrier) < 1e-2
+    assert abs(data.ea[0] - low_barrier_2) < 1e-2 or abs(data.ea[1] - low_barrier_2) < 1e-2 or abs(
+        data.ea[2] - low_barrier_2) < 1e-2
+    assert abs(data.ea[0] - low_barrier) < 1e-2 or abs(data.ea[1] - low_barrier) < 1e-2 or abs(
+        data.ea[2] - low_barrier) < 1e-2
+    assert len(data.enthalpies) == 3
+    assert abs(data.enthalpies[0] - e1_jpermol - hess_contribution) < 1e-2 or abs(
+        data.enthalpies[1] - e1_jpermol - hess_contribution) < 1e-2 or abs(
+        data.enthalpies[2] - e1_jpermol - hess_contribution) < 1e-2
+    assert len(data.entropies) == 3
+
+    # Cleaning
+    manager.wipe()

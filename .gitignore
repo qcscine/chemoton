@@ -27,6 +27,7 @@ htmlcov
 # Sphinx documentation
 docs/build/
 docs/source/generated/
+docs/source/api/generated/
 
 # pytest
 .pytest_cache/

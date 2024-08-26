@@ -6,13 +6,13 @@ See LICENSE.txt for details.
 """
 
 # Standard library imports
-import numpy as np
 from copy import deepcopy
 from typing import Dict, List, Optional, Tuple, Union, Generator, Set, Any
-from scipy.sparse.csgraph import connected_components
-from scipy.spatial import distance_matrix
 
 # Third party imports
+from scipy.sparse.csgraph import connected_components
+from scipy.spatial import distance_matrix
+import numpy as np
 import scine_database as db
 import scine_utilities as utils
 
@@ -39,37 +39,37 @@ def assemble_reactive_complex(
 
     Parameters
     ----------
-    atoms1, atoms2 :: utils.AtomCollection
+    atoms1, atoms2 : utils.AtomCollection
         The atoms of both structures, that are to be combined in the reactive
         complex. ``atoms1`` refers to the LHS and ``atoms2`` to the RHS.
-    lhs_list, rhs_list :: List[int]
+    lhs_list, rhs_list : List[int]
         Indices of the reactive sites within the reactive complex.
         The lhs_list should correspond to atoms1 and rhs_list to atoms2.
-    x_alignment_0 :: List[float], length=9
+    x_alignment_0 : List[float], length=9
         In case of two structures building the reactive complex, this option
         describes a rotation of the first structure (index 0) that aligns
         the reaction coordinate along the x-axis (pointing towards +x).
         The rotation assumes that the geometric mean position of all
         atoms in the reactive site (``lhs_list``) is shifted into the
         origin.
-    x_alignment_1 :: List[float], length=9
+    x_alignment_1 : List[float], length=9
         In case of two structures building the reactive complex, this option
         describes a rotation of the second structure (index 1) that aligns
         the reaction coordinate along the x-axis (pointing towards -x).
         The rotation assumes that the geometric mean position of all
         atoms in the reactive site (``rhs_list``) is shifted into the
         origin.
-    x_rotation :: float
+    x_rotation : float
         In case of two structures building the reactive complex, this option
         describes a rotation angle around the x-axis of one of the two
         structures after ``x_alignment_0`` and ``x_alignment_1`` have
         been applied.
-    x_spread :: float
+    x_spread : float
         In case of two structures building the reactive complex, this option
         gives the distance by which the two structures are moved apart along
         the x-axis after ``x_alignment_0``, ``x_alignment_1``, and
         ``x_rotation`` have been applied.
-    displacement :: float
+    displacement : float
         In case of two structures building the reactive complex, this option
         adds a random displacement to all atoms (random direction, random
         length). The maximum length of this displacement (per atom) is set to
@@ -125,7 +125,7 @@ class InterReactiveComplexes(ReactiveComplexes):
     Class to generate reactive complexes from two structures.
     """
 
-    class Options:
+    class Options(ReactiveComplexes.Options):
         """
         The options for the InterReactiveComplexes
         """
@@ -136,7 +136,8 @@ class InterReactiveComplexes(ReactiveComplexes):
             "multiple_attack_points",
         ]
 
-        def __init__(self):
+        def __init__(self) -> None:
+            super().__init__()
             self.number_rotamers = 2
             """
             int
@@ -157,14 +158,24 @@ class InterReactiveComplexes(ReactiveComplexes):
                 (default: True)
             """
 
-    def __init__(self):
+        def __getstate__(self):
+            return self.number_rotamers, self.number_rotamers_two_on_two, self.multiple_attack_points
+
+        def __setstate__(self, state):
+            self.number_rotamers = state[0]
+            self.number_rotamers_two_on_two = state[1]
+            self.multiple_attack_points = state[2]
+
+    options: Options
+
+    def __init__(self) -> None:
         super().__init__()
         self.options = self.Options()
-        self.__cache = {}
+        self.__cache: Dict[str, Dict[str, Any]] = {}
         self.lebedev = LebedevSphere()
 
     @staticmethod
-    def _rotation_to_vector(to_rotate: np.ndarray, direction: np.ndarray):
+    def _rotation_to_vector(to_rotate: np.ndarray, direction: np.ndarray) -> np.ndarray:
         """
         Generates  a rotation matrix to rotate the row vector 'to_rotate' into
         the direction 'direction'.
@@ -472,7 +483,7 @@ class InterReactiveComplexes(ReactiveComplexes):
         ----------
         coords : np.ndarray of shape (n,3)
             Atom positions.
-        element_types :: List[utils.ElementType] of size n
+        element_types : List[utils.ElementType] of size n
             Element types of elements.
         vdw_scaling : float
             A scaling factor for the vdW radii, a smaller factor generates more
@@ -524,7 +535,7 @@ class InterReactiveComplexes(ReactiveComplexes):
         ----------
         coords : np.ndarray of shape (n,3)
             Atom positions.
-        element_types :: List[utils.ElementType] of size n
+        element_types : List[utils.ElementType] of size n
             Element types of elements.
         valid_pairs : List[Tuple[int, ...]]
             The list of valid atom pairs to generate attack points for.
@@ -609,7 +620,7 @@ class InterReactiveComplexes(ReactiveComplexes):
         sites1, sites2 : List[int] of size 1 or 2
             Indices defining the reactive sites: The reactive site is the mean
             position of the atoms with these indices.
-        attack_points1, attack_points2 :: np.ndarray of shape (a,3) and (b,3)
+        attack_points1, attack_points2 : np.ndarray of shape (a,3) and (b,3)
             Points of attack for the two sites given (a for site1 and b for
             site2).
 
@@ -760,7 +771,7 @@ class InterReactiveComplexes(ReactiveComplexes):
 
         Parameters
         ----------
-        structure1, structure2 :: scine_database.Structure (Scine::Database::Structure)
+        structure1, structure2 : scine_database.Structure (Scine::Database::Structure)
             The two structures for which a set of reactive complexes is to be
             generated. The structures have to be linked to a collection.
         reactive_inter_coords : List[List[Tuple[int, int]]]
@@ -789,15 +800,61 @@ class InterReactiveComplexes(ReactiveComplexes):
         """
         # Get structure one data
         atoms1 = structure1.get_atoms()
-        coordinates1 = atoms1.positions
-        elements1 = atoms1.elements
         id1 = str(structure1.get_id())
 
         # Get structure two data
         atoms2 = structure2.get_atoms()
+        id2 = str(structure2.get_id())
+
+        return self._generate_reactive_complexes(atoms1, atoms2, id1, id2, reactive_inter_coords)
+
+    def _generate_reactive_complexes(
+        self, atoms1: utils.AtomCollection, atoms2: utils.AtomCollection,
+        id1: str, id2: str,
+        reactive_inter_coords: List[List[Tuple[int, int]]]
+    ) -> Generator[Tuple[List[Tuple[int, int]], np.ndarray, np.ndarray, float, float], None, None]:
+        """
+        Generates a set of reactive complexes for two given structures arising from
+        the given intermolecular reactive pairs.
+
+        Parameters
+        ----------
+        atoms1, atoms2 : scine_utilities.AtomCollection
+            The two structures for which a set of reactive complexes is to be
+            generated.
+        id1, id2 : str
+            The two database IDs as strings of the two atoms collections.
+        reactive_inter_coords : List[List[Tuple[int, int]]]
+            A list of intermolecular reactive atom pairs corresponding to one
+            trial reaction coordinate. Each reactive pair tuple has to be
+            ordered such that its first element belongs to structure1
+            and the second to structure2.
+            The indices are expected to refer to be on structure level,
+            i.e. the first atom of structure2 has index 0 and not index
+            n_atoms(structure1).
+
+        Yields
+        ------
+        inter_coord : Tuple[Tuple[Tuple[int]]
+            Tuple of Tuples of one or two atom pairs composing the reactive atoms
+            of the interstructural component of this reactive complex reaction.
+            First atom per pair belongs to structure1, second to structure2.
+        align1, align2 : np.array
+            Rotation matrices aligning the two sites along the x-axis (rotations
+            assume that the geometric mean of the reactive atoms of each
+            structure is translated into the origin)
+        xrot : float
+            Angle of rotation around the x-axis
+        spread : float
+            Spread to be applied along the x-axis between the two structures.
+        """
+        # Get structure one data
+        coordinates1 = atoms1.positions
+        elements1 = atoms1.elements
+
+        # Get structure two data
         coordinates2 = atoms2.positions
         elements2 = atoms2.elements
-        id2 = str(structure2.get_id())
 
         # Get all attack points needed
         # A dictionary with the attack points stored for all relevant atoms and
@@ -880,18 +937,19 @@ class InterReactiveComplexes(ReactiveComplexes):
         attacked_pairs1.update(new_attacked_pairs1)
         attacked_atoms2.update(new_attacked_atoms2)
         attacked_pairs2.update(new_attacked_pairs2)
-        self.__cache = {
-            id1: {
-                "points": attack_points1,
-                "atoms": attacked_atoms1,
-                "pairs": attacked_pairs1,
-            },
-            id2: {
-                "points": attack_points2,
-                "atoms": attacked_atoms2,
-                "pairs": attacked_pairs2,
+        if id1 != "" and id2 != "":
+            self.__cache = {
+                id1: {
+                    "points": attack_points1,
+                    "atoms": attacked_atoms1,
+                    "pairs": attacked_pairs1,
+                },
+                id2: {
+                    "points": attack_points2,
+                    "atoms": attacked_atoms2,
+                    "pairs": attacked_pairs2,
+                }
             }
-        }
 
         # Generate requested complexes
         for coord in reactive_inter_coords:

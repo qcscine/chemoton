@@ -5,7 +5,7 @@ source =
 omit =
     */python?.?/*
     */site-packages/nose/*
-    # ignore _version.py and versioneer.py
+    # ignore _version.py
     .*version.*
     *_version.py
     */tests/*

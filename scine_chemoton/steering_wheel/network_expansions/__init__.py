@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
 Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
@@ -19,10 +20,9 @@ from scine_database.queries import model_query, lastmodified_since, stop_on_time
 from scine_utilities import ValueCollection
 
 from scine_chemoton.gears import Gear
-from scine_chemoton.gears.elementary_steps import ElementaryStepGear
 from scine_chemoton.gears.compound import BasicAggregateHousekeeping
 from scine_chemoton.gears.reaction import BasicReactionHousekeeping
-from scine_chemoton.gears.kinetics import MinimalConnectivityKinetics
+from scine_chemoton.gears.kinetics import KineticsBase, MinimalConnectivityKinetics
 from scine_chemoton.gears.scheduler import Scheduler
 from scine_chemoton.gears.thermo import BasicThermoDataCompletion
 from scine_chemoton.utilities import connect_to_db
@@ -34,6 +34,8 @@ from ..datastructures import (
     ExplorationSchemeStep,
     Status,
     StopPreviousProtocolEntries,
+    RestartPartialExpansionInfo,
+    NoRestartInfoPresent
 )
 
 
@@ -42,7 +44,7 @@ class NetworkExpansion(ExplorationSchemeStep):
     The base class for operations to expand the network with new information.
     It specifies the common __call__ execution and holds 3 abstract methods that
     must be implemented by each implementation.
-    Additionally it holds some common functionalities for execution and querying
+    Additionally, it holds some common functionalities for execution and querying
     to simplify future implementations of new expansions.
     """
     class Options(ExplorationSchemeStep.Options):
@@ -62,7 +64,8 @@ class NetworkExpansion(ExplorationSchemeStep):
             else:
                 self.general_settings = general_settings
 
-    options: Options  # required for mypy checks, so it knows which options object to check
+    options: NetworkExpansion.Options  # required for mypy checks, so it knows which options object to check
+    thermochemistry_gear = BasicThermoDataCompletion
 
     def __init__(self, model: db.Model,  # pylint: disable=keyword-arg-before-vararg
                  gear_options: Optional[GearOptions] = None,
@@ -106,15 +109,19 @@ class NetworkExpansion(ExplorationSchemeStep):
         self._start_id_timestamp: Optional[db.ID] = None
         self._start_time: datetime = datetime.now()
         self._result: Optional[NetworkExpansionResult] = None
+        self._notify_partial_steps_callback: Optional[
+            Callable[[Union[NoRestartInfoPresent, RestartPartialExpansionInfo]], None]] = None
+        self.hardcoded_gear_options: GearOptions = GearOptions()
 
-    def dry_setup_protocol(self, credentials: db.Credentials, selection: Optional[SelectionResult] = None) -> None:
+    def dry_setup_protocol(self, credentials: db.Credentials, selection: Optional[SelectionResult] = None,
+                           n_already_executed_protocol_steps: int = 0) -> None:
         """
         Sets up the protocol (individual gears) as currently specified in the options without running
         anything. This is useful to get some preemptive information about the gears to be run.
 
         Notes
         -----
-        Protocol should be cleared afterwards if the step is not immediately executed to avoid
+        Protocol should be cleared afterward if the step is not immediately executed to avoid
         problems with multithreaded / multiprocessed code due to presence of potentially
         forked objects in the protocol.
 
@@ -131,7 +138,7 @@ class NetworkExpansion(ExplorationSchemeStep):
         self.initialize_collections(manager)
         self._propagate_db_manager(manager)
         self._set_protocol_wrap(manager)
-        self._prepare_engines()
+        self._prepare_engines(n_already_executed_protocol_steps)
 
     def current_gears(self) -> List[Gear]:
         """
@@ -153,7 +160,11 @@ class NetworkExpansion(ExplorationSchemeStep):
     def __call__(
             self,
             credentials: db.Credentials,
-            selection: Optional[SelectionResult] = None) -> NetworkExpansionResult:
+            selection: Optional[SelectionResult] = None,
+            notify_partial_steps_callback:
+            Optional[Callable[[Union[NoRestartInfoPresent, RestartPartialExpansionInfo]], None]] = None,
+            restart_information: Optional[RestartPartialExpansionInfo] = None,
+    ) -> NetworkExpansionResult:
         """
         Execution of the network expansion. Usually executed by SteeringWheel.
 
@@ -173,6 +184,7 @@ class NetworkExpansion(ExplorationSchemeStep):
             self._selection = SelectionResult()
         else:
             self._selection = selection
+        self._notify_partial_steps_callback = notify_partial_steps_callback
 
         # Get required collections
         manager = connect_to_db(credentials)
@@ -184,14 +196,21 @@ class NetworkExpansion(ExplorationSchemeStep):
 
         # execute
         self.status = Status.CALCULATING
-        self._result = self._wrapped_execute()
+        self._result = self._wrapped_execute(restart_information)
         if self._result is None:
             self._result = NetworkExpansionResult()
         assert isinstance(self._result, NetworkExpansionResult)
 
-        # adapting status and returning result
         self.status = Status.FINISHED if self._result else Status.FAILED
         return self._result
+
+    def __del__(self):
+        if self.protocol:
+            try:
+                self._stop_engines()
+                self.protocol = []
+            except BaseException:
+                pass
 
     def _set_protocol_wrap(self, manager: db.Manager) -> None:
         """
@@ -210,6 +229,7 @@ class NetworkExpansion(ExplorationSchemeStep):
             if not isinstance(p, ProtocolEntry):
                 continue
             p.gear.initialize_collections(manager)
+        self._set_default_gear_options()
 
     def _propagate_db_manager(self, manager: db.Manager):
         """
@@ -222,23 +242,13 @@ class NetworkExpansion(ExplorationSchemeStep):
         self._selection.reactive_site_filter.initialize_collections(manager)
         self._selection.further_exploration_filter.initialize_collections(manager)
 
-    def _determine_current_status(self) -> None:
-        """
-        Update our own status based on a database query
-        """
-        if self._calculations.get_one_calculation(dumps({"status": "pending"})) is None:
-            self.status = Status.STALLING
-        else:
-            self.status = Status.CALCULATING
-        # finished states (FAILED and FINISHED) are handled by our forked process finishing in the main call
-
     def _unfinished_calculations_exist(self) -> bool:
         unfinished_selection = {"status": {"$in": ["hold", "new", "pending"]}}
         return self._calculations.get_one_calculation(dumps(unfinished_selection)) is not None
 
-    def _wrapped_execute(self) -> NetworkExpansionResult:
+    def _wrapped_execute(self, restart_information: Optional[RestartPartialExpansionInfo]) -> NetworkExpansionResult:
         """
-        Handles the correct set-up of ourself, the engines (and their cleanup) and some useful querying
+        Handles the correct set-up of the engines (and their cleanup) and some useful querying
         information to ease implementation of future implementations.
 
         Returns
@@ -247,16 +257,25 @@ class NetworkExpansion(ExplorationSchemeStep):
             The result of our execution
         """
         self._give_current_process_own_name()
-        self._start_id_timestamp = db.ID()  # we are using the time relation of mongodb IDs to hack a fast time look-up
-        self._start_time = datetime.utcnow()  # for slower 'lastmodified' look-up
-        self._prepare_engines()
-        result = self._execute()
+        # we are using the time relation of mongodb IDs to hack a fast time look-up
+        self._start_id_timestamp = db.ID() if restart_information is None else restart_information.start_id
+        # TODO keep this as 'now' and not 'utcnow' as long as Scine Database
+        # returns its times as std::system_clock
+        # for slower 'lastmodified' look-up
+        self._start_time = datetime.now() if restart_information is None else restart_information.start_time
+        n_already_executed_protocol_steps = 0 if restart_information is None \
+            else restart_information.n_already_executed_protocol_steps
+        self._prepare_engines(n_already_executed_protocol_steps)
+        if len(self.protocol) <= n_already_executed_protocol_steps:
+            raise RuntimeError(f"Already executed {n_already_executed_protocol_steps} steps, but protocol only has "
+                               f"{len(self.protocol)} steps.")
+        result = self._execute(n_already_executed_protocol_steps)
         self._stop_engines()
         return result
 
     def _prepare_scheduler(self, max_n_jobs: int = 1000) -> Scheduler:
         """
-        Creates a Scheduler gear so that calculations can be accessed by Puffins based on the expected
+        Creates a Scheduler gear so that Puffins can access calculations based on the expected
         jobs in our protocol.
 
         Parameters
@@ -276,6 +295,7 @@ class NetworkExpansion(ExplorationSchemeStep):
             or user specified a job in special settings and misspelled it.
         """
         scheduling_gear = Scheduler()
+        scheduling_gear.options.model = self.options.model
         for k in scheduling_gear.options.job_counts.keys():
             scheduling_gear.options.job_counts[k] = 0
         relevant = self._relevant_puffin_jobs()
@@ -286,7 +306,7 @@ class NetworkExpansion(ExplorationSchemeStep):
             scheduling_gear.options.job_counts[k] = max_n_jobs
         return scheduling_gear
 
-    def _prepare_engines(self) -> None:
+    def _prepare_engines(self, n_already_executed_protocol_steps: int) -> None:
         """
         Handles the set-up of engines with their gears and their correct options.
          - Basic sanity checks of the holding members and if Scheduler exists.
@@ -299,26 +319,41 @@ class NetworkExpansion(ExplorationSchemeStep):
             raise RuntimeError(f"Engines cannot be started before initializing '{self.name}'")
         if not self.protocol:
             raise RuntimeError(f"Engines cannot be started before setting up the protocol of '{self.name}'")
+
+        indices_of_scheduler = [i for i, p in enumerate(self.protocol[n_already_executed_protocol_steps:])
+                                if isinstance(p, ProtocolEntry) and isinstance(p.gear, Scheduler)]
+        indices_of_waiting = [i for i, p in enumerate(self.protocol[n_already_executed_protocol_steps:])
+                              if isinstance(p, ProtocolEntry) and p.wait_for_calculation_finish]
+        if not indices_of_waiting:
+            indices_of_waiting = [len(self.protocol)]
+
         # sanity check if we have a scheduler
-        if not any(isinstance(entry.gear, Scheduler) for entry in self.protocol if isinstance(entry, ProtocolEntry)):
+        if not indices_of_scheduler or not any(index < min(indices_of_waiting) for index in indices_of_scheduler):
             warn(f"No scheduling gear present in {self.name}, "
                  f"adding the default scheduler to ensure calculations are run")
             credentials = self._manager.get_credentials()
-            # place at the front to ensure unforking engines are not blocking the scheduler from ever starting
-            self.protocol.insert(0, ProtocolEntry(credentials, self._prepare_scheduler(), fork=True, n_runs=0))
-        # sanity check and set model
-        for entry in self.protocol:
-            if not isinstance(entry, ProtocolEntry):
-                continue
-            gear = entry.gear
-            GearOptions.sanity_check(gear)
-            if hasattr(gear.options, "model"):
-                gear.options.model = self.options.model
-            if isinstance(gear, ElementaryStepGear):
-                if gear.trial_generator is not None:
-                    gear.trial_generator.options.model = self.options.model
+            # place entry at the front to ensure unforking engines are not blocking the scheduler from ever starting
+            # +1 for restart because we are messing up the start index otherwise
+            # however, this can still stall if the index at which it is started, is waiting straightaway
+            # and we still have calculations on hold
+            # this is a chicken-egg problem, because we cannot start the scheduler before the restarting index
+            # this can be solved for individual expansions by running the scheduler once before waiting
+            # but not adding it to the protocol
+            # (see basic_execute for an example)
+            self.protocol.insert(n_already_executed_protocol_steps + 1 if n_already_executed_protocol_steps else 0,
+                                 ProtocolEntry(credentials, self._prepare_scheduler(), fork=True, n_runs=0))
         # overwrite with provided options
         if self.options.gear_options is not None:
+            if not isinstance(self.options.gear_options, GearOptions):
+                raise TypeError(f"Gear options for {self.name} must be of type GearOptions, "
+                                f"but is {type(self.options.gear_options)}")
+            for user_key in self.options.gear_options.keys():
+                if user_key in self.hardcoded_gear_options:
+                    warn(f"The gear options of {self.name} contain a key '{user_key}' that is already present "
+                         f"in the hardcoded gear options, that are required for safe operation."
+                         f"The hardcoded gear options take precedence. If you want to change a safe part of the "
+                         f"hard coded gear options, you have to modify the hardcoded gear options directly.")
+                    self.options.gear_options[user_key] = self.hardcoded_gear_options[user_key]
             self._apply_gear_options(self.options.gear_options)
         # apply general settings
         if self.options.general_settings is not None:
@@ -354,6 +389,9 @@ class NetworkExpansion(ExplorationSchemeStep):
             if not isinstance(entry, ProtocolEntry):
                 continue
             gear = entry.gear
+            if isinstance(gear, KineticsBase):
+                # do not give kinetics gear the selection restrictions, because this would affect the next expansion
+                continue
             if hasattr(gear, "aggregate_filter"):
                 # setattr from here on to avoid linter cries
                 setattr(gear, "aggregate_filter", self._selection.aggregate_filter)
@@ -366,7 +404,7 @@ class NetworkExpansion(ExplorationSchemeStep):
 
     def _apply_gear_options(self, gear_options: GearOptions):
         """
-        Apply the given options to our holded gears.
+        Apply the given options to our held gears.
 
         Parameters
         ----------
@@ -380,41 +418,44 @@ class NetworkExpansion(ExplorationSchemeStep):
         NotImplementedError
             We cannot propagate a given second value in the options tuple.
         """
-        for name, options in gear_options.items():
-            gears_to_change = [entry.gear for entry in self.protocol if isinstance(entry, ProtocolEntry)
-                               and entry.name == name]
-            if not gears_to_change:
-                raise TypeError(f"Specified options for '{name}', but this gear is not present in the "
-                                f"step protocol {self.protocol} of {self.name}")
-            for gear in gears_to_change:
-                gear.options = options[0]
-                if gear.options.model != self.options.model:
-                    warn(f"The gear '{gear.name}' has received the model:\n"
-                         f"{str(gear.options.model)}\n"
-                         f"via the provided gear options which is different to the model of {self.name}:\n"
-                         f"{str(self.options.model)}")
-                if options[1] is not None:
-                    if not isinstance(gear, ElementaryStepGear):
-                        raise NotImplementedError(f"Gear options for '{name}' hold another set of options, "
-                                                  f"but this gear is not an elementary step gear. "
-                                                  f"This is not supported.")
-                    gear.trial_generator.options = options[1]
+        gear_options.apply_to_protocol(self.protocol)
+        for entry in self.protocol:
+            if not isinstance(entry, ProtocolEntry):
+                continue
+            gear = entry.gear
+            if gear.options.model != self.options.model:
+                warn(f"The gear '{gear.name}' has received the model:\n"
+                     f"{str(gear.options.model)}\n"
+                     f"via the provided gear options which is different to the model of {self.name}:\n"
+                     f"{str(self.options.model)}")
 
-    def _wait_for_calculations_to_finish(self) -> None:
+    def _wait_for_calculations_to_finish(self, n_already_executed_protocol_steps: int,
+                                         current_protocol_index: int) -> None:
         """
         Method to be applied if we should wait for a gear to finish. It waits until no more unfinished
         calculations exist, then it checks if we have infinitely looping gears and to make sure we are
         avoiding race conditions by finding no unfinished calculations, but a gear setting some up shortly after,
         we are waiting for two more loops of each infinitely looping gear and then checking again for
         calculations.
+
+        Parameters
+        ----------
+        current_protocol_index : int
+            The index of the protocol entry after that we are currently waiting.
         """
         while True:
+            if self._notify_partial_steps_callback is not None:
+                self._notify_partial_steps_callback(
+                    RestartPartialExpansionInfo(current_protocol_index,
+                                                self._start_id_timestamp,
+                                                self._start_time)
+                )
             # wait until we have at one point no open calculations
             while self._unfinished_calculations_exist():
                 sleep(self.options.status_cycle_time)
             # wait for all infinitely looping gears to loop two more times and check again
             # to make sure we haven't missed anything due to cycle times
-            finish_counters = self._get_gear_counters()
+            finish_counters = self._get_gear_counters(n_already_executed_protocol_steps, current_protocol_index)
             if not finish_counters:
                 # no infinitely looping gears anyway
                 break
@@ -422,7 +463,7 @@ class NetworkExpansion(ExplorationSchemeStep):
             last_counters = deepcopy(finish_counters)
             last_counting_loop_id = db.ID()  # for faster time lookup with indexed IDs
             while not all(c > fc + 1 for c, fc in zip(counters, finish_counters)):
-                counters = self._get_gear_counters()
+                counters = self._get_gear_counters(n_already_executed_protocol_steps, current_protocol_index)
                 # if any gear has looped once, we check for new calculations
                 if any(c > last for c, last in zip(counters, last_counters)):
                     if self._calculations.get_one_calculation(dumps(self._newer_id(last_counting_loop_id))) is not None:
@@ -435,14 +476,29 @@ class NetworkExpansion(ExplorationSchemeStep):
             if not self._unfinished_calculations_exist():
                 break
 
-    def _get_gear_counters(self) -> List[int]:
+    def _get_gear_counters(self, n_already_executed_protocol_steps: int, max_protocol_index: int) -> List[int]:
         """
         Makes logic easier readable by hiding ProtocolEntry logic
-        """
-        return [p.engine.get_number_of_gear_loops() for p in self.protocol if isinstance(p, ProtocolEntry)
-                and not p.limited_runs and not p.was_stopped]
 
-    def _basic_execute(self):
+        Parameters
+        ----------
+        max_protocol_index : int
+            The maximum index of the protocol to consider.
+        """
+        # get the largest index that is still smaller than max_protocol_index
+        # and larger than n_already_executed_protocol_steps
+        stopping_indices = [i for i, p in enumerate(self.protocol)
+                            if n_already_executed_protocol_steps < i < max_protocol_index
+                            and isinstance(p, StopPreviousProtocolEntries)]
+        max_stopping_index = stopping_indices[-1] if stopping_indices else n_already_executed_protocol_steps
+        relevant_entries = [p for p in self.protocol[max_stopping_index:max_protocol_index]
+                            if isinstance(p, ProtocolEntry) and not p.limited_runs and not p.was_stopped]
+        for p in relevant_entries:
+            if not p.is_running():
+                warn(f"Gear {p.gear.name} was expected to run indefinitely, but is not running anymore.")
+        return [p.engine.get_number_of_gear_loops() for p in relevant_entries if p.is_running()]
+
+    def _basic_execute(self, n_already_executed_protocol_steps: int) -> None:
         """
         A common way of producing our data. This can be used by our implementations, if this works for them
         and then they only have to implement the database queries for results.
@@ -453,17 +509,41 @@ class NetworkExpansion(ExplorationSchemeStep):
         ----
         If this method is not used by a child class, the handling of StopPreviousProtocolEntries
         has to be implemented in the execution in the child class.
+
+        Parameters
+        ----------
+        n_already_executed_protocol_steps : int
+            The number of protocol steps that have already been executed and should be skipped.
         """
         for i, entry in enumerate(self.protocol):
+            if i < n_already_executed_protocol_steps:
+                # still wait for calculations, because that is most likely where we got stopped
+                if isinstance(entry, ProtocolEntry) and entry.wait_for_calculation_finish:
+                    # hacky way that we do not stall on hold calculations
+                    n_hold = self._calculations.count(dumps({"status": "hold"}))
+                    if n_hold:
+                        scheduler = ProtocolEntry(self._manager.get_credentials(), self._prepare_scheduler(n_hold),
+                                                  fork=False, n_runs=1)
+                        scheduler.run()
+                        scheduler.stop()
+                    self._wait_for_calculations_to_finish(n_already_executed_protocol_steps, i)
+                if i + 1 == n_already_executed_protocol_steps and isinstance(entry, ProtocolEntry) and entry.n_runs > 1:
+                    # if we have a protocol entry that is the last one that was executed and requires multiple runs
+                    # we cannot know how many of these runs have been executed, so we execute it again
+                    pass
+                else:
+                    continue
             if isinstance(entry, StopPreviousProtocolEntries):
                 self._stop_engines(until_index=i)
                 continue
             n = max(entry.n_runs, 1)
-            for _ in range(n):
+            # see the explanation above at continue statement
+            exe_reduction = 1 if i + 1 == n_already_executed_protocol_steps and entry.n_runs > 1 else 0
+            for _ in range(n - exe_reduction):
                 entry.run()
                 self._give_current_process_own_name()  # change process name back in case gear was not forked
                 if entry.wait_for_calculation_finish:
-                    self._wait_for_calculations_to_finish()
+                    self._wait_for_calculations_to_finish(n_already_executed_protocol_steps, i)
 
     def _set_default_gear_options(self):
         """
@@ -472,9 +552,10 @@ class NetworkExpansion(ExplorationSchemeStep):
         """
         if not self.protocol:
             raise RuntimeError(f"The protocol has not be specified for {self.name}")
-        gears = [d.gear for d in self.protocol if isinstance(d, ProtocolEntry)]
-        default_options = GearOptions(gears, self.options.model)
-        self._apply_gear_options(default_options)
+        gears = self.current_gears()
+        for gear in gears:
+            gear.options.model = self.options.model
+        self._apply_gear_options(self.hardcoded_gear_options)
 
     def _stop_engines(self, until_index: Optional[int] = None):
         """
@@ -486,7 +567,7 @@ class NetworkExpansion(ExplorationSchemeStep):
             An optional index to specify until which engine we should stop
         """
         if until_index is None:
-            # stop whole protocol
+            # stop the whole protocol
             for entry in self.protocol:
                 entry.stop()
         else:
@@ -511,7 +592,7 @@ class NetworkExpansion(ExplorationSchemeStep):
 
     def _potential_thermochemistry_protocol_addition(self, credentials: db.Credentials):
         if self.options.include_thermochemistry:
-            self.protocol.append(ProtocolEntry(credentials, BasicThermoDataCompletion()))
+            self.protocol.append(ProtocolEntry(credentials, self.thermochemistry_gear()))
 
     def _extra_manual_cycles_to_avoid_race_condition(self, credentials: db.Credentials,
                                                      aggregate_reactions: bool,
@@ -528,7 +609,7 @@ class NetworkExpansion(ExplorationSchemeStep):
         # take care of thermochemistry
         if self.options.include_thermochemistry:
             for _ in range(2):  # 2 just to be sure
-                self.protocol.append(ProtocolEntry(credentials, BasicThermoDataCompletion(), n_runs=1, fork=False))
+                self.protocol.append(ProtocolEntry(credentials, self.thermochemistry_gear(), n_runs=1, fork=False))
                 self.protocol.append(ProtocolEntry(credentials, scheduler, n_runs=1, fork=False,
                                                    wait_for_calculation_finish=True))
 
@@ -537,11 +618,15 @@ class NetworkExpansion(ExplorationSchemeStep):
             self.protocol.append(ProtocolEntry(credentials, BasicReactionHousekeeping(), n_runs=2, fork=False))
 
         # take care of aggregate activation
-        self.protocol.append(ProtocolEntry(credentials, MinimalConnectivityKinetics(), n_runs=4, fork=False))
+        kinetics_gear = MinimalConnectivityKinetics()
+        kinetics_gear.options.model = self.options.model
+        kinetics_gear.options.stop_if_no_new_aggregates_are_activated = True
+        n_previous_kinetics_gears = sum([isinstance(g, MinimalConnectivityKinetics) for g in self.current_gears()])
+        self.hardcoded_gear_options[(kinetics_gear.name, n_previous_kinetics_gears)] = \
+            GearOptions.generate_value(kinetics_gear)
+        self.protocol.append(ProtocolEntry(credentials, kinetics_gear, n_runs=0, fork=False))
         if additional_entries is not None:
             self.protocol.extend(additional_entries)
-
-        self._set_default_gear_options()
 
     @staticmethod
     def _aggregation_necessary_jobs():
@@ -663,10 +748,15 @@ class NetworkExpansion(ExplorationSchemeStep):
         """
 
     @abstractmethod
-    def _execute(self) -> NetworkExpansionResult:
+    def _execute(self, n_already_executed_protocol_steps: int) -> NetworkExpansionResult:
         """
         Method to be implemented. Specifies the execution of our gears (see basic_execute for
         convenience method for basic tasks) and then query the database to fill our result.
+
+        Parameters
+        ----------
+        n_already_executed_protocol_steps : int
+            The number of protocol steps that have already been executed and should be skipped.
 
         Returns
         -------
@@ -700,6 +790,8 @@ class GiveWholeDatabaseWithModelResult(NetworkExpansion):
     that is not manipulating the network in any way.
     """
 
+    options: GiveWholeDatabaseWithModelResult.Options
+
     def _relevant_puffin_jobs(self) -> List[str]:
         return []
 
@@ -707,7 +799,7 @@ class GiveWholeDatabaseWithModelResult(NetworkExpansion):
         # dummy protocol that does not do anything
         self.protocol = [ProtocolEntry(credentials, self._prepare_scheduler(), fork=False, n_runs=1)]
 
-    def _execute(self) -> NetworkExpansionResult:
+    def _execute(self, n_already_executed_protocol_steps: int) -> NetworkExpansionResult:
         """
         Only gathers information, no manipulation happening here.
         """

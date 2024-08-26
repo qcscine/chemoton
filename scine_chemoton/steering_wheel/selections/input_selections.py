@@ -17,8 +17,8 @@ import scine_utilities as utils
 
 from . import SafeFirstSelection
 from ..datastructures import SelectionResult, StructureInformation, LogicCoupling
-from scine_chemoton.gears.elementary_steps.aggregate_filters import AggregateFilter
-from scine_chemoton.gears.elementary_steps.reactive_site_filters import ReactiveSiteFilter
+from scine_chemoton.filters.aggregate_filters import AggregateFilter
+from scine_chemoton.filters.reactive_site_filters import ReactiveSiteFilter
 
 
 class InputSelection(SafeFirstSelection):
@@ -35,7 +35,7 @@ class InputSelection(SafeFirstSelection):
                  additional_reactive_site_filters: Optional[List[ReactiveSiteFilter]] = None,
                  logic_coupling: Union[str, LogicCoupling] = LogicCoupling.AND,
                  *args, **kwargs
-                 ):
+                 ) -> None:
         """
         Base class of all Selections that enter new structures into the database
 
@@ -88,7 +88,21 @@ class InputSelection(SafeFirstSelection):
         pass
 
     def _sanitize_input(self, structure_information_input: list_valid_input_type) -> List[valid_input_type]:
-        inp = deepcopy(structure_information_input)
+        try:
+            inp = deepcopy(structure_information_input)
+        except TypeError as e:  # calculator is not pickleable
+            if (not isinstance(structure_information_input, list)
+                    and isinstance(structure_information_input, utils.core.Calculator)):
+                inp = structure_information_input.clone()
+            elif isinstance(structure_information_input, list):
+                inp = []
+                for i in structure_information_input:
+                    if isinstance(i, utils.core.Calculator):
+                        inp.append(i.clone())
+                    else:
+                        inp.append(i)
+            else:
+                raise e
         if self._sane_single_input(inp):
             inp = [inp]
         elif inp is None or not isinstance(inp, list) or not inp or not all(self._sane_single_input(i) for i in inp):
@@ -126,7 +140,7 @@ class FileInputSelection(InputSelection):
                  additional_reactive_site_filters: Optional[List[ReactiveSiteFilter]] = None,
                  logic_coupling: Union[str, LogicCoupling] = LogicCoupling.AND,
                  *args, **kwargs
-                 ):
+                 ) -> None:
         super().__init__(model, structure_information_input, label_of_structure,
                          additional_aggregate_filters, additional_reactive_site_filters, logic_coupling,
                          *args, **kwargs)

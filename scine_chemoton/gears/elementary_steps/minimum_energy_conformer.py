@@ -6,7 +6,7 @@ See LICENSE.txt for details.
 """
 
 # Standard library imports
-from typing import Tuple, List
+from typing import Tuple, List, Union
 import math
 
 # Third party imports
@@ -22,21 +22,18 @@ from . import ElementaryStepGear
 class MinimumEnergyConformerElementarySteps(ElementaryStepGear):
     """
     This Gear probes Reactions by trying to react the minimum energy conformer of each
-    Compound with the minimum energy conformer of the other Compound.
-    For each Structure--Structure combination multiple arrangements (possible
+    Aggregate with the minimum energy conformer of the other Aggregate.
+    For each Structure-Structure combination multiple arrangements (possible
     Elementary Steps) will be tested.
-
-    This Gear does not consider Flasks/Complexes as reactive, they are not probed
-    for elementary steps.
 
     Attributes
     ----------
-    options :: Options
+    options : ElementaryStepGear.Options
         The options for the gear.
-    aggregate_filter :: scine_chemoton.gears.elementary_steps.aggregate_filters.AggregateFilter
+    aggregate_filter : scine_chemoton.gears.elementary_steps.aggregate_filters.AggregateFilter
         A filter for allowed reaction combinations, per default everything
         is permitted, no filter is applied.
-    trial_generator :: TrialGenerator
+    trial_generator : TrialGenerator
         The generator to set up elementary step trial calculations by enumerating
         reactive complexes and trial reaction coordinates
 
@@ -51,14 +48,17 @@ class MinimumEnergyConformerElementarySteps(ElementaryStepGear):
         structures with the same job order
     b. for unimolecular reactions: checking whether there is already a
         calculation to search for an intramolecular reaction of the same
-        structure  with the same job order
+        structure with the same job order
     """
 
     class Options(ElementaryStepGear.Options):
+        """
+        The options of the MinimumEnergyConformerElementaryStepGear.
+        """
 
         __slots__ = ("energy_upper_bound", "max_number_structures")
 
-        def __init__(self, *args, **kwargs):
+        def __init__(self, *args, **kwargs) -> None:
             super().__init__(*args, **kwargs)
             self.energy_upper_bound = 12.0
             """
@@ -76,7 +76,7 @@ class MinimumEnergyConformerElementarySteps(ElementaryStepGear):
 
     options: Options
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self._energy_label = "electronic_energy"
         """
@@ -84,13 +84,13 @@ class MinimumEnergyConformerElementarySteps(ElementaryStepGear):
             The property label for the energy property.
         """
 
-    def _check_if_conformers_are_present(self, compound) -> bool:
-        centroid = db.Structure(compound.get_centroid(), self._structures)
+    def _check_if_conformers_are_present(self, aggregate: Union[db.Compound, db.Flask]) -> bool:
+        centroid = db.Structure(aggregate.get_centroid(), self._structures)
         return centroid.has_property("boltzmann_weight")
 
-    def _get_all_energies_and_structure_ids(self, compound: db.Compound) -> List[Tuple[float, db.ID]]:
+    def _get_all_energies_and_structure_ids(self, aggregate: Union[db.Compound, db.Flask]) -> List[Tuple[float, db.ID]]:
         energies_sids: List[Tuple[float, db.ID]] = list()
-        for sid in compound.get_structures():
+        for sid in aggregate.get_structures():
             structure = db.Structure(sid, self._structures)
             if not self._check_structure_model(structure):
                 continue
@@ -104,10 +104,10 @@ class MinimumEnergyConformerElementarySteps(ElementaryStepGear):
                 energies_sids.append((energy, sid))
         return energies_sids
 
-    def _get_eligible_structures(self, compound: db.Compound) -> List[db.ID]:
-        if not self._check_if_conformers_are_present(compound):
+    def _get_eligible_structures(self, aggregate: Union[db.Compound, db.Flask]) -> List[db.ID]:
+        if not self._check_if_conformers_are_present(aggregate):
             return []
-        energies_s_ids = self._get_all_energies_and_structure_ids(compound)
+        energies_s_ids = self._get_all_energies_and_structure_ids(aggregate)
         if not energies_s_ids:
             return []
         energies_s_ids_sorted = sorted(energies_s_ids, key=lambda tup: tup[0])

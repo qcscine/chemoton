@@ -26,7 +26,12 @@ from scine_database.compound_and_flask_creation import get_compound_or_flask
 # Local application imports
 from . import Gear
 from .pathfinder import Pathfinder as pf
-from .elementary_steps.aggregate_filters import AggregateFilter
+from scine_chemoton.filters.aggregate_filters import AggregateFilter
+from scine_chemoton.filters.reaction_filters import ReactionFilter
+from scine_chemoton.utilities.place_holder_model import (
+    construct_place_holder_model,
+    PlaceHolderModelType
+)
 
 
 class KineticsBase(Gear, ABC):
@@ -35,9 +40,9 @@ class KineticsBase(Gear, ABC):
 
     Attributes
     ----------
-    options :: KineticsBase.Options
+    options : KineticsBase.Options
         The options for the Kinetics Gear.
-    aggregate_filter :: AggregateFilter
+    aggregate_filter : AggregateFilter
         An optional filter to limit the activated aggregates, by default none are filtered
     """
 
@@ -45,9 +50,9 @@ class KineticsBase(Gear, ABC):
         """
         The options for the KineticsBase Gear.
         """
-        __slots__ = "restart"
+        __slots__ = ("restart", "stop_if_no_new_aggregates_are_activated")
 
-        def __init__(self):
+        def __init__(self) -> None:
             super().__init__()
             self.restart = False
             """
@@ -56,15 +61,30 @@ class KineticsBase(Gear, ABC):
                 all aggregates again. Set this to ``True`` if you want to
                 reevaluate a network with different settings.
             """
+            self.stop_if_no_new_aggregates_are_activated = False
+            """
+            bool
+                Option to stop the gear if no new aggregates are activated
+                during a loop. This is useful if you want to run a gear for
+                a certain number of iterations, but want to stop early if
+                there is no more progress.
+            """
 
     options: Options
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.aggregate_filter = AggregateFilter()
+        self._user_cache: Dict[str, Tuple[int, bool]] = {}
         self._filtered_cache: Dict[str, bool] = {}
         self._required_collections = ["compounds", "elementary_steps", "flasks",
                                       "properties", "reactions", "structures"]
+        self._enabled_count: int = 0
+        self._model_is_required = False
+
+    def clear_cache(self) -> None:
+        self._user_cache = {}
+        self._filtered_cache = {}
 
     def _propagate_db_manager(self, manager: db.Manager):
         self._sanity_check_configuration()
@@ -79,11 +99,29 @@ class KineticsBase(Gear, ABC):
         if self.options.restart:
             self._disable_all_aggregates()
             self.options.restart = False
+            self._enabled_count = 0
         # Loop over all deactivated aggregates
         self._aggregate_loop(self._compounds, db.CompoundOrFlask.COMPOUND)
+        if self.have_to_stop_at_next_break_point():
+            return
         self._aggregate_loop(self._flasks, db.CompoundOrFlask.FLASK)
+        if self.have_to_stop_at_next_break_point():
+            return
+        self._check_count()
 
-    def _aggregate_loop(self, collection: db.Collection, agg_type: db.CompoundOrFlask):
+    def _check_count(self) -> None:
+        """
+        If the option to stop after no new enabled aggregates is set, count the number of enabled aggregates in the
+        database and if the count is identical to the current count, stop the loop.
+        """
+        selection = {"exploration_disabled": False}
+        new_count = self._compounds.count(dumps(selection)) + self._flasks.count(dumps(selection))
+        if self.options.stop_if_no_new_aggregates_are_activated and self._enabled_count == new_count:
+            self.stop_at_break_point(True)
+        else:
+            self._enabled_count = new_count
+
+    def _aggregate_loop(self, collection: db.Collection, agg_type: db.CompoundOrFlask) -> None:
         selection = {"exploration_disabled": True}
         if agg_type == db.CompoundOrFlask.COMPOUND:
             iterator = collection.iterate_compounds(dumps(selection))
@@ -93,7 +131,7 @@ class KineticsBase(Gear, ABC):
             raise RuntimeError(f"Unknown aggregate type {agg_type}")
         for aggregate in stop_on_timeout(iterator):
             aggregate.link(collection)
-            if self.stop_at_next_break_point:
+            if self.have_to_stop_at_next_break_point():
                 return
             str_id = str(aggregate.id())
             try:
@@ -133,18 +171,26 @@ class KineticsBase(Gear, ABC):
         bool
             aggregate was inserted
         """
+        str_agg_id = str(aggregate.id())
+        structures = aggregate.get_structures()
+        n_structures = len(structures)
+        cache_entry = self._user_cache.get(str_agg_id, None)
+        if cache_entry is not None and cache_entry[0] == n_structures:
+            return cache_entry[1]
+        # todo replace with a database library function
         user_labels = [db.Label.USER_OPTIMIZED, db.Label.USER_GUESS, db.Label.USER_COMPLEX_OPTIMIZED]
-        for s_id in aggregate.get_structures():
-            structure = db.Structure(s_id)
-            structure.link(self._structures)
+        for s_id in structures:
+            structure = db.Structure(s_id, self._structures)
             if structure.get_label() in user_labels:
+                self._user_cache[str_agg_id] = n_structures, True
                 return True
+        self._user_cache[str_agg_id] = n_structures, False
         return False
 
-    def _aggregate_accessible_by_reaction(self, aggregate: Union[db.Compound, db.Flask]) -> List[db.Reaction]:
+    def _aggregate_accessible_by_reaction(self, aggregate: Union[db.Compound, db.Flask]) \
+            -> List[Tuple[db.Reaction, db.Side]]:
         """
-        Aggregate is on RHS of a reaction that requires only explorable
-        aggregates and has not been deactivated.
+        Aggregate is on a side of an explorable reaction with all compounds on the other side being explorable
 
         Parameters
         ----------
@@ -153,29 +199,37 @@ class KineticsBase(Gear, ABC):
 
         Returns
         -------
-        List[db.Reaction]
-            List of all viable reactions giving access
+        List[Tuple[db.Reaction, db.Side]]
+            List of all viable reactions giving access and from the side they give access
         """
+        agg_id = aggregate.id()
         selection = {"$and": [
-            {"rhs": {"$elemMatch": {"id": {"$oid": aggregate.get_id().string()}}}},
-            {"exploration_disabled": {"$ne": True}}
+            {"exploration_disabled": {"$ne": True}},
+            {"$or": [
+                {"lhs": {"$elemMatch": {"id": {"$oid": str(agg_id)}}}},
+                {"rhs": {"$elemMatch": {"id": {"$oid": str(agg_id)}}}},
+            ]},
         ]}
-        hits = []
+        hits: List[Tuple[db.Reaction, db.Side]] = []
         for hit in self._reactions.iterate_reactions(dumps(selection)):
             hit.link(self._reactions)
-            accessible = True
-            for reactant_id, reactant_type in zip(hit.get_reactants(db.Side.LHS)[0],
-                                                  hit.get_reactant_types(db.Side.LHS)[0]):
-                reactant = get_compound_or_flask(reactant_id, reactant_type, self._compounds, self._flasks)
-                if not reactant.explore():
-                    accessible = False
-                    break
-            if accessible:
-                hits.append(hit)
+            lhs, rhs = hit.get_reactants(db.Side.BOTH)
+            lhs_types, rhs_types = hit.get_reactant_types(db.Side.BOTH)
+            # check lhs
+            if agg_id in rhs and \
+                    all(get_compound_or_flask(reactant_id, reactant_type, self._compounds, self._flasks).explore()
+                        for reactant_id, reactant_type in zip(lhs, lhs_types)):
+                hits.append((hit, db.Side.LHS))
+            # check rhs
+            elif agg_id in lhs and \
+                    all(get_compound_or_flask(reactant_id, reactant_type, self._compounds, self._flasks).explore()
+                        for reactant_id, reactant_type in zip(rhs, rhs_types)):
+                hits.append((hit, db.Side.RHS))
         return hits
 
     @abstractmethod
-    def _filter(self, _: Union[db.Compound, db.Flask], __: List[db.Reaction]) -> bool:
+    def _filter(self, aggregate: Union[db.Compound, db.Flask], access_reactions: List[Tuple[db.Reaction, db.Side]]) \
+            -> bool:
         raise NotImplementedError
 
 
@@ -189,9 +243,9 @@ class MinimalConnectivityKinetics(KineticsBase):
 
     Attributes
     ----------
-    options :: MinimalConnectivityKinetics.Options
+    options : MinimalConnectivityKinetics.Options
         The options for the MinimalConnectivityKinetics Gear.
-    aggregate_filter :: AggregateFilter
+    aggregate_filter : AggregateFilter
         An optional filter to limit the activated aggregates, by default none are filtered
     """
 
@@ -201,7 +255,7 @@ class MinimalConnectivityKinetics(KineticsBase):
         """
         __slots__ = "user_input_only"
 
-        def __init__(self):
+        def __init__(self) -> None:
             super().__init__()
             self.user_input_only = False
             """
@@ -213,7 +267,8 @@ class MinimalConnectivityKinetics(KineticsBase):
 
     options: Options
 
-    def _filter(self, _: Union[db.Compound, db.Flask], access_reactions: List[db.Reaction]):
+    def _filter(self, aggregate: Union[db.Compound, db.Flask], access_reactions: List[Tuple[db.Reaction, db.Side]]) \
+            -> bool:
         if self.options.user_input_only:
             # relies on the fact that user inputs are activated in loop regardless
             return False
@@ -228,9 +283,9 @@ class BasicBarrierHeightKinetics(KineticsBase):
 
     Attributes
     ----------
-    options :: BasicBarrierHeightKinetics.Options
+    options : BasicBarrierHeightKinetics.Options
         The options for the BasicBarrierHeightKinetics Gear.
-    aggregate_filter :: AggregateFilter
+    aggregate_filter : AggregateFilter
         An optional filter to limit the activated aggregates, by default none are filtered
 
     Notes
@@ -246,25 +301,20 @@ class BasicBarrierHeightKinetics(KineticsBase):
 
         __slots__ = ("max_allowed_barrier", "max_allowed_energy", "enforce_free_energies")
 
-        def __init__(self):
+        def __init__(self) -> None:
             super().__init__()
             self.max_allowed_barrier = 1000.0  # kJ/mol
             """
-                float
+            float
                 The maximum barrier height of the reaction resulting in the
                 aggregate in kJ/mol to allow the aggregate to be further explored.
             """
-            self.max_allowed_energy = None
+            self.max_allowed_energy: Optional[float] = float('inf')
             """
-                float
+            Optional[float]
                 The maximum energy threshold for the reaction energies allowed
                 in the aggregate in kJ/mol to allow the aggregate to be further
                 explored.
-            """
-            self.model: db.Model = db.Model("PM6", "PM6", "")
-            """
-            db.Model (Scine::Database::Model)
-                The Model determining the energies for the barrier determination.
             """
             self.enforce_free_energies = False
             """
@@ -276,38 +326,45 @@ class BasicBarrierHeightKinetics(KineticsBase):
 
     options: Options
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.__cache: Dict[str, dict] = {}
 
     def clear_cache(self) -> None:
+        super().clear_cache()
         self.__cache = {}
 
-    def _filter(self, aggregate: Union[db.Compound, db.Flask], access_reactions: List[db.Reaction]):
-        for reaction in access_reactions:
-            if aggregate.get_id() not in reaction.get_reactants(db.Side.RHS)[1]:
+    def _filter(self, aggregate: Union[db.Compound, db.Flask], access_reactions: List[Tuple[db.Reaction, db.Side]]) \
+            -> bool:
+        agg_id = aggregate.id()
+        for reaction, side in access_reactions:
+            lhs, rhs = reaction.get_reactants(db.Side.BOTH)
+            if agg_id not in lhs + rhs:
                 continue
-            if not self._reaction_barrier_too_high(reaction):
-                if self.options.max_allowed_energy is not None:
-                    if not self._reaction_energy_too_high(reaction):
+            if not self._reaction_barrier_too_high(reaction, side):
+                if self.options.max_allowed_energy is not None and self.options.max_allowed_energy != float('inf'):
+                    if not self._reaction_energy_too_high(reaction, side):
                         return True
                 else:
                     return True
         return False
 
-    def _reaction_energy_too_high(self, reaction: db.Reaction) -> bool:
+    def _reaction_energy_too_high(self, reaction: db.Reaction, accessible_side: db.Side) -> bool:
         """
-        Whether the reaction barrier of the reaction is too high
+        Whether the reaction energy of the reaction is too high
 
         Parameters
         ----------
         reaction : scine_database.Reaction (Scine::Database::Reaction)
             The reaction
+        accessible_side : scine_database.Side (Scine::Database::Side)
+            The side of the reaction that is accessible
         """
         reaction_id = reaction.get_id().string()
-        es_list = [i.string() for i in reaction.get_elementary_steps()].sort()
-        if reaction_id in self.__cache:
-            if self.__cache[reaction_id]['es_ids'] == es_list:
+        es_list = sorted(i.string() for i in reaction.get_elementary_steps())
+        cache_entry = self.__cache.get(reaction_id, None)
+        if cache_entry is not None:
+            if cache_entry['accessible_side'] == accessible_side and cache_entry['es_ids'] == es_list:
                 if self.options.enforce_free_energies and self.__cache[reaction_id]['dG'] is not None:
                     return self.__cache[reaction_id]['dG'] > self.options.max_allowed_energy
                 if not self.options.enforce_free_energies and self.__cache[reaction_id]['dE'] is not None:
@@ -318,7 +375,7 @@ class BasicBarrierHeightKinetics(KineticsBase):
             # expect call of _reaction_barrier_too_high before _reaction_energy_too_high
             raise RuntimeError("Internal error in BasicBarrierHeightKinetics Gear.")
 
-    def _reaction_barrier_too_high(self, reaction: db.Reaction) -> bool:
+    def _reaction_barrier_too_high(self, reaction: db.Reaction, accessible_side: db.Side) -> bool:
         """
         Whether the reaction barrier of the reaction is too high
 
@@ -326,18 +383,22 @@ class BasicBarrierHeightKinetics(KineticsBase):
         ----------
         reaction : scine_database.Reaction (Scine::Database::Reaction)
             The reaction
+        accessible_side : scine_database.Side (Scine::Database::Side)
+            The side of the reaction that is accessible
         """
         reaction_id = reaction.get_id().string()
-        es_list = [i.string() for i in reaction.get_elementary_steps()].sort()
-        if reaction_id in self.__cache:
-            if self.__cache[reaction_id]['es_ids'] == es_list:
-                if self.options.enforce_free_energies and self.__cache[reaction_id]['ddG'] is not None:
-                    return self.__cache[reaction_id]['ddG'] > self.options.max_allowed_barrier
-                if not self.options.enforce_free_energies and self.__cache[reaction_id]['ddE'] is not None:
-                    return self.__cache[reaction_id]['ddE'] > self.options.max_allowed_barrier
-        barrier_heights = self._barrier_height(reaction)
+        es_list = sorted(i.string() for i in reaction.get_elementary_steps())
+        cache_entry = self.__cache.get(reaction_id, None)
+        if cache_entry is not None and cache_entry['accessible_side'] == accessible_side \
+                and cache_entry['es_ids'] == es_list:
+            if self.options.enforce_free_energies and self.__cache[reaction_id]['ddG'] is not None:
+                return self.__cache[reaction_id]['ddG'] > self.options.max_allowed_barrier
+            if not self.options.enforce_free_energies and self.__cache[reaction_id]['ddE'] is not None:
+                return self.__cache[reaction_id]['ddE'] > self.options.max_allowed_barrier
+        barrier_heights = self._barrier_height(reaction, accessible_side)
         self.__cache[reaction_id] = {
             'es_ids': es_list,
+            'accessible_side': accessible_side,
             'ddE': barrier_heights[1][0],
             'ddG': barrier_heights[0][0],
             'dE': barrier_heights[1][1],
@@ -346,24 +407,30 @@ class BasicBarrierHeightKinetics(KineticsBase):
         if barrier_heights[0][0] is None:
             if self.options.enforce_free_energies or barrier_heights[1][0] is None:
                 # skip if free energy barrier not available yet and only free energies allowed or electronic energy also
-                # not available (e.g., because of model refinement)
+                # not available (e.g., because of model network_refinement)
                 return True
             return barrier_heights[1][0] > self.options.max_allowed_barrier
         return barrier_heights[0][0] > self.options.max_allowed_barrier
 
-    def _barrier_height(self, reaction: db.Reaction) -> Tuple[
+    def _barrier_height(self, reaction: db.Reaction, accessible_side: db.Side) -> Tuple[
         Tuple[Union[float, None], Union[float, None]],
         Tuple[Union[float, None], Union[float, None]],
     ]:
         """
-        Gives the lowest barrier height of the forward reaction (left to right) in kJ/mol out of all the elementary
-        steps grouped into this reaction. Barrier height are given as Tuple with the first being gibbs free energy
+        Gives the lowest barrier height of the reaction in kJ/mol out of all the elementary
+        steps grouped into this reaction with the given access side.
+        db.Side.LHS means that the lowest barriers from left to right are given.
+        If db.Side.BOTH is given, the lowest barrier from either left to right or right to left is given, depending
+        on which is lower.
+        Barrier heights are given as Tuple with the first being gibbs free energy
         and second one the electronic energy. Returns None for not available energies
 
         Parameters
         ----------
         reaction : scine_database.Reaction (Scine::Database::Reaction)
             The reaction we want the barrier height from
+        accessible_side : scine_database.Side (Scine::Database::Side)
+            The side of the reaction that is accessible
 
         Returns
         -------
@@ -373,17 +440,35 @@ class BasicBarrierHeightKinetics(KineticsBase):
         barriers: Dict[str, List[float]] = {"gibbs_free_energy": [], "electronic_energy": []}
         energies: Dict[str, List[float]] = {"gibbs_free_energy": [], "electronic_energy": []}
         for step_id in reaction.get_elementary_steps():
-            step = db.ElementaryStep(step_id)
-            step.link(self._elementary_steps)
+            step = db.ElementaryStep(step_id, self._elementary_steps)
             for energy_type, values in barriers.items():
                 lhs, rhs = get_barriers_for_elementary_step_by_type(step, energy_type, self.options.model,
                                                                     self._structures, self._properties)
-                if lhs is not None:
-                    values.append(lhs)
-                if lhs is not None and rhs is not None:
-                    energies[energy_type].append(lhs - rhs)
+                if accessible_side == db.Side.LHS:
+                    ordered_values = lhs, rhs
+                elif accessible_side == db.Side.RHS:
+                    ordered_values = rhs, lhs
+                elif accessible_side == db.Side.BOTH:
+                    if lhs is not None and rhs is not None:
+                        ordered_values = min(lhs, rhs), max(lhs, rhs)
+                    elif lhs is not None:
+                        ordered_values = lhs, None
+                    elif rhs is not None:
+                        ordered_values = rhs, None
+                    else:
+                        ordered_values = None
+                else:
+                    raise NotImplementedError(f"Unknown accessible side {accessible_side}")
+                if ordered_values is not None and ordered_values[0] is not None:
+                    values.append(ordered_values[0])
+                    if ordered_values[1] is not None:
+                        energies[energy_type].append(ordered_values[0] - ordered_values[1])
         barrier_gibbs = None if not barriers["gibbs_free_energy"] else min(barriers["gibbs_free_energy"])
         barrier_electronic = None if not barriers["electronic_energy"] else min(barriers["electronic_energy"])
+        # it seems incorrect to check for validity by checking the barriers list,
+        # but unsure if this has downstream consequences
+        # because `get_barriers_for_elementary_step_by_type` currently returns either float, float or None, None
+        # this should be irrelevant
         energy_gibbs = None if not barriers["gibbs_free_energy"] else min(energies["gibbs_free_energy"])
         energy_electronic = None if not barriers["electronic_energy"] else min(energies["electronic_energy"])
         return (barrier_gibbs, energy_gibbs), (barrier_electronic, energy_electronic)
@@ -398,9 +483,9 @@ class MaximumFluxKinetics(KineticsBase):
 
     Attributes
     ----------
-    options :: MaximumFluxKinetics.Options
+    options : MaximumFluxKinetics.Options
         The options for the MaximumFluxKinetics Gear.
-    aggregate_filter :: AggregateFilter
+    aggregate_filter : AggregateFilter
         An optional filter to limit the activated aggregates, by default none are filtered
 
     Notes
@@ -414,35 +499,29 @@ class MaximumFluxKinetics(KineticsBase):
         The options for the MaximumPopulationKinetics Gear.
         """
 
-        __slots__ = ("min_allowed_concentration", "property_label",
-                     "min_concentration_flux", "flux_property_label")
+        __slots__ = ("min_allowed_concentration", "property_label", "variance_label")
 
-        def __init__(self):
+        def __init__(self) -> None:
             super().__init__()
             self.min_allowed_concentration = 1e-4
             """
             float
-                The minimum allowed concentration flux to be considered for further exploration.
+                The minimum allowed concentration property to be considered for further exploration.
             """
             self.property_label = "max_concentration"
-            """
-            str
-                The label of the concentration property that is used to determine explorable compounds.
-            """
-            self.min_concentration_flux = 1e-4
             """
             float
                 The minimum concentration flux that is required to consider the compound as accessible.
             """
-            self.flux_property_label = "concentration_flux"
+            self.variance_label: Optional[str] = ""
             """
-            str
-                The property label for the concentration flux.
+            float
+                The label for the variance of the concentration property.
             """
 
     options: Options
 
-    def _filter(self, aggregate: Union[db.Compound, db.Flask], __: List[db.Reaction]):
+    def _filter(self, aggregate: Union[db.Compound, db.Flask], __: List[Tuple[db.Reaction, db.Side]]) -> bool:
         start_concentration = query_concentration_with_object("start_concentration",
                                                               aggregate,
                                                               self._properties,
@@ -453,11 +532,18 @@ class MaximumFluxKinetics(KineticsBase):
                                                                   self._properties,
                                                                   self._structures,
                                                                   self.options.model)
+        if self.options.variance_label is not None and self.options.variance_label:
+            max_concentration += query_concentration_with_model_object(self.options.variance_label,
+                                                                       aggregate,
+                                                                       self._properties,
+                                                                       self._structures,
+                                                                       self.options.model)
         if self.options.min_allowed_concentration > max_concentration and start_concentration < 1e-10:
             return False
         return True
 
-    def _aggregate_accessible_by_reaction(self, _: Union[db.Compound, db.Flask]) -> List[db.Reaction]:
+    def _aggregate_accessible_by_reaction(self, aggregate: Union[db.Compound, db.Flask]) \
+            -> List[Tuple[db.Reaction, db.Side]]:
         """
         Assume every compound to be accessible. Compound elimination happens via the concentration.
         This function returns an empty list to accelerate the gear.
@@ -479,12 +565,12 @@ class PathfinderKinetics(KineticsBase):
     This Gear enables the exploration of compounds if they were inserted by the user
     or have a compound cost lower than a given compound cost threshold.
     The compound costs are determined by running Pathfinder with the set options and the given starting conditions.
-    The graph is built and the compound costs determined if a the ratio of structures over compounds considered for
+    The graph is built and the compound costs determined if the ratio of structures over compounds considered for
     building the last graph have changed by more than a given excess ratio, by default 10%.
 
     Attributes
     ----------
-    options :: PathfinderKinetics.Options
+    options : PathfinderKinetics.Options
         The options for the PathfinderKinetics Gear.
     """
 
@@ -497,7 +583,7 @@ class PathfinderKinetics(KineticsBase):
                      "structure_model", "start_conditions", "barrierless_weight", "filter_negative_barriers",
                      "allow_unsolved_compound_costs", "temperature", "store_pathfinder_output")
 
-        def __init__(self):
+        def __init__(self) -> None:
             super().__init__()
             self.max_compound_cost = 10.0
             """
@@ -514,7 +600,7 @@ class PathfinderKinetics(KineticsBase):
             bool
                 Bool to indicate if graph and compound costs of run should be exported to files.
             """
-            self.structure_model = None
+            self.structure_model: Optional[db.Model] = construct_place_holder_model()
             """
             Optional[db.Model]
                 Structure model for the structures to be considered.
@@ -547,7 +633,7 @@ class PathfinderKinetics(KineticsBase):
 
     options: Options
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.finder = None
         self._old_ratio = None
@@ -558,11 +644,12 @@ class PathfinderKinetics(KineticsBase):
         if self.options.restart:
             self._disable_all_aggregates()
             self.options.restart = False
+            self._enabled_count = 0
         # # # Check if finder is setup
         if self.finder is None:
             self._setup_finder()
         # # # Get current count of structures with model
-        if self.options.structure_model is None:
+        if self.options.structure_model is None or isinstance(self.options.structure_model, PlaceHolderModelType):
             structure_count = self._count_structures(self.options.model)
         else:
             structure_count = self._count_structures(self.options.structure_model)
@@ -574,7 +661,7 @@ class PathfinderKinetics(KineticsBase):
 
         # # # Build the graph if not build yet or the current aggregate count exceeds the tolerated percentage
         if self.finder.graph_handler is None or \
-           self._trigger > self.options.restart_excess_ratio:
+                self._trigger > self.options.restart_excess_ratio:
             self.finder.build_graph()
             print("Nodes:", len(self.finder.graph_handler.graph.nodes))
             self.finder.set_start_conditions(self.options.start_conditions)
@@ -622,17 +709,19 @@ class PathfinderKinetics(KineticsBase):
             compound.link(self._compounds)
             if self._aggregate_was_inserted_by_user(compound):
                 compound.enable_exploration()
-            elif self._filter(compound, self._aggregate_accessible_by_reaction(compound)):
+            elif self._filter(compound, []):
                 compound.enable_exploration()
         # # # Loop over deactivated flasks
         for flask in stop_on_timeout(self._flasks.iterate_flasks(dumps(selection))):
             flask.link(self._flasks)
             if self._aggregate_was_inserted_by_user(flask):
                 flask.enable_exploration()
-            elif self._filter(flask, self._aggregate_accessible_by_reaction(flask)):
+            elif self._filter(flask, []):
                 flask.enable_exploration()
+        self._check_count()
 
-    def _filter(self, aggregate: Union[db.Compound, db.Flask], __: List[db.Reaction]) -> bool:
+    def _filter(self, aggregate: Union[db.Compound, db.Flask], __: List[Tuple[db.Reaction, db.Side]]) -> bool:
+        assert self.finder
         aggregate_id = aggregate.id().string()
         if self.finder.compound_costs_solved or self.options.allow_unsolved_compound_costs:
             if aggregate_id in self.finder.compound_costs.keys() and \
@@ -643,7 +732,7 @@ class PathfinderKinetics(KineticsBase):
                 return False
         # # # Finder complete but compound cost not solved, raise error
         else:
-            raise RuntimeError("Pathfinder can not find a solution under given starting conditions.")
+            raise RuntimeError("Pathfinder cannot find a solution under given starting conditions.")
 
     def _setup_finder(self):
         """
@@ -671,6 +760,7 @@ class PathfinderKinetics(KineticsBase):
         int
             Number of optimized structures with the given model.
         """
+        # todo replace with db method
         selection = {"$and": [{"label": {"$in": ["user_optimized", "minimum_optimized",
                                                  "ts_optimized", "complex_optimized",
                                                  "user_complex_optimized"]}}] + model_query(model)}
@@ -705,7 +795,7 @@ class PathfinderKinetics(KineticsBase):
         Returns
         -------
         centroid : db.Structure
-            The centroid of the the given aggregate.
+            The centroid of the given aggregate.
         """
         if aggregate_type is None:
             aggregate_type_determined = self._get_type(id)
@@ -730,6 +820,7 @@ class PathfinderKinetics(KineticsBase):
         db.CompoundOrFlask
             The aggregate type of the queried node.
         """
+        assert self.finder
         type_string = self.finder.graph_handler.graph.nodes[key]["type"]
         if type_string == db.CompoundOrFlask.COMPOUND.name:
             return db.CompoundOrFlask.COMPOUND
@@ -751,3 +842,28 @@ class PathfinderKinetics(KineticsBase):
         prop = db.NumberProperty.make(label, self.options.model, compound_cost, self._properties)
         centroid.add_property(label, prop.id())
         prop.set_structure(centroid.id())
+
+
+class ReactionFilterBasedKinetics(KineticsBase):
+    """
+    This class will activate all aggregates fulfilling the aggregate_filter (see KineticsBase) and accessible by a
+    reaction that fulfills the reaction_filter.
+
+    Attributes
+    ----------
+    reaction_filter : ReactionFilter
+        The reaction filter.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reaction_filter: ReactionFilter = ReactionFilter()
+
+    def _filter(self, aggregate: Union[db.Compound, db.Flask], access_reactions: List[Tuple[db.Reaction, db.Side]]) \
+            -> bool:
+        return any(self.reaction_filter.filter(reaction) for reaction, _ in access_reactions)
+
+    def _propagate_db_manager(self, manager: db.Manager):
+        self._sanity_check_configuration()
+        self.aggregate_filter.initialize_collections(manager)
+        self.reaction_filter.initialize_collections(manager)

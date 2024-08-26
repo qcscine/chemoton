@@ -9,6 +9,8 @@
 
 import sphinx_rtd_theme
 import scine_chemoton
+import sys
+import pathlib
 
 # The suffix(es) of source filenames.
 # You can specify multiple suffix as a list of string:
@@ -23,7 +25,6 @@ extensions = [
     'sphinx.ext.githubpages',
     'sphinx.ext.intersphinx',
     'sphinx.ext.mathjax',
-    'sphinx.ext.napoleon',
     'sphinx_autodoc_typehints',
     'sphinx.ext.viewcode',
     'matplotlib.sphinxext.plot_directive',
@@ -39,6 +40,7 @@ plot_html_show_formats = False
 # Generate the API documentation when building
 autosummary_generate = True
 numpydoc_show_class_members = False
+autodoc_process_signature = True
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ["_templates"]
@@ -168,8 +170,14 @@ texinfo_documents = [
     ),
 ]
 
-
-autodoc_default_options = {"autosummary": True, "members": True, "undoc-members": True}
+autoclass_content = "both"
+autodoc_default_options = {
+    "autosummary": True,
+    "members": True,
+    "undoc-members": True,
+    "inherited-members": True,
+    "class-doc-from": "both",
+}
 
 
 # Example configuration for intersphinx: refer to the Python standard library.
@@ -179,3 +187,7 @@ intersphinx_mapping = {
     'scipy': ('https://docs.scipy.org/doc/scipy-1.7.1/', None),
     'matplotlib': ('https://matplotlib.org/stable', None),
 }
+# If extensions (or modules to document with autodoc) are in another directory,
+# add these directories to sys.path here.
+sys.path.insert(0, pathlib.Path(__file__).parents[2].resolve().as_posix())
+

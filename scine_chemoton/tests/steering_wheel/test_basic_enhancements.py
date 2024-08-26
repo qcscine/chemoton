@@ -11,6 +11,7 @@ import unittest
 # Third party imports
 import scine_utilities as utils
 from scine_database import test_database_setup as db_setup
+import scine_database as db
 
 # Local application imports
 from scine_chemoton.gears.compound import BasicAggregateHousekeeping
@@ -44,8 +45,11 @@ class BasicEnhancementsTests(unittest.TestCase):
         dummy_opt.dry_setup_protocol(self.credentials)
         assert dummy_opt.protocol
         gears = [p.gear for p in dummy_opt.protocol if isinstance(p, ProtocolEntry)]
-        options = GearOptions(gears, self.model)
-        options["ChemotonBasicAggregateHousekeepingGear"][0].bond_order_settings = \
+        for gear in gears:
+            if isinstance(gear, BasicAggregateHousekeeping):
+                gear.options.bond_order_job = db.Job("test_job")
+        options = GearOptions([(g, None) for g in gears], self.model)
+        options[("ChemotonBasicAggregateHousekeepingGear", None)][0].bond_order_settings = \
             utils.ValueCollection({'only_distance_connectivity': True})
         opt = SimpleOptimization(self.model, include_thermochemistry=True, gear_options=options)
         opt.dry_setup_protocol(self.credentials)
@@ -53,6 +57,8 @@ class BasicEnhancementsTests(unittest.TestCase):
         assert any(isinstance(p.gear, BasicAggregateHousekeeping) for p in opt.protocol if isinstance(p, ProtocolEntry))
         for p in opt.protocol:
             if isinstance(p, ProtocolEntry) and isinstance(p.gear, BasicAggregateHousekeeping):
+                assert p.gear.options.bond_order_job
+                assert p.gear.options.bond_order_job == db.Job("test_job")
                 assert p.gear.options.bond_order_settings
                 assert p.gear.options.bond_order_settings['only_distance_connectivity']
         assert any(isinstance(p.gear, BasicThermoDataCompletion) for p in opt.protocol if isinstance(p, ProtocolEntry))

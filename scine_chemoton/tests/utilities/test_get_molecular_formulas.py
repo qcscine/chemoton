@@ -62,8 +62,7 @@ class GetMolecularFormulaTest(unittest.TestCase, HoldsCollections):
 
         flask = db.Flask()
         flask.link(self._flasks)
-        flask.create([], [])
-        flask.disable_exploration()
+        flask.create([], [], exploration_disabled=True)
         # Structure of flask
         flask_structure = db.Structure()
         flask_structure.link(self._structures)

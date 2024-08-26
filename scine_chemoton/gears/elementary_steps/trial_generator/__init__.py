@@ -8,6 +8,7 @@ See LICENSE.txt for details.
 from abc import ABCMeta, abstractmethod
 from functools import wraps
 from typing import Callable, Dict, List, Tuple, Optional, Any
+from warnings import warn
 
 # Third party imports
 from numpy import ndarray
@@ -16,8 +17,13 @@ from scine_utilities import ValueCollection
 
 from scine_chemoton.gears import HoldsCollections
 from scine_chemoton.gears import Gear
-from scine_chemoton.gears.elementary_steps.reactive_site_filters import ReactiveSiteFilter
+from scine_chemoton.filters.reactive_site_filters import ReactiveSiteFilter
 from scine_chemoton.utilities.options import BaseOptions
+from scine_chemoton.utilities.place_holder_model import (
+    construct_place_holder_model,
+    PlaceHolderModelType
+)
+from scine_chemoton.utilities.warnings import ModelChangedWarning
 
 
 class TrialGenerator(HoldsCollections, metaclass=ABCMeta):
@@ -31,9 +37,10 @@ class TrialGenerator(HoldsCollections, metaclass=ABCMeta):
         """
         __slots__ = ("_parent", "model", "base_job_settings")
 
-        def __init__(self, parent: Optional[Any] = None):
+        def __init__(self, parent: Optional[Any] = None) -> None:
             self._parent = parent  # best be first member to be set, due to __setattr__
-            self.model: db.Model = db.Model("PM6", "PM6", "")
+            super().__init__()
+            self.model: db.Model = construct_place_holder_model()
             self.base_job_settings: ValueCollection = ValueCollection({})
 
         def __setattr__(self, item, value):
@@ -41,20 +48,26 @@ class TrialGenerator(HoldsCollections, metaclass=ABCMeta):
             Overwritten standard method to synchronize model option
             """
             model_case = bool(
-                item == "model" and hasattr(
-                    self,
-                    "model") and self.model != value and hasattr(
-                    self,
-                    "_parent") and self._parent is not None and hasattr(
-                    self._parent,
-                    "_parent") and hasattr(
-                    self._parent._parent,
-                    "options"))
+                item == "model" and
+                hasattr(self, "model") and
+                isinstance(value, db.Model) and
+                not isinstance(value, PlaceHolderModelType) and
+                self.model != value and
+                hasattr(self, "_parent") and
+                self._parent is not None and
+                hasattr(self._parent, "_parent") and
+                hasattr(self._parent._parent, "options") and
+                hasattr(self._parent._parent.options, "model") and
+                self._parent._parent.options.model != value
+            )
             super().__setattr__(item, value)
             if model_case:
+                if not isinstance(self._parent._parent.options.model, PlaceHolderModelType):
+                    warn("The model of the ElementaryStepGear is overwritten by the TrialGenerator.",
+                         category=ModelChangedWarning)
                 self._parent._parent.options.model = value
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self._parent: Optional[Gear] = None  # allows to propagate model information to gear
         self.options = self.Options(parent=self)
@@ -74,10 +87,10 @@ class TrialGenerator(HoldsCollections, metaclass=ABCMeta):
 
         Parameters
         ----------
-        structure :: db.Structure
+        structure : db.Structure
             The structure to be considered. The Structure has to
             be linked to a database.
-        with_exact_settings_check :: bool
+        with_exact_settings_check : bool
             If True, more expensive queries are carried out to check if the settings of the
             calculations are exactly the same as the settings of the trial generator. This allows to add more
             inclusive additional reaction trials but the queries are less efficient, therefore this option
@@ -95,10 +108,10 @@ class TrialGenerator(HoldsCollections, metaclass=ABCMeta):
 
         Parameters
         ----------
-        structure_list :: List[db.Structure]
+        structure_list : List[db.Structure]
             List of the two structures to be considered.
             The Structures have to be linked to a database.
-        with_exact_settings_check :: bool
+        with_exact_settings_check : bool
             If True, more expensive queries are carried out to check if the settings of the
             calculations are exactly the same as the settings of the trial generator. This allows to add more
             inclusive additional reaction trials but the queries are less efficient, therefore this option
@@ -118,10 +131,10 @@ class TrialGenerator(HoldsCollections, metaclass=ABCMeta):
 
         Parameters
         ----------
-        structure :: db.Structure
+        structure : db.Structure
             The structure to be considered. The Structure has to
             be linked to a database.
-        with_exact_settings_check :: bool
+        with_exact_settings_check : bool
             If True, more expensive queries are carried out to check if the settings of the
             calculations are exactly the same as the settings of the trial generator. This allows to add more
             inclusive additional reaction trials but the queries are less efficient, therefore this option
@@ -150,10 +163,10 @@ class TrialGenerator(HoldsCollections, metaclass=ABCMeta):
 
         Parameters
         ----------
-        structure_list :: List[db.Structure]
+        structure_list : List[db.Structure]
             List of the two structures to be considered.
             The Structures have to be linked to a database.
-        with_exact_settings_check :: bool
+        with_exact_settings_check : bool
             If True, more expensive queries are carried out to check if the settings of the
             calculations are exactly the same as the settings of the trial generator. This allows to add more
             inclusive additional reaction trials but the queries are less efficient, therefore this option
@@ -179,7 +192,7 @@ class TrialGenerator(HoldsCollections, metaclass=ABCMeta):
         Convenience method to combine given settings with the base settings.
         The given settings have precedence over the base_job_settings of the instance.
         """
-        return ValueCollection({**self.options.base_job_settings, **settings})
+        return ValueCollection({**self.options.base_job_settings, **settings})  # type: ignore
 
 
 def _sanity_check_wrapper(fun: Callable) -> Callable:

@@ -32,8 +32,9 @@ with open(path.join(here, "requirements.txt")) as requirements_file:
     # Parse requirements.txt, ignoring any commented-out lines.
     requirements = [line for line in requirements_file.read().splitlines() if not line.startswith("#")]
 
-with open('scine_chemoton/_version.py') as f:
+with open(path.join(here, 'scine_chemoton', '_version.py')) as f:
     exec(f.read())
+
 
 setup(
     name="scine_chemoton",
@@ -48,6 +49,7 @@ setup(
                            exclude=["scine_chemoton.tests*"]),
     entry_points={
         "console_scripts": [
+            'scine_chemoton_create_reactive_complex = scine_chemoton.__init__:create_reactive_complex_cli',
             # 'command = some.module:some_function',
         ],
     },

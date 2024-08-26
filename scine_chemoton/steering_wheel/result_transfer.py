@@ -38,8 +38,8 @@ def _receive_split_result_from_pipe(pipe: Union[Connection, ReadAble, None]) \
             if isinstance(cls, WaitForFurtherResults):
                 cls = None
             if isinstance(cls, StopMultipleSplitCommunicationMethod):
-                raise RuntimeError(f"Received '{StopMultipleSplitCommunicationMethod.__name__}', "
-                                   f"while waiting for a result.")
+                # it was just an empty list of results
+                return None
     if cls is None or isinstance(cls, StopMultipleSplitCommunicationMethod):
         return cls
     if cls not in [SelectionResult, NetworkExpansionResult]:
@@ -70,9 +70,9 @@ def receive_multiple_results_from_pipe(pipe: Union[Connection, ReadAble, None]) 
             results.append(result)
         return results
 
-    # in the connection there might be a series of result lists, because the worker always sends a complete list
-    # after each step
-    # therefore we return the last result list
+    # in connection, there might be a series of result lists, because the worker always sends a complete list
+    # after each step.
+    # therefore, we return the last result list
     results_to_return = _impl()
     while True:
         next_results = _impl()

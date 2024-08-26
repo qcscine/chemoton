@@ -6,7 +6,7 @@ See LICENSE.txt for details.
 """
 
 # Standard library imports
-from typing import List
+from typing import List, Union
 
 # Third party imports
 import scine_database as db
@@ -19,21 +19,18 @@ from . import ElementaryStepGear
 class BruteForceElementarySteps(ElementaryStepGear):
     """
     This Gear probes Reactions by trying to react all Structures of each
-    Compound with all Structures of each other Compound.
-    For each Structure--Structure combination multiple arrangements (possible
+    Aggregate with all Structures of each other Aggregate.
+    For each Structure-Structure combination multiple arrangements (possible
     Elementary Steps) will be tested.
-
-    This Gear does not consider Flasks/Complexes as reactive, they are not probed
-    for elementary steps.
 
     Attributes
     ----------
-    options :: BruteForceElementarySteps.Options
+    options : BruteForceElementarySteps.Options
         The options for the BruteForceElementarySteps Gear.
-    aggregate_filter :: scine_chemoton.gears.elementary_steps.aggregate_filters.AggregateFilter
+    aggregate_filter : scine_chemoton.gears.elementary_steps.aggregate_filters.AggregateFilter
         A filter for allowed reaction combinations, per default everything
         is permitted, no filter is applied.
-    trial_generator :: TrialGenerator
+    trial_generator : TrialGenerator
         The generator to set up elementary step trial calculations by enumerating
         reactive complexes and trial reaction coordinates
 
@@ -48,12 +45,12 @@ class BruteForceElementarySteps(ElementaryStepGear):
         structures with the same job order
     b. for unimolecular reactions: checking whether there is already a
         calculation to search for an intramolecular reaction of the same
-        structure  with the same job order
+        structure with the same job order
     """
 
-    def _get_eligible_structures(self, compound: db.Compound) -> List[db.ID]:
+    def _get_eligible_structures(self, aggregate: Union[db.Compound, db.Flask]) -> List[db.ID]:
         eligible = []
-        for sid in compound.get_structures():
+        for sid in aggregate.get_structures():
             structure = db.Structure(sid, self._structures)
             if not self._check_structure_model(structure):
                 continue

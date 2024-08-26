@@ -3,9 +3,11 @@ Chemoton API
 ============
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 4
 
    engine
    gears
+   filters
+   reaction_rules
    steering_wheel
    utilities

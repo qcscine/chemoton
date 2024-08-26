@@ -29,23 +29,23 @@ def insert_initial_structure(
 
     Parameters
     ----------
-    database :: db.Manager
+    database : db.Manager
         Database to use.
     molecule_path : Union[str, utils.AtomCollection]
         Atom collection or path to the xyz file with the structure to be inserted.
-    charge :: int
+    charge : int
         Charge of the structure.
-    multiplicity :: int
+    multiplicity : int
         Multiplicity of the structure.
-    model :: db.Model
+    model : db.Model
         Model to be used for the calculation.
-    label :: db.Label, optional
+    label : db.Label, optional
         Label of the inserted structure, by default db.Label.MINIMUM_GUESS.
-    job :: db.Job, optional
+    job : db.Job, optional
         Job to be performed on the initial structure, by default db.Job('scine_geometry_optimization').
-    settings :: utils.ValueCollection, optional
+    settings : utils.ValueCollection, optional
         Job settings, by default none.
-    start_concentration :: float
+    start_concentration : float
         The start concentratoin of the compound that will be generated from this structure.
 
     Returns

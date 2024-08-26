@@ -11,6 +11,7 @@ import json
 from typing import Dict, List, Tuple
 import unittest
 
+import pytest
 # Third party imports
 import scine_database as db
 from numpy import ndarray
@@ -87,6 +88,7 @@ class ElementaryStepMinimalTests(unittest.TestCase, HoldsCollections):
         # Setup gear
         es_gear = MinimalElementarySteps()
         es_gear.trial_generator = MockGenerator()
+        es_gear.options.model = cheap_model
         es_gear.options.enable_unimolecular_trials = False
         es_gear.options.enable_bimolecular_trials = True
         es_gear.options.structure_model = db.Model("expensive", "EXPENSIVE", "")
@@ -144,6 +146,7 @@ class ElementaryStepMinimalTests(unittest.TestCase, HoldsCollections):
         # Setup gear
         es_gear = MinimalElementarySteps()
         es_gear.trial_generator = MockGenerator()
+        es_gear.options.model = cheap_model
         es_gear.options.enable_unimolecular_trials = True
         es_gear.options.enable_bimolecular_trials = False
         es_gear.options.structure_model = cheap_model
@@ -207,6 +210,8 @@ class ElementaryStepMinimalTests(unittest.TestCase, HoldsCollections):
         # Setup gear
         es_gear = MinimalElementarySteps()
         es_gear.trial_generator = MockGenerator()
+        cheap_model = db.Model("cheap", "CHEAP", "")
+        es_gear.options.model = cheap_model
         es_gear.options.enable_unimolecular_trials = True
         es_gear.options.enable_bimolecular_trials = True
         es_engine = Engine(manager.get_credentials(), fork=False)
@@ -230,6 +235,7 @@ class ElementaryStepMinimalTests(unittest.TestCase, HoldsCollections):
         # Rerun and build cache
         es_gear2 = MinimalElementarySteps()
         es_gear2.trial_generator = MockGenerator()
+        es_gear2.options.model = cheap_model
         es_gear2.options.enable_unimolecular_trials = True
         es_gear2.options.enable_bimolecular_trials = True
         es_engine2 = Engine(manager.get_credentials(), fork=False)
@@ -274,6 +280,8 @@ class ElementaryStepMinimalTests(unittest.TestCase, HoldsCollections):
         # Setup gear
         es_gear = MinimalElementarySteps()
         es_gear.trial_generator = MockGenerator()
+        cheap_model = db.Model("cheap", "CHEAP", "")
+        es_gear.options.model = cheap_model
         es_gear.options.enable_unimolecular_trials = True
         es_gear.options.enable_bimolecular_trials = True
         es_engine = Engine(manager.get_credentials(), fork=False)
@@ -297,6 +305,7 @@ class ElementaryStepMinimalTests(unittest.TestCase, HoldsCollections):
         # Rerun and build cache
         es_gear2 = MinimalElementarySteps()
         es_gear2.trial_generator = MockGenerator()
+        es_gear2.options.model = cheap_model
         es_gear2.options.enable_unimolecular_trials = True
         es_gear2.options.enable_bimolecular_trials = True
         es_engine2 = Engine(manager.get_credentials(), fork=False)
@@ -341,3 +350,78 @@ class ElementaryStepMinimalTests(unittest.TestCase, HoldsCollections):
         es_engine.run(single=True)
         assert es_gear.trial_generator.unimol_counter == 3
         assert es_gear.trial_generator.bimol_counter == 6
+
+    def test_unimol_flask(self):
+        """
+        Test whether the correct number of unimolecular combinations is probed for a flask
+        """
+        # Connect to test DB
+        manager = db_setup.get_clean_db("chemoton_minimal_unimol_flask")
+        self.custom_setup(manager)
+
+        # Add fake data
+        rr = resources_root_path()
+        cheap_model = db.Model("cheap", "CHEAP", "")
+        for mol in ["ga_complex"]:
+            flask = db.Flask(db.ID(), self._flasks)
+            flask.create([], [])
+            # Adding more structures per flask should not have an effect
+            for i in range(4):
+                graph = json.load(open(os.path.join(rr, mol + ".json"), "r"))
+                structure = db.Structure()
+                structure.link(self._structures)
+                structure.create(os.path.join(rr, mol + ".xyz"), 0, 1)
+                structure.set_label(db.Label.COMPLEX_OPTIMIZED)
+                structure.set_graph("masm_cbor_graph", graph["masm_cbor_graph"])
+                structure.set_graph("masm_idx_map", graph["masm_idx_map"])
+                structure.set_graph("masm_decision_list", str(i))
+                structure.set_model(cheap_model)
+                flask.add_structure(structure.id())
+                structure.set_aggregate(flask.id())
+
+        # Setup gear
+        es_gear = MinimalElementarySteps()
+        es_gear.trial_generator = MockGenerator()
+        es_gear.options.model = cheap_model
+        es_gear.options.enable_unimolecular_trials = True
+        es_gear.options.enable_bimolecular_trials = False
+        es_gear.options.structure_model = cheap_model
+        es_engine = Engine(manager.get_credentials(), fork=False)
+        es_engine.set_gear(es_gear)
+
+        expected_uni = self._sum_unimolecular(es_gear.unimolecular_coordinates(manager.get_credentials()))
+        expected_bi = self._sum_bimolecular(es_gear.bimolecular_coordinates(manager.get_credentials()))
+        es_gear.clear_cache()
+        assert expected_uni == 0  # because we loop over compounds per default
+        assert expected_bi == 0
+
+        es_gear.options.looped_collection = "flasks"
+        es_engine.set_gear(es_gear)
+        expected_uni = self._sum_unimolecular(es_gear.unimolecular_coordinates(manager.get_credentials()))
+        expected_bi = self._sum_bimolecular(es_gear.bimolecular_coordinates(manager.get_credentials()))
+        es_gear.clear_cache()
+        assert expected_uni == 1  # only 1 flask
+        assert expected_bi == 0
+
+        es_gear.options.structure_model = db.Model("expensive", "EXPENSIVE", "")
+
+        # Run a single loop
+        es_engine.run(single=True)
+        # Expected numbers due to model mismatch:
+        # Unimolecular: 0
+        # Bimolecular: 0
+        assert es_gear.trial_generator.unimol_counter == 0
+        assert es_gear.trial_generator.bimol_counter == 0
+
+        # Run again with proper mode
+        es_gear.options.structure_model = cheap_model
+        es_engine.run(single=True)
+
+        # Expected numbers:
+        # Unimolecular: 3 (once for every flask)
+        # Bimolecular: 0
+        assert es_gear.trial_generator.unimol_counter == 1  # only one flask
+        assert es_gear.trial_generator.bimol_counter == 0
+
+        with pytest.raises(ValueError):
+            es_gear.options.looped_collection = "something"

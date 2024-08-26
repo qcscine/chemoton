@@ -20,7 +20,7 @@ from scine_database import test_database_setup as db_setup
 from ...resources import resources_root_path
 
 # Local application imports
-from ....gears.elementary_steps.trial_generator.fast_dissociations import (
+from scine_chemoton.filters.further_exploration_filters import (
     FurtherExplorationFilter,
     AllBarrierLessDissociationsFilter,
     ReactionCoordinateMaxDissociationEnergyFilter

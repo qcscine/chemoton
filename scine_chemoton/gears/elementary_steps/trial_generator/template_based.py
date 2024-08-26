@@ -9,7 +9,7 @@ See LICENSE.txt for details.
 import time
 from collections import defaultdict
 from copy import deepcopy
-from typing import List, Optional, Tuple, Union, Dict
+from typing import List, Optional, Tuple, Union, Dict, Any
 from itertools import combinations
 from scipy.special import comb
 
@@ -68,7 +68,7 @@ class TemplateBased(TrialGenerator):
                 "minimal_spin_multiplicity",
             )
 
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.job: db.Job = db.Job("scine_react_complex_nt2")
                 """
@@ -111,7 +111,7 @@ class TemplateBased(TrialGenerator):
                 "job_settings_disconnective",
             )
 
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.job: db.Job = db.Job("scine_react_complex_nt2")
                 """
@@ -150,7 +150,10 @@ class TemplateBased(TrialGenerator):
                     Empty by default.
                 """
 
-        def __init__(self, parent: Optional[TrialGenerator] = None):
+        unimolecular_options: UnimolOptions
+        bimolecular_options: BimolOptions
+
+        def __init__(self, parent: Optional[TrialGenerator] = None) -> None:
             super().__init__(parent)
             self.unimolecular_options = self.UnimolOptions()
             """
@@ -173,7 +176,7 @@ class TemplateBased(TrialGenerator):
             """
             str
                 Only apply the template if a barrier in the trialed direction of
-                less than this value has been reported, by default 300 (kJ/mol)
+                less than this value has been reported, by default 100 (kJ/mol)
             """
             self.enforce_atom_shapes: bool = True
             """
@@ -182,13 +185,15 @@ class TemplateBased(TrialGenerator):
                 shapes to be considered matching, by default True
             """
 
-    def __init__(self, energy_cutoff=100, enforce_atom_shapes=True):
+    options: Options
+
+    def __init__(self, energy_cutoff: float = 100, enforce_atom_shapes: bool = True) -> None:
         super().__init__()
         self.rtdb = ReactionTemplateDatabase()
         self.__loaded_templates = False
         self.options.energy_cutoff = energy_cutoff
         self.options.enforce_atom_shapes = enforce_atom_shapes
-        self._last_data = {'ids': []}
+        self._last_data: Dict[str, Any] = {'ids': []}
 
     @_sanity_check_wrapper
     def bimolecular_coordinates(self,
@@ -301,10 +306,10 @@ class TemplateBased(TrialGenerator):
 
             filter_result = self.reactive_site_filter.filter_reaction_coordinates(
                 structure_list,
-                list(batch.keys())
+                list(batch.keys())  # type: ignore
             )
             for filtered in filter_result:
-                result[(filtered, n_diss)] = batch[filtered]
+                result[(filtered, n_diss)] = batch[filtered]  # type: ignore
         return result
 
     @_sanity_check_wrapper
@@ -316,7 +321,7 @@ class TemplateBased(TrialGenerator):
 
         Parameters
         ----------
-        structure_list :: List[db.Structure]
+        structure_list : List[db.Structure]
             List of the two structures to be considered.
             The Structures have to be linked to a database.
         """
@@ -357,7 +362,7 @@ class TemplateBased(TrialGenerator):
 
         Parameters
         ----------
-        structure :: db.Structure
+        structure : db.Structure
             The structure to be considered. The Structure has to
             be linked to a database.
         """
@@ -512,7 +517,7 @@ class TemplateBased(TrialGenerator):
         Parameters
         ----------
 
-        reactive_structures :: List[db.ID]
+        reactive_structures : List[db.ID]
             List of the IDs of the reactants.
         association_pairs:: List[Tuple(int, int))]
             List of atom index pairs in between which a bond formation is to be
@@ -520,48 +525,48 @@ class TemplateBased(TrialGenerator):
         dissociation_pairs:: List[Tuple(int, int))]
             List of atom index pairs in between which a bond dissociation is to
             be encouraged.
-        job :: scine_database.Job
-        settings :: scine_utilities.ValueCollection
-        lhs_alignment :: List[float], length=9
+        job : scine_database.Job
+        settings : scine_utilities.ValueCollection
+        lhs_alignment : List[float], length=9
             In case of two structures building the reactive complex, this option
             describes a rotation of the first structure (index 0) that aligns
             the reaction coordinate along the x-axis (pointing towards +x).
             The rotation assumes that the geometric mean position of all
             atoms in the reactive site (``lhs_list``) is shifted into the
             origin.
-        rhs_alignment :: List[float], length=9
+        rhs_alignment : List[float], length=9
             In case of two structures building the reactive complex, this option
             describes a rotation of the second structure (index 1) that aligns
             the reaction coordinate along the x-axis (pointing towards -x).
             The rotation assumes that the geometric mean position of all
             atoms in the reactive site (``rhs_list``) is shifted into the
             origin.
-        x_rotation :: float
+        x_rotation : float
             In case of two structures building the reactive complex, this option
             describes a rotation angle around the x-axis of one of the two
             structures after ``lhs_alignment`` and ``rhs_alignment`` have
             been applied.
-        spread :: float
+        spread : float
             In case of two structures building the reactive complex, this option
             gives the distance by which the two structures are moved apart along
             the x-axis after ``lhs_alignment``, ``rhs_alignment``, and
             ``x_rotation`` have been applied.
-        displacement :: float
+        displacement : float
             In case of two structures building the reactive complex, this option
             adds a random displacement to all atoms (random direction, random
             length). The maximum length of this displacement (per atom) is set to
             be the value of this option.
-        multiplicity :: int
+        multiplicity : int
             This option sets the ``spin_multiplicity`` of the reactive complex.
-        charge :: int
+        charge : int
             This option sets the ``molecular_charge`` of the reactive complex.
-        check_for_existing :: bool
+        check_for_existing : bool
             Whether it should be checked if a calculation with these exact
             settings and model already exists or not (default: False)
 
         Returns
         -------
-        calculation :: scine_database.ID
+        calculation : scine_database.ID
             A calculation that is on hold.
         """
         this_settings = self._get_settings(settings)
@@ -697,7 +702,9 @@ class TemplateBased(TrialGenerator):
                 )
             graph = graph_result.graphs[0]
 
+        # pylint: disable-next=possibly-used-before-assignment
         n_bound_pairs = graph.E if n_reactive_bound_pairs < 0 else n_reactive_bound_pairs
+        # pylint: disable-next=possibly-used-before-assignment
         n_unbound_pairs = n_pairs - graph.E if n_reactive_unbound_pairs < 0 else n_reactive_unbound_pairs
         return n_unbound_pairs, n_bound_pairs
 

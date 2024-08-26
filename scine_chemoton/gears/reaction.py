@@ -31,7 +31,7 @@ class BasicReactionHousekeeping(Gear):
 
     Attributes
     ----------
-    options :: BasicReactionHousekeeping.Options
+    options : BasicReactionHousekeeping.Options
         The options for the BasicReactionHousekeeping Gear.
 
     Notes
@@ -39,12 +39,13 @@ class BasicReactionHousekeeping(Gear):
     Checks for all Elementary Steps without a 'reaction'.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.options = self.Options()
         self._required_collections = ["compounds", "elementary_steps", "flasks", "reactions", "properties",
                                       "structures"]
         self._reaction_cache: Optional[dict] = None
+        self._model_is_required = False
 
     class Options(Gear.Options):
         """
@@ -57,7 +58,7 @@ class BasicReactionHousekeeping(Gear):
                      "energy_tolerance",
                      "rmsd_tolerance")
 
-        def __init__(self):
+        def __init__(self) -> None:
             super().__init__()
             self.use_structure_deduplication = True
             """
@@ -98,6 +99,8 @@ class BasicReactionHousekeeping(Gear):
                 The RMSD tolerance for the transition state RMSD deduplication.
             """
 
+    options: Options
+
     def _loop_impl(self):
         # Setup query for elementary steps without reactions
         selection = {"$and": [
@@ -111,7 +114,7 @@ class BasicReactionHousekeeping(Gear):
         for step in stop_on_timeout(self._elementary_steps.iterate_elementary_steps(dumps(selection))):
             step.link(self._elementary_steps)
             reactants = step.get_reactants(db.Side.BOTH)
-            if self.stop_at_next_break_point:
+            if self.have_to_stop_at_next_break_point():
                 return
 
             # Determine structure types
@@ -128,16 +131,12 @@ class BasicReactionHousekeeping(Gear):
                     if not structure.has_aggregate():
                         all_structures_have_aggregates = False
                         break
-                    else:
-                        aggregates[i].append(structure.get_aggregate())
-                    # check label
-                    label = structure.get_label()
-                    if label in [db.Label.MINIMUM_OPTIMIZED, db.Label.USER_OPTIMIZED, db.Label.DUPLICATE]:
-                        types[i].append(db.CompoundOrFlask.COMPOUND)
-                    elif label == db.Label.COMPLEX_OPTIMIZED or label == db.Label.USER_COMPLEX_OPTIMIZED:
-                        types[i].append(db.CompoundOrFlask.FLASK)
-                    else:
-                        raise RuntimeError(f"Structure label '{str(label)}' is not supported for aggregation.")
+                    if not structure.has_graph("masm_cbor_graph"):
+                        raise RuntimeError(f"The Structure {str(structure.id())} has an aggregate, but no graph")
+                    graph = structure.get_graph("masm_cbor_graph")
+                    agg_type = db.CompoundOrFlask.FLASK if ";" in graph else db.CompoundOrFlask.COMPOUND
+                    types[i].append(agg_type)
+                    aggregates[i].append(structure.get_aggregate())
             if not all_structures_have_aggregates:
                 continue
 
@@ -156,6 +155,8 @@ class BasicReactionHousekeeping(Gear):
                 self._disable_barrierless_if_mixed_types_in_reaction(reaction, step)
                 reaction.add_elementary_step(step.id())
                 step.set_reaction(reaction.id())
+                reaction.enable_exploration()
+                reaction.enable_analysis()
                 continue
             # Generate new reaction
             reaction = db.Reaction(db.ID(), self._reactions)
@@ -214,7 +215,7 @@ class BasicReactionHousekeeping(Gear):
         elementary_step.set_reactants(unique_lhs, db.Side.LHS)
         elementary_step.set_reactants(unique_rhs, db.Side.RHS)
 
-    def _make_unique_structure_id_list(self, id_list):
+    def _make_unique_structure_id_list(self, id_list: List[db.ID]) -> List[db.ID]:
         unique_list: List[db.ID] = list()
         for s_id in id_list:
             structure = db.Structure(s_id, self._structures)
@@ -271,7 +272,7 @@ class BasicReactionHousekeeping(Gear):
             warn(f"Found barrierless and regular elementary step for identical reaction {str(reaction.id())}. "
                  f"We are now disabling all barrierless steps in this reaction.")
             new_type = new_step.get_type()
-            barrierless_types = [db.ElementaryStepType.BARRIERLESS, db.ElementaryStepType.MODEL_TRANSFORMATION]
+            barrierless_types = [db.ElementaryStepType.BARRIERLESS]
             if new_type in barrierless_types:
                 # new is barrierless, first enabled was regular, hence we should not need to check all steps of reaction
                 new_step.disable_exploration()

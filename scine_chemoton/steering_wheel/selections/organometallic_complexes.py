@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
 Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
@@ -10,9 +11,10 @@ import scine_database as db
 
 from . import SafeFirstSelection
 from ..datastructures import SelectionResult, LogicCoupling
-from scine_chemoton.gears.elementary_steps.aggregate_filters import AggregateFilter, CatalystFilter
-from scine_chemoton.gears.elementary_steps.reactive_site_filters import ReactiveSiteFilter, CentralSiteFilter
-from scine_chemoton.gears.elementary_steps.trial_generator.fast_dissociations import FurtherExplorationFilterAndArray
+from scine_chemoton.filters.aggregate_filters import AggregateFilter, CatalystFilter
+from scine_chemoton.filters.reactive_site_filters import ReactiveSiteFilter, CentralSiteFilter
+from scine_chemoton.filters.further_exploration_filters import \
+    FurtherExplorationFilterAndArray
 
 
 class CentralMetalSelection(SafeFirstSelection):
@@ -29,7 +31,7 @@ class CentralMetalSelection(SafeFirstSelection):
             self.ligand_without_metal_reactive = ligand_without_metal_reactive
             self.additional_catalyst_elements = additional_catalyst_elements
 
-    options: Options  # required for mypy checks, so it knows which options object to check
+    options: CentralMetalSelection.Options  # required for mypy checks, so it knows which options object to check
 
     def __init__(self, model: db.Model,  # pylint: disable=keyword-arg-before-vararg
                  central_metal_species: str,

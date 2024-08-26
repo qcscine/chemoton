@@ -15,7 +15,7 @@ def resources_root_path():
 
     Returns
     -------
-    result :: str
+    result : str
         The path to the root directory of the test resources.
     """
     return pathlib.Path(__file__).parent.absolute()

@@ -504,11 +504,14 @@ class PathfinderTests(unittest.TestCase, HoldsCollections):
         assert finder.start_compounds == n_compounds[0:2]
         assert finder.compound_costs == start_conditions
 
+        # Check extraction of connected subgraph, second reaction should not be in it anymore
+        connected_subgraph = finder.extract_connected_graph(list(start_conditions.keys()))
+        assert len(connected_subgraph.nodes) == 5
+        assert n_compounds[3] not in list(connected_subgraph.nodes)
+        assert n_rxn_nodes[2] not in list(connected_subgraph.nodes)
+
         # Check successful attempt for determining compound costs, the third compound has the cost of 1 + 0.4 + 0.7
         finder.calculate_compound_costs()
-        out, _ = self.capsys.readouterr()
-        assert "Removing " + n_compounds[3] + " from compounds to check.\n" in out
-        assert "Removing " + n_compounds[4] + " from compounds to check.\n" in out
         assert finder.compound_costs_solved is False
         assert finder.compound_costs[n_compounds[2]] == 1.0 + 0.4 + 0.7
 

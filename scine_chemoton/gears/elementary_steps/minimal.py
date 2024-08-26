@@ -6,7 +6,7 @@ See LICENSE.txt for details.
 """
 
 # Standard library imports
-from typing import List
+from typing import List, Union
 
 # Third party imports
 import scine_database as db
@@ -20,24 +20,21 @@ class MinimalElementarySteps(ElementaryStepGear):
     """
     This Gear probes Reactions by trying to react
 
-    1. one Structure of each compound with one Structure of each other compound
+    1. one Structure of each aggregate with one Structure of each other aggregate
        (intermolecular reactions)
-    2. one Structure with itself intramoleculary for each compound.
+    2. one Structure with itself intramoleculary for each aggregate.
 
     For each combination multiple arrangements (possible Elementary Steps) will
     be tested.
 
-    This Gear does not consider Flasks/Complexes as reactive, they are not probed
-    for elementary steps.
-
     Attributes
     ----------
-    options :: MinimalElementarySteps.Options
+    options : MinimalElementarySteps.Options
         The options for the MinimalElementarySteps Gear.
-    aggregate_filter :: scine_chemoton.gears.elementary_steps.aggregate_filters.AggregateFilter
+    aggregate_filter : scine_chemoton.gears.elementary_steps.aggregate_filters.AggregateFilter
         A filter for allowed reaction combinations, per default everything
         is permitted, no filter is applied.
-    trial_generator :: TrialGenerator
+    trial_generator : TrialGenerator
         The generator to set up elementary step trial calculations by enumerating
         reactive complexes and trial reaction coordinates
 
@@ -52,11 +49,11 @@ class MinimalElementarySteps(ElementaryStepGear):
         structures with the same job order
     b. for unimolecular reactions: checking whether there is already a
         calculation to search for an intramolecular reaction of the same
-        structure  with the same job order
+        structure with the same job order
     """
 
-    def _get_eligible_structures(self, compound: db.Compound) -> List[db.ID]:
-        for sid in compound.get_structures():
+    def _get_eligible_structures(self, aggregate: Union[db.Compound, db.Flask]) -> List[db.ID]:
+        for sid in aggregate.get_structures():
             structure = db.Structure(sid, self._structures)
             # Model check if structure model is set to None
             if not self._check_structure_model(structure):

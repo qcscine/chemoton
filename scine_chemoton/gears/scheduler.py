@@ -28,7 +28,7 @@ class Scheduler(Gear):
 
     Attributes
     ----------
-    options :: Scheduler.Options
+    options : Scheduler.Options
         The options for the Scheduler Gear.
 
     Notes
@@ -48,25 +48,27 @@ class Scheduler(Gear):
 
         __slots__ = ("job_counts", "job_priorities")
 
-        def __init__(self):
+        def __init__(self) -> None:
             super().__init__()
             self.job_counts: Dict[str, int] = {
-                "scine_geometry_optimization": 50,
-                "scine_ts_optimization": 50,
-                "scine_single_point": 50,
-                "scine_bond_orders": 50,
-                "graph": 100,
-                "scine_hessian": 10,
-                "scine_react_complex_afir": 10,
-                "scine_react_complex_nt": 10,
-                "scine_react_complex_nt2": 10,
-                "scine_step_refinement": 10,
-                "scine_dissociation_cut": 10,
-                "conformers": 2,
-                "final_conformer_deduplication": 2,
+                "scine_geometry_optimization": 5000,
+                "scine_ts_optimization": 5000,
+                "scine_single_point": 5000,
+                "scine_bond_orders": 5000,
+                "graph": 10000,
+                "scine_hessian": 1000,
+                "scine_react_complex_afir": 1000,
+                "scine_react_complex_nt": 1000,
+                "scine_react_complex_nt2": 1000,
+                "scine_react_ts_guess": 1000,
+                "scine_step_refinement": 1000,
+                "scine_dissociation_cut": 1000,
+                "conformers": 200,
+                "final_conformer_deduplication": 200,
                 "kinetx_kinetic_modeling": 1,
                 "rms_kinetic_modeling": 1,
-                "scine_bspline_optimization_job": 50,
+                "scine_bspline_optimization": 5000,
+                "scine_reoptimization": 5000
             }
             """
             Dict[str, int]
@@ -83,13 +85,15 @@ class Scheduler(Gear):
                 "scine_react_complex_afir": 5,
                 "scine_react_complex_nt": 5,
                 "scine_react_complex_nt2": 5,
+                "scine_react_ts_guess": 5,
                 "scine_step_refinement": 5,
                 "scine_dissociation_cut": 5,
                 "conformers": 2,
                 "final_conformer_deduplication": 2,
                 "kinetx_kinetic_modeling": 1,
                 "rms_kinetic_modeling": 1,
-                "scine_bspline_optimization_job": 5
+                "scine_bspline_optimization": 5,
+                "scine_reoptimization": 5
             }
             """
             Dict[str, int]
@@ -99,9 +103,12 @@ class Scheduler(Gear):
                 The possible range of numbers is 1 to 10.
             """
 
-    def __init__(self):
+    options: Options
+
+    def __init__(self) -> None:
         super().__init__()
         self._required_collections = ["calculations"]
+        self._model_is_required = False
 
     def _loop_impl(self):
         self._options_sanity_check()
@@ -129,7 +136,7 @@ class Scheduler(Gear):
             selection = {"$and": [{"status": "hold"}, {"job.order": order}]}
             diff = self.options.job_counts[order] - hits
             for calculation in stop_on_timeout(self._calculations.iterate_calculations(dumps(selection))):
-                if self.stop_at_next_break_point:
+                if self.have_to_stop_at_next_break_point():
                     return
                 calculation.link(self._calculations)
                 # Sleep a bit in order not to make the DB choke
@@ -139,7 +146,7 @@ class Scheduler(Gear):
                 diff -= 1
                 if diff <= 0:
                     break
-            if self.stop_at_next_break_point:
+            if self.have_to_stop_at_next_break_point():
                 return
 
     def _options_sanity_check(self):

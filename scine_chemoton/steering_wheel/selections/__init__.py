@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
 Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
@@ -11,22 +12,30 @@ from typing import Callable, List, Optional, Set, Union
 import scine_database as db
 from scine_database.energy_query_functions import get_barriers_for_elementary_step_by_type
 
-from scine_chemoton.gears.elementary_steps.aggregate_filters import (
+from scine_chemoton.filters.aggregate_filters import (
     AggregateFilter,
     AggregateFilterAndArray,
     AggregateFilterOrArray
 )
-from scine_chemoton.gears.elementary_steps.reactive_site_filters import (
+from scine_chemoton.filters.reactive_site_filters import (
     ReactiveSiteFilter,
     ReactiveSiteFilterAndArray,
     ReactiveSiteFilterOrArray,
 )
-from scine_chemoton.gears.elementary_steps.trial_generator.fast_dissociations import (
+from scine_chemoton.filters.further_exploration_filters import (
     FurtherExplorationFilterAndArray,
-    FurtherExplorationFilterOrArray
+    FurtherExplorationFilterOrArray,
 )
 from scine_chemoton.utilities import connect_to_db
-from ..datastructures import NetworkExpansionResult, SelectionResult, ExplorationSchemeStep, Status, LogicCoupling
+from ..datastructures import (
+    NetworkExpansionResult,
+    SelectionResult,
+    ExplorationSchemeStep,
+    Status,
+    LogicCoupling,
+    NoRestartInfoPresent,
+    RestartPartialExpansionInfo
+)
 
 
 def status_wrap(fun: Callable):
@@ -35,9 +44,9 @@ def status_wrap(fun: Callable):
     and to finished after the function has finished.
     """
     @wraps(fun)
-    def _impl(self, *args):
+    def _impl(self, *args, **kwargs):
         self.status = Status.CALCULATING
-        result = fun(self, *args)
+        result = fun(self, *args, **kwargs)
         if self.status != Status.FAILED:
             self.status = Status.FINISHED
         return result
@@ -50,16 +59,18 @@ class Selection(ExplorationSchemeStep, metaclass=ABCMeta):
     The base class for selecting aggregates, individual structures, and/or reactive sites.
     It specifies the common __call__ execution and holds 1 abstract methods that
     must be implemented by each implementation.
-    Additionally it holds some common functionalities for querying
+    Additionally, it holds some common functionalities for querying
     to simplify future implementation of new selections.
     """
+
+    options: Selection.Options
 
     def __init__(self, model: db.Model,  # pylint: disable=keyword-arg-before-vararg
                  additional_aggregate_filters: Optional[List[AggregateFilter]] = None,
                  additional_reactive_site_filters: Optional[List[ReactiveSiteFilter]] = None,
                  logic_coupling: Union[str, LogicCoupling] = LogicCoupling.AND,
                  *args, **kwargs
-                 ):
+                 ) -> None:
         """
         Initialize the selection with the given parameters.
 
@@ -69,10 +80,10 @@ class Selection(ExplorationSchemeStep, metaclass=ABCMeta):
             The model to use for the selection.
         additional_aggregate_filters : Optional[List[AggregateFilter]], optional
             An optional list of aggregate filters to further limit selection. They are combined by an 'and' logic step.
-            By default None.
+            By default, None.
         additional_reactive_site_filters : Optional[List[ReactiveSiteFilter]], optional
             An optional list of reactive site filters to further limit selection. They are combined by an 'and' logic
-            step. By default None
+            step. By default, None
         logic_coupling : Union[str, LogicCoupling], optional
             Define how this selection may be coupled together with other selections, by default LogicCoupling.AND
         """
@@ -108,9 +119,24 @@ class Selection(ExplorationSchemeStep, metaclass=ABCMeta):
     def set_step_result(self, step_result: Optional[NetworkExpansionResult]) -> None:
         self._step_result = step_result
 
+    def _not_implemented_arguments_sanity_check(
+            self,
+            notify_partial_steps_callback:
+            Optional[Callable[[Union[NoRestartInfoPresent, RestartPartialExpansionInfo]], None]] = None,
+            restart_information: Optional[RestartPartialExpansionInfo] = None) -> None:
+        if notify_partial_steps_callback is not None:
+            raise NotImplementedError("The notify_partial_steps_callback is not implemented for Selections.")
+        if restart_information is not None:
+            raise NotImplementedError("The restart_information is not implemented for Selections.")
+
     @status_wrap
-    def __call__(self, credentials: db.Credentials, step_result: Optional[NetworkExpansionResult] = None) \
+    def __call__(self, credentials: db.Credentials, step_result: Optional[NetworkExpansionResult] = None,
+                 notify_partial_steps_callback: Optional[
+                     Callable[[Union[
+                         NoRestartInfoPresent, RestartPartialExpansionInfo]], None]] = None,
+                 restart_information: Optional[RestartPartialExpansionInfo] = None) \
             -> SelectionResult:
+        self._not_implemented_arguments_sanity_check(notify_partial_steps_callback, restart_information)
         manager = connect_to_db(credentials)
         self.initialize_collections(manager)
         if step_result is not None:
@@ -214,11 +240,13 @@ class PredeterminedSelection(SafeFirstSelection):
     A selection that is predetermined by the user.
     """
 
+    options: PredeterminedSelection.Options
+
     def __init__(self, model: db.Model, result: SelectionResult,  # pylint: disable=keyword-arg-before-vararg
                  additional_aggregate_filters: Optional[List[AggregateFilter]] = None,
                  additional_reactive_site_filters: Optional[List[ReactiveSiteFilter]] = None,
                  logic_coupling: Union[str, LogicCoupling] = LogicCoupling.AND,
-                 *args, **kwargs):
+                 *args, **kwargs) -> None:
         super().__init__(model, additional_aggregate_filters, additional_reactive_site_filters, logic_coupling,
                          *args, **kwargs)
         self._result = result
@@ -239,7 +267,9 @@ class _MultipleSelections(Selection, ABC):
     * It is not possible to use this class directly, but it should be inherited from.
     """
 
-    def __init__(self, selections: List[Selection], *args, **kwargs):
+    options: _MultipleSelections.Options
+
+    def __init__(self, selections: List[Selection], *args, **kwargs) -> None:
         if not selections:
             raise TypeError(f"Cannot give empty list of selections to {self.__class__.__name__}")
         super().__init__(selections[0].options.model, *args, **kwargs)
@@ -303,13 +333,19 @@ class SelectionAndArray(_MultipleSelections):
     Combines multiple selections with a logical AND.
     """
 
-    def __init__(self, selections: List[Selection], *args, **kwargs):
+    options: SelectionAndArray.Options
+
+    def __init__(self, selections: List[Selection], *args, **kwargs) -> None:
         super().__init__(selections, *args, **kwargs)
         self.name = "AndSelection[" + ("-".join(s.name for s in selections)) + "]"
 
     @status_wrap
-    def __call__(self, credentials: db.Credentials, step_result: Optional[NetworkExpansionResult] = None) \
+    def __call__(self, credentials: db.Credentials, step_result: Optional[NetworkExpansionResult] = None,
+                 notify_partial_steps_callback: Optional[
+                     Callable[[Union[NoRestartInfoPresent, RestartPartialExpansionInfo]], None]] = None,
+                 restart_information: Optional[RestartPartialExpansionInfo] = None) \
             -> SelectionResult:
+        self._not_implemented_arguments_sanity_check(notify_partial_steps_callback, restart_information)
         results = self._call_selections(credentials, step_result)
         structures = self._combine_structures(results)
         return SelectionResult(
@@ -334,13 +370,20 @@ class SelectionOrArray(_MultipleSelections):
     Combines multiple selections with a logical OR.
     """
 
-    def __init__(self, selections: List[Selection], *args, **kwargs):
+    options: SelectionOrArray.Options
+
+    def __init__(self, selections: List[Selection], *args, **kwargs) -> None:
         super().__init__(selections, *args, **kwargs)
         self.name = "OrSelection[" + ("-".join(s.name for s in selections)) + "]"
 
     @status_wrap
-    def __call__(self, credentials: db.Credentials, step_result: Optional[NetworkExpansionResult] = None) \
+    def __call__(self, credentials: db.Credentials, step_result: Optional[NetworkExpansionResult] = None,
+                 notify_partial_steps_callback: Optional[
+                     Callable[[Union[
+                         NoRestartInfoPresent, RestartPartialExpansionInfo]], None]] = None,
+                 restart_information: Optional[RestartPartialExpansionInfo] = None) \
             -> SelectionResult:
+        self._not_implemented_arguments_sanity_check(notify_partial_steps_callback, restart_information)
         results = self._call_selections(credentials, step_result)
         structures = self._combine_structures(results)
         return SelectionResult(

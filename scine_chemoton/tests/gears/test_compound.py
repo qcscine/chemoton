@@ -463,11 +463,13 @@ class CompoundTests(unittest.TestCase, HoldsCollections):
         graph_2 = ("pGFhgqRhYQBhYwJhcqNhbIKBAYEDYmxygoEAgQFhc4KBAYEDYXMBpGFhAGFjA2"
                    "Fyo2FsgoEAgQJibHKCgQCBAWFzgoEAgQJhcwFhYw9hZ6JhRYODAAMAgwECAIMC"
                    "AwBhWoQBAQgIYXaDAQAA")
+        dl_1 = "(10,30,40,1)"
+        dl_2 = "(10,30,40,1):(1, 3, 5, 8)"
         structure_1.set_graph("masm_cbor_graph", graph_1)
-        structure_1.set_graph("masm_decision_list", "(10,30,40,1)")
+        structure_1.set_graph("masm_decision_list", dl_1)
         structure_1.set_graph("masm_idx_map", "(0, 0), (0, 1), (0, 2)")
         structure_2.set_graph("masm_cbor_graph", graph_2)
-        structure_2.set_graph("masm_decision_list", "(10,30,40,1):(1, 3, 5, 8)")
+        structure_2.set_graph("masm_decision_list", dl_2)
         structure_2.set_graph("masm_idx_map", "(0, 0), (0, 1), (0, 2)")
 
         # Add structure data
@@ -479,6 +481,7 @@ class CompoundTests(unittest.TestCase, HoldsCollections):
         structure.set_label(db.Label.COMPLEX_OPTIMIZED)
         structure.set_graph("masm_cbor_graph", graph_1 + ";" + graph_2)
         structure.set_graph("masm_idx_map", "(0, 0), (0, 1), (0, 2), (1, 3), (1, 4), (1, 5)")
+        structure.set_graph("masm_decision_list", dl_1 + ";" + dl_2)
 
         # Setup gear
         compound_gear = BasicAggregateHousekeeping()
@@ -514,6 +517,7 @@ class CompoundTests(unittest.TestCase, HoldsCollections):
                    "Aw8AgwQOAIMFDgCDBg0AgwcNAIMIDACDCQwAgwoLAYMKDQCDCwwAgwwPAIMNDgCDDg8AYVqQ"
                    "AQEBAQEBAQEBAQYGBgYGBmF2gwEAAA==")
         structure.set_graph("masm_cbor_graph", graph_1 + ";" + graph_3)
+        structure.set_graph("masm_decision_list", dl_1 + ";" + dl_2)
         structure.set_graph("masm_idx_map", "(0, 0), (0, 1), (0, 2), (1, 3), (1, 4), (1, 5)")
         compound_engine.run(single=True)
         assert self._flasks.count(dumps({})) == 2

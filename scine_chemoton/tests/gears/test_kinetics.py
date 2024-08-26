@@ -15,6 +15,7 @@ from json import dumps
 # Third party imports
 import scine_database as db
 from scine_database import test_database_setup as db_setup
+import scine_utilities as utils
 
 # Local application tests imports
 from ...gears import HoldsCollections
@@ -23,7 +24,11 @@ from ...gears import HoldsCollections
 from ..resources import resources_root_path
 from ...engine import Engine
 from ...gears.kinetics import MinimalConnectivityKinetics, BasicBarrierHeightKinetics, MaximumFluxKinetics, \
-    PathfinderKinetics
+    PathfinderKinetics, ReactionFilterBasedKinetics
+
+from scine_chemoton.filters.reaction_filters import MaximumTransitionStateEnergyFilter
+from scine_chemoton.utilities.model_combinations import ModelCombination
+from scine_chemoton.utilities.db_object_wrappers.wrapper_caches import MultiModelCacheFactory
 
 
 class KineticsTests(unittest.TestCase, HoldsCollections):
@@ -64,10 +69,11 @@ class KineticsTests(unittest.TestCase, HoldsCollections):
 
         kinetics_gear = MinimalConnectivityKinetics()  # activate all compounds
         kinetics_gear.options.restart = True
+        kinetics_gear.options.stop_if_no_new_aggregates_are_activated = True
         kinetics_engine = Engine(manager.get_credentials(), fork=False)
         kinetics_engine.set_gear(kinetics_gear)
-        for _ in range(n_reactions):  # should be faster, but ensures that iterative procedure goes through
-            kinetics_engine.run(single=True)
+        # run indefinitely, but gear can stop itself if nothing new is activated
+        kinetics_engine.run()
 
         selection = {"exploration_disabled": {"$ne": True}}
         assert self._compounds.count(dumps(selection)) == n_compounds
@@ -138,62 +144,67 @@ class KineticsTests(unittest.TestCase, HoldsCollections):
         c1_id, s1_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.USER_GUESS)
         c2_id, s2_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.MINIMUM_GUESS)
 
-        # set up step between compounds
-        step = db.ElementaryStep()
-        step.link(self._elementary_steps)
-        step.create([s1_id], [s2_id])
+        for lhs_to_rhs in [True, False]:
 
-        # set up TS and energies
-        db_setup.add_random_energy(db.Structure(s1_id, self._structures), (0.0, 1.0), self._properties)
-        db_setup.add_random_energy(db.Structure(s2_id, self._structures), (50.0, 51.0), self._properties)
-        ts = db.Structure(db_setup.insert_single_empty_structure_aggregate(manager, db.Label.TS_GUESS)[1])
-        ts.link(self._structures)
-        ts_prop_id = db_setup.add_random_energy(ts, (70.0, 71.0), self._properties)
-        step.set_transition_state(ts.get_id())
+            # set up step between compounds
+            step = db.ElementaryStep()
+            step.link(self._elementary_steps)
+            if lhs_to_rhs:
+                step.create([s1_id], [s2_id])
+            else:
+                step.create([s2_id], [s1_id])
 
-        # set up reaction
-        reaction = db.Reaction()
-        reaction.link(self._reactions)
-        reaction.create([c1_id], [c2_id])
-        reaction.set_elementary_steps([step.get_id()])
-        compound_1 = db.Compound(c1_id)
-        compound_2 = db.Compound(c2_id)
-        compound_1.link(self._compounds)
-        compound_2.link(self._compounds)
-        compound_1.set_reactions([reaction.get_id()])
-        compound_2.set_reactions([reaction.get_id()])
+            # set up TS and energies
+            db_setup.add_random_energy(db.Structure(s1_id, self._structures), (0.0, 1.0), self._properties)
+            db_setup.add_random_energy(db.Structure(s2_id, self._structures), (50.0, 51.0), self._properties)
+            ts = db.Structure(db_setup.insert_single_empty_structure_aggregate(manager, db.Label.TS_GUESS)[1],
+                              self._structures)
+            ts_prop_id = db_setup.add_random_energy(ts, (70.0, 71.0), self._properties)
+            step.set_transition_state(ts.get_id())
 
-        # run barrier filter gear
-        kinetics_gear = BasicBarrierHeightKinetics()
-        kinetics_gear.options.model = db.Model("FAKE", "FAKE", "F-AKE")
-        kinetics_gear.options.restart = True
-        kinetics_gear.options.max_allowed_barrier = 100.0
-        kinetics_engine = Engine(manager.get_credentials(), fork=False)
-        kinetics_engine.set_gear(kinetics_gear)
-        for _ in range(2):
-            kinetics_engine.run(single=True)
+            # set up reaction
+            reaction = db.Reaction()
+            reaction.link(self._reactions)
+            if lhs_to_rhs:
+                reaction.create([c1_id], [c2_id])
+            else:
+                reaction.create([c2_id], [c1_id])
+            reaction.set_elementary_steps([step.get_id()])
+            compound_1 = db.Compound(c1_id, self._compounds)
+            compound_2 = db.Compound(c2_id, self._compounds)
+            compound_1.set_reactions([reaction.get_id()])
+            compound_2.set_reactions([reaction.get_id()])
 
-        assert compound_1.explore() and compound_2.explore()
+            # run barrier filter gear
+            kinetics_gear = BasicBarrierHeightKinetics()
+            kinetics_gear.options.model = db.Model("FAKE", "FAKE", "F-AKE")
+            kinetics_gear.options.restart = True
+            kinetics_gear.options.max_allowed_barrier = 100.0
+            kinetics_engine = Engine(manager.get_credentials(), fork=False)
+            kinetics_engine.set_gear(kinetics_gear)
+            for _ in range(2):
+                kinetics_engine.run(single=True)
 
-        # make barrier too high
-        ts_prop = db.NumberProperty(ts_prop_id)
-        ts_prop.link(self._properties)
-        ts_prop.set_data(110.0)
+            assert compound_1.explore() and compound_2.explore()
 
-        # No change expected, will be run from cache
-        kinetics_gear.options.restart = True
-        kinetics_engine.set_gear(kinetics_gear)
-        for _ in range(2):
-            kinetics_engine.run(single=True)
-        assert compound_1.explore() and compound_2.explore()
+            # make barrier too high
+            ts_prop = db.NumberProperty(ts_prop_id, self._properties)
+            ts_prop.set_data(110.0)
 
-        # Reset cache -> change expected
-        kinetics_gear.options.restart = True
-        kinetics_gear.clear_cache()
-        kinetics_engine.set_gear(kinetics_gear)
-        for _ in range(2):
-            kinetics_engine.run(single=True)
-        assert compound_1.explore() and not compound_2.explore()
+            # No change expected, will be run from cache
+            kinetics_gear.options.restart = True
+            kinetics_engine.set_gear(kinetics_gear)
+            for _ in range(2):
+                kinetics_engine.run(single=True)
+            assert compound_1.explore() and compound_2.explore()
+
+            # Reset cache -> change expected
+            kinetics_gear.options.restart = True
+            kinetics_gear.clear_cache()
+            kinetics_engine.set_gear(kinetics_gear)
+            for _ in range(2):
+                kinetics_engine.run(single=True)
+            assert compound_1.explore() and not compound_2.explore()
 
     def test_barrier_limit_with_barrierless(self):
         manager = db_setup.get_clean_db("chemoton_test_barrier_limit_barrierless")
@@ -356,14 +367,10 @@ class KineticsTests(unittest.TestCase, HoldsCollections):
         # set up concentration properties
         kinetics_gear = MaximumFluxKinetics()
         concentration_label = kinetics_gear.options.property_label
-        flux_label = kinetics_gear.options.flux_property_label
         model = db.Model("FAKE", "FAKE", "F-AKE")
         conc_prop1 = db.NumberProperty.make(concentration_label, model, 100, self._properties)
         conc_prop2 = db.NumberProperty.make(concentration_label, model, 100, self._properties)
-        flux_prop1 = db.NumberProperty.make(flux_label, model, 100, self._properties)
         s1.add_property(concentration_label, conc_prop1.id())
-        s1.add_property(flux_label, flux_prop1.id())
-        flux_prop1.set_structure(s1_id)
 
         # run barrier filter gear
         kinetics_gear.options.model = model
@@ -511,7 +518,7 @@ class KineticsTests(unittest.TestCase, HoldsCollections):
                                                      ([cmp_struct_dict[4]["c"]], [cmp_struct_dict[5]["c"]]))
         # Insert Reaction B + C = F
         self._insert_single_elementary_step_reaction(([cmp_struct_dict[2]["s"], cmp_struct_dict[3]["s"]],
-                                                     [s1_flask_id]), ([-110.0, -90.0], [-220.0]), -270.0,
+                                                      [s1_flask_id]), ([-110.0, -90.0], [-220.0]), -270.0,
                                                      ([cmp_struct_dict[2]["c"], cmp_struct_dict[3]["c"]], [f1_id]),
                                                      ([], [db.CompoundOrFlask.FLASK]))
 
@@ -594,6 +601,130 @@ class KineticsTests(unittest.TestCase, HoldsCollections):
         # Check ratio to be overwritten
         assert (kinetics_gear._old_ratio - 12 / 6) < 1e-12
 
+    def test_reverse_reaction(self):
+        # make sure that it does not matter on which side to-be-activated compounds are
+        manager = db_setup.get_clean_db("chemoton_test_reverse_reaction")
+        self.custom_setup(manager)
+        # Set up 1 compounds
+        c1_id, s1_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.USER_OPTIMIZED)
+        f1_id, s1_flask_id = db_setup.insert_single_empty_structure_flask(manager, db.Label.COMPLEX_OPTIMIZED)
+        c2_id, s2_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.MINIMUM_OPTIMIZED)
+        c3_id, s3_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.MINIMUM_OPTIMIZED)
+        c4_id, s4_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.MINIMUM_OPTIMIZED)
+        c5_id, s5_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.MINIMUM_OPTIMIZED)
+        c6_id, s6_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.MINIMUM_OPTIMIZED)
+
+        """
+        def _insert_single_elementary_step_reaction(self,
+                                                    s_ids: Tuple[List[db.ID],
+                                                    List[db.ID]],
+                                                    s_energies: Tuple[List[float],
+                                                    List[float]],
+                                                    ts_energy,
+                                                    c_ids: Tuple[List[db.ID],
+                                                    List[db.ID]],
+                                                    c_types: Tuple[List[db.CompoundOrFlask],
+                                                    List[db.CompoundOrFlask]] = ([],
+                                                                                 [])):
+        """
+
+        # Insert Reaction 1 + 1 -> f1
+        self._insert_single_elementary_step_reaction(([s1_id, s1_id], [s1_flask_id]),
+                                                     ([-100.0, -100.0], [-110.0]), -70.0,
+                                                     ([c1_id, c1_id], [f1_id]),
+                                                     ([db.CompoundOrFlask.COMPOUND, db.CompoundOrFlask.COMPOUND],
+                                                      [db.CompoundOrFlask.FLASK]))
+        # Insert Reaction f1 -> c2
+        self._insert_single_elementary_step_reaction(([s1_flask_id], [s2_id]),
+                                                     ([-110.0], [-100.0]), -70.0,
+                                                     ([f1_id], [c2_id]),
+                                                     ([db.CompoundOrFlask.FLASK], [db.CompoundOrFlask.COMPOUND]))
+        # Insert Reaction c3 -> c2, c2
+        self._insert_single_elementary_step_reaction(([s3_id], [s2_id, s2_id]),
+                                                     ([-90.0], [-100.0, -100.0]), -70.0,
+                                                     ([c3_id], [c2_id, c2_id]),
+                                                     ([db.CompoundOrFlask.COMPOUND],
+                                                      [db.CompoundOrFlask.COMPOUND, db.CompoundOrFlask.COMPOUND]))
+        # Insert Reaction c3 -> c4
+        self._insert_single_elementary_step_reaction(([s3_id], [s4_id]),
+                                                     ([-90.0], [-100.0]), -70.0,
+                                                     ([c3_id], [c4_id]),
+                                                     ([db.CompoundOrFlask.COMPOUND], [db.CompoundOrFlask.COMPOUND]))
+        # Insert Reaction c5 -> c6
+        self._insert_single_elementary_step_reaction(([s5_id], [s6_id]),
+                                                     ([-90.0], [-100.0]), -70.0,
+                                                     ([c5_id], [c6_id]),
+                                                     ([db.CompoundOrFlask.COMPOUND], [db.CompoundOrFlask.COMPOUND]))
+
+        # Set up gear
+        kinetics_gear = MinimalConnectivityKinetics()
+        kinetics_gear.options.restart = True
+        kinetics_gear.options.model = db.Model("FAKE", "FAKE", "F-AKE")
+        # Setup engine
+        kinetics_engine = Engine(manager.get_credentials(), fork=False)
+        kinetics_engine.set_gear(kinetics_gear)
+        # Run engine
+        for _ in range(5):
+            kinetics_engine.run(single=True)
+
+        assert db.Compound(c1_id, self._compounds).explore()
+        assert db.Flask(f1_id, self._flasks).explore()
+        assert db.Compound(c2_id, self._compounds).explore()
+        assert db.Compound(c3_id, self._compounds).explore()
+        assert db.Compound(c4_id, self._compounds).explore()
+        assert not db.Compound(c5_id, self._compounds).explore()
+
+    def test_reaction_filter_based_kinetics(self):
+        manager = db_setup.get_clean_db("chemoton_test_reaction_filter_based_kinetics")
+        self.custom_setup(manager)
+        MultiModelCacheFactory().clear()
+
+        # Set up 1 compounds
+        c1_id, s1_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.USER_OPTIMIZED)
+        f1_id, s1_flask_id = db_setup.insert_single_empty_structure_flask(manager, db.Label.COMPLEX_OPTIMIZED)
+        c2_id, s2_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.MINIMUM_OPTIMIZED)
+        c3_id, s3_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.MINIMUM_OPTIMIZED)
+        c4_id, s4_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.MINIMUM_OPTIMIZED)
+
+        model = db.Structure(s1_id, self._structures).get_model()
+        # Insert Reaction 1 + 1 -> f1
+        self._insert_single_elementary_step_reaction(([s1_id, s1_id], [s1_flask_id]),
+                                                     ([-100.0, -100.0], [-110.0]), -70.0,
+                                                     ([c1_id, c1_id], [f1_id]),
+                                                     ([db.CompoundOrFlask.COMPOUND, db.CompoundOrFlask.COMPOUND],
+                                                      [db.CompoundOrFlask.FLASK]))
+        # Insert Reaction f1 -> c2
+        self._insert_single_elementary_step_reaction(([s1_flask_id], [s2_id]),
+                                                     ([-110.0], [-100.0]), -70.0,
+                                                     ([f1_id], [c2_id]),
+                                                     ([db.CompoundOrFlask.FLASK], [db.CompoundOrFlask.COMPOUND]))
+        # Insert Reaction c3 -> c2, c2
+        self._insert_single_elementary_step_reaction(([s3_id], [s2_id, s2_id]),
+                                                     ([-90.0], [-100.0, -100.0]), -60.0,
+                                                     ([c3_id], [c2_id, c2_id]),
+                                                     ([db.CompoundOrFlask.COMPOUND],
+                                                      [db.CompoundOrFlask.COMPOUND, db.CompoundOrFlask.COMPOUND]))
+        # Insert Reaction c3 -> c4
+        self._insert_single_elementary_step_reaction(([s3_id], [s4_id]),
+                                                     ([-90.0], [-100.0]), -70.0,
+                                                     ([c3_id], [c4_id]),
+                                                     ([db.CompoundOrFlask.COMPOUND], [db.CompoundOrFlask.COMPOUND]))
+
+        gear = ReactionFilterBasedKinetics()
+        e_max = -65.0 * utils.HARTREE_PER_KJPERMOL
+        gear.reaction_filter = MaximumTransitionStateEnergyFilter(ModelCombination(model), e_max, True)
+        kinetics_engine = Engine(manager.get_credentials(), fork=False)
+        kinetics_engine.set_gear(gear)
+        kinetics_engine.run(single=True)
+        kinetics_engine.run(single=True)
+        kinetics_engine.run(single=True)
+
+        assert db.Compound(c1_id, self._compounds).explore()
+        assert db.Flask(f1_id, self._flasks).explore()
+        assert db.Compound(c2_id, self._compounds).explore()
+        assert not db.Compound(c3_id, self._compounds).explore()
+        assert not db.Compound(c4_id, self._compounds).explore()
+
 
 def test_concentration_based_selection_chained_flasks():
     manager = db_setup.get_clean_db("chemoton_test_concentration_based_selection_chained_flask")
@@ -669,14 +800,9 @@ def test_concentration_based_selection_chained_flasks():
     kinetics_gear = MaximumFluxKinetics()
     kinetics_gear.options.model = model
     concentration_label = kinetics_gear.options.property_label
-    flux_label = kinetics_gear.options.flux_property_label
     conc_prop1 = db.NumberProperty.make(concentration_label, model, 100, properties)
     conc_prop2 = db.NumberProperty.make(concentration_label, model, 100, properties)
-    flux_prop1 = db.NumberProperty.make(flux_label, model, 100, properties)
-    flux_prop2 = db.NumberProperty.make(flux_label, model, 100, properties)
     lhs_s_structure.add_property(concentration_label, conc_prop1.id())
-    lhs_s_structure.add_property(flux_label, flux_prop1.id())
-    flux_prop1.set_structure(lhs_s_id)
     conc_prop1.set_structure(lhs_s_id)
 
     # run barrier filter gear
@@ -693,8 +819,6 @@ def test_concentration_based_selection_chained_flasks():
     # add concentration for the compound_2
     conc_prop2.set_structure(rhs_s_id)
     rhs_s_structure.add_property(concentration_label, conc_prop2.id())
-    flux_prop2.set_structure(rhs_s_id)
-    rhs_s_structure.add_property(flux_label, flux_prop2.id())
 
     kinetics_gear.options.restart = True
     kinetics_engine.set_gear(kinetics_gear)

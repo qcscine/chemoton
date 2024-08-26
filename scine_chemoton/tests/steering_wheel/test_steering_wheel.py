@@ -102,9 +102,9 @@ class SteeringWheelTests(unittest.TestCase):
         agg_gear.options.cycle_time = 1
         schedule_gear = Scheduler()
         schedule_gear.options.cycle_time = 1
-        options = GearOptions([schedule_gear])
+        options = GearOptions([(schedule_gear, None)])
         assert len(options) == 1
-        options += agg_gear
+        options += (agg_gear, None)
         assert len(options) == 2
 
     @pytest.mark.slow  # type: ignore[misc]
@@ -121,9 +121,9 @@ class SteeringWheelTests(unittest.TestCase):
         schedule_gear = Scheduler()
         schedule_gear.options.cycle_time = 1
         schedule_gear.options.model = self.model
-        options = GearOptions([schedule_gear])
+        options = GearOptions([(schedule_gear, None)])
         whole = GiveWholeDatabaseWithModelResult(self.model, status_cycle_time=1, gear_options=options)
-        more_options = GearOptions([agg_gear, schedule_gear])
+        more_options = GearOptions([(agg_gear, None), (schedule_gear, None)])
         opt = SimpleOptimization(self.model, status_cycle_time=1, gear_options=more_options)
         wheel = SteeringWheel(self.credentials, [inp], callable_input=_input_yes)
         self.current_wheel = wheel
@@ -158,8 +158,7 @@ class SteeringWheelTests(unittest.TestCase):
             count += 1
             if count > 20:
                 assert False
-            sleep(1)
-        sleep(5)
+            sleep(0.1)
         # manually turn to finished ones
         sid1 = db.ID()
         sid2 = db.ID()
@@ -246,9 +245,9 @@ class SteeringWheelTests(unittest.TestCase):
         agg_gear.options.cycle_time = 1
         schedule_gear = Scheduler()
         schedule_gear.options.cycle_time = 1
-        options = GearOptions([schedule_gear])
+        options = GearOptions([(schedule_gear, None)])
         whole = GiveWholeDatabaseWithModelResult(self.model, status_cycle_time=1, gear_options=options)
-        more_options = GearOptions([agg_gear, schedule_gear])
+        more_options = GearOptions([(agg_gear, 0), (schedule_gear, None)])
         pre = PredeterminedSelection(self.model, SelectionResult())
         opt = SimpleOptimization(self.model, status_cycle_time=1, gear_options=more_options)
         wheel = SteeringWheel(self.credentials, [inp, whole, pre, opt], callable_input=_input_no)
@@ -310,7 +309,7 @@ class SteeringWheelTests(unittest.TestCase):
         schedule_gear = Scheduler()
         schedule_gear.options.cycle_time = 1
         schedule_gear.options.model = self.model
-        options = GearOptions([schedule_gear])
+        options = GearOptions([(schedule_gear, None)])
         whole = GiveWholeDatabaseWithModelResult(self.model, status_cycle_time=1, gear_options=options)
         all_compounds = AllCompoundsSelection(self.model)
         wheel = SteeringWheel(self.credentials, [inp, whole, all_compounds], callable_input=_input_no)

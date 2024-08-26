@@ -20,8 +20,8 @@ from ..resources import resources_root_path
 # Local application imports
 from scine_chemoton.steering_wheel.selections.organometallic_complexes import CentralMetalSelection
 from scine_chemoton.utilities import connect_to_db
-from scine_chemoton.gears.elementary_steps.aggregate_filters import CatalystFilter
-from scine_chemoton.gears.elementary_steps.reactive_site_filters import CentralSiteFilter
+from scine_chemoton.filters.aggregate_filters import CatalystFilter
+from scine_chemoton.filters.reactive_site_filters import CentralSiteFilter
 
 
 class OrganometallicComplexesSelectionTests(unittest.TestCase):

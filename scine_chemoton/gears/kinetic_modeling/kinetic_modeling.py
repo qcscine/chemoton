@@ -7,19 +7,26 @@ See LICENSE.txt for details.
 # Standard library imports
 from time import sleep
 from json import dumps
-from typing import Optional
-
+from typing import Optional, List
 # Third party imports
 import scine_database as db
 import scine_utilities as utils
-from scine_database.queries import model_query
 
 # Local application imports
 from .. import Gear
 from .prepare_kinetic_modeling_job import KineticModelingJobFactory
 from .rms_kinetic_modeling import RMSKineticModelingJobFactory
 from .kinetx_kinetic_modeling import KinetxKineticModelingJobFactory
-from .thermodynamic_properties import ReferenceState
+from ...utilities.db_object_wrappers.thermodynamic_properties import ReferenceState, PlaceHolderReferenceState
+from ...utilities.model_combinations import ModelCombination
+from .atomization import (
+    AtomEnergyReference, ZeroEnergyReference, MultiModelEnergyReferences, PlaceHolderMultiModelEnergyReferences
+)
+from ...utilities.uncertainties import UncertaintyEstimator, ZeroUncertainty
+from scine_chemoton.utilities.place_holder_model import (
+    construct_place_holder_model,
+    PlaceHolderModelType
+)
 
 
 class KineticModeling(Gear):
@@ -28,7 +35,7 @@ class KineticModeling(Gear):
 
     Attributes
     ----------
-    options :: KineticModeling.Options
+    options : KineticModeling.Options
         The options for the KineticModeling gear.
     """
     class Options(Gear.Options):
@@ -37,44 +44,38 @@ class KineticModeling(Gear):
         """
 
         __slots__ = (
-            "electronic_model",
-            "hessian_model",
-            "elementary_step_interval",
+            "model_combinations_reactions",
+            "model_combinations",
             "job",
-            "sleeper_mode",
             "max_barrier",
             "min_flux_truncation",
             "reference_state",
             "job_settings",
-            "only_electronic"
+            "only_electronic",
+            "energy_references",
+            "energy_reference_type",
+            "uncertainty_estimator",
+            "flux_variance_label"
         )
 
-        def __init__(self):
+        def __init__(self) -> None:
             super().__init__()
-            self.cycle_time = 30
-            """
-            int
-                The minimum number of seconds between two cycles of the Gear.
-                Cycles are finished independent of this option, thus if a cycle
-                takes longer than the cycle_time will effectively lead to longer
-                cycle times and not cause multiple cycles of the same Gear.
-            """
             self.job = db.Job('kinetx_kinetic_modeling')
             """
             int
                 Set up a kinetic modeling job if at least this number of new
                 elementary steps were added to the network and are eligible according
-                to reaction-barrier cut-off, and electronic structure model.
+                to reaction-barrier cutoff, and electronic structure model.
             """
-            self.electronic_model = db.Model("PM6", "", "")
+            self.model_combinations_reactions = [ModelCombination(construct_place_holder_model())]
             """
-            db.Model
-                The electronic structure model used for the electronic energy calculations.
+            List[ModelCombinations]
+                The hierarchy of model combinations for reaction barriers.
             """
-            self.hessian_model = db.Model("PM6", "", "")
+            self.model_combinations: List[ModelCombination] = [ModelCombination(construct_place_holder_model())]
             """
-            db.Model
-                The electronic structure model used for the hessian calculations.
+            List[ModelCombinations]
+                The hierarchy of model combinations
             """
             self.max_barrier: float = 300.0  # in kJ/mol
             """
@@ -87,7 +88,7 @@ class KineticModeling(Gear):
                 Minimum flux of all aggregates in a reaction in a previous kinetic modeling job. If the flux is lower
                 than this threshold, the reaction is excluded from the kinetic modeling.
             """
-            self.reference_state: Optional[ReferenceState] = None
+            self.reference_state: ReferenceState = PlaceHolderReferenceState()
             """
             ReferenceState
                 The thermodynamic reference state defined by temperature (in K) and pressure (in Pa).
@@ -102,33 +103,70 @@ class KineticModeling(Gear):
             bool
                 If true, only the electronic energies are used for the rate constant calculations.
             """
+            self.energy_references: MultiModelEnergyReferences = PlaceHolderMultiModelEnergyReferences()
+            """
+            MultiModelEnergyReferences
+                Optional atom energy calculators for each model combination. If none are provided, they are constructed
+                on the fly.
+            """
+            self.energy_reference_type = "zero"
+            """
+            str
+                The energy reference type. zero -> absolute energies are used. atom -> Atomization energies are used.
+            """
+            self.uncertainty_estimator: UncertaintyEstimator = ZeroUncertainty()
+            """
+            UncertaintyEstimator
+                The uncertainty estimator for the thermodynamic parameters (only used in RMS kinetic modeling).
+            """
+            self.flux_variance_label: str = ""
+            """
+            str
+                If not empty, the minimum flux truncation also considers the flux's variance.
+            """
 
-    def __init__(self):
+    options: Options
+
+    def __init__(self) -> None:
         super().__init__()
-        self.options = self.Options()
-        self._required_collections = ["calculations", "elementary_steps"]
+        self._required_collections = ["calculations", "elementary_steps", "reactions"]
         self._job_factory: Optional[KineticModelingJobFactory] = None
+        self._last_n_enabled_reactions: int = -1
+        self._model_is_required = False
+
+    def reset_job_factory(self):
+        self._job_factory = None
 
     def _get_job_factory(self) -> KineticModelingJobFactory:
+        if (not self.options.model_combinations
+                or isinstance(self.options.model_combinations[0].electronic_model, PlaceHolderModelType)):
+            self.options.model_combinations = [ModelCombination(self.options.model)]
+        if (not self.options.model_combinations_reactions
+                or isinstance(self.options.model_combinations_reactions[0].electronic_model, PlaceHolderModelType)):
+            self.options.model_combinations_reactions = self.options.model_combinations
         if self._job_factory is None:
             if self.options.job == RMSKineticModelingJobFactory.get_job():
-                self._job_factory = RMSKineticModelingJobFactory(self.options.electronic_model,
-                                                                 self.options.hessian_model,
-                                                                 self._manager, self.options.only_electronic)
+                self._job_factory = RMSKineticModelingJobFactory(self.options.model_combinations,
+                                                                 self.options.model_combinations_reactions,
+                                                                 self._manager, self._get_energy_references(),
+                                                                 self.options.uncertainty_estimator,
+                                                                 self.options.only_electronic)
             elif self.options.job == KinetxKineticModelingJobFactory.get_job():
-                self._job_factory = KinetxKineticModelingJobFactory(self.options.electronic_model,
-                                                                    self.options.hessian_model,
+                self._job_factory = KinetxKineticModelingJobFactory(self.options.model_combinations,
+                                                                    self.options.model_combinations_reactions,
                                                                     self._manager, self.options.only_electronic)
             else:
                 raise RuntimeError("Error: The given kinetic modeling job is not supported. Options are:\n"
                                    + RMSKineticModelingJobFactory.get_job().order + "\n"
                                    + KinetxKineticModelingJobFactory.get_job().order)
-        if self.options.reference_state is None:
-            self.options.reference_state = ReferenceState(float(self.options.electronic_model.temperature),
-                                                          float(self.options.electronic_model.pressure))
+        if isinstance(self.options.reference_state, PlaceHolderReferenceState):
+            # We already check in the beginning of the function if the list model_combinations is empty.
+            model = self.options.model_combinations[0].electronic_model
+            self.options.reference_state = ReferenceState(float(model.temperature), float(model.pressure))
         self._job_factory.reference_state = self.options.reference_state
         self._job_factory.max_barrier = self.options.max_barrier
         self._job_factory.min_flux_truncation = self.options.min_flux_truncation
+        self._job_factory.flux_variance_label = self.options.flux_variance_label
         return self._job_factory
 
     @staticmethod
@@ -143,33 +181,30 @@ class KineticModeling(Gear):
                                + KinetxKineticModelingJobFactory.get_job().order)
 
     def start_conditions_are_met(self) -> bool:
-        # Allow only one kinetic modeling calculation to be queuing at a time
-        if self._get_n_queuing_kinetic_modeling_calculations() > 0:
-            return False
         # Run the kinetic modeling if all other calculations are done, independent on the elementary-step interval.
         if self._get_n_queuing_calculations() > 0:
             return False
-        if not self._reaction_gear_finished():
+        if not self._reactions_are_consistently_enabled():
             return False
         return True
 
+    def _reactions_are_consistently_enabled(self):
+        n_enabled_reactions = self._reactions.count(dumps({"exploration_disabled": False}))
+        if self._last_n_enabled_reactions < 0:
+            self._last_n_enabled_reactions = n_enabled_reactions
+        consistent = n_enabled_reactions == self._last_n_enabled_reactions
+        self._last_n_enabled_reactions = n_enabled_reactions
+        return consistent
+
     def _loop_impl(self):
-        if not self.start_conditions_are_met() or self.stop_at_next_break_point:
+        # reset the number of enabled reactions. Ensure consistency for the two checks below.
+        self._last_n_enabled_reactions = -1
+        if not self.start_conditions_are_met() or self.have_to_stop_at_next_break_point():
             return
         sleep(self.options.cycle_time)  # make sure that there is not just one gear lagging behind.
-        if not self.start_conditions_are_met() or self.stop_at_next_break_point:
+        if not self.start_conditions_are_met() or self.have_to_stop_at_next_break_point():
             return
         self._get_job_factory().create_kinetic_modeling_job(self.options.job_settings)
-
-    def _get_n_queuing_kinetic_modeling_calculations(self):
-        selection = {
-            "$and": [
-                {"job.order": {"$eq": self.options.job.order}},
-                {"$or": [{"status": "new"}, {"status": "hold"}, {"status": "pending"}]},
-            ]
-            + model_query(self.options.electronic_model)
-        }
-        return self._calculations.count(dumps(selection))
 
     def _get_n_queuing_calculations(self) -> int:
         selection = {
@@ -184,3 +219,23 @@ class KineticModeling(Gear):
             "reaction": ""
         }
         return self._elementary_steps.count(dumps(selection)) == 0
+
+    def _build_energy_reference(self, model: db.Model) -> ZeroEnergyReference:
+        if self.options.energy_reference_type == "zero":
+            return ZeroEnergyReference(model)
+        if self.options.energy_reference_type == "atom":
+            return AtomEnergyReference(model, self._manager)
+        raise RuntimeError("Error: Unknown energy reference type. Options are: zero (absolute energies), atom"
+                           " (atomization energies).")
+
+    def _get_energy_references(self) -> MultiModelEnergyReferences:
+        combs = self.options.model_combinations
+        if self.options.model_combinations_reactions is not None:
+            combs += self.options.model_combinations_reactions
+        if isinstance(self.options.energy_references, PlaceHolderMultiModelEnergyReferences):
+            refs = [self._build_energy_reference(c.electronic_model) for c in combs]
+            self.options.energy_references = MultiModelEnergyReferences(refs)
+        for c in combs:
+            if not self.options.energy_references.has_reference(c.electronic_model):
+                raise RuntimeError("Error: Energy reference missing for model " + str(c.electronic_model))
+        return self.options.energy_references

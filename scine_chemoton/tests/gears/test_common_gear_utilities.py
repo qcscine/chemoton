@@ -20,7 +20,12 @@ from scine_chemoton.gears.kinetics import (  # pylint: disable=unused-import  # 
     PathfinderKinetics  # pylint: disable=unused-import  # noqa: F401
 )
 from scine_chemoton.gears.reaction import BasicReactionHousekeeping  # pylint: disable=unused-import  # noqa: F401
-from scine_chemoton.gears.refinement import NetworkRefinement  # pylint: disable=unused-import  # noqa: F401
+from scine_chemoton.gears.network_refinement.reaction_based_refinement import \
+    ReactionBasedRefinement  # pylint: disable=unused-import  # noqa: F401
+from scine_chemoton.gears.network_refinement.calculation_based_refinement import \
+    CalculationBasedRefinement  # pylint: disable=unused-import  # noqa: F401
+from scine_chemoton.gears.network_refinement.refinement import \
+    NetworkRefinement  # pylint: disable=unused-import  # noqa: F401
 from scine_chemoton.gears.rerun_calculations import RerunCalculations  # pylint: disable=unused-import  # noqa: F401
 from scine_chemoton.gears.scheduler import Scheduler  # pylint: disable=unused-import  # noqa: F401
 from scine_chemoton.gears.thermo import BasicThermoDataCompletion  # pylint: disable=unused-import  # noqa: F401

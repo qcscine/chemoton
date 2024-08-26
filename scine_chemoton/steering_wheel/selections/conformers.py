@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
 Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
@@ -17,8 +18,8 @@ import scine_utilities as utils
 
 from . import Selection
 from ..datastructures import SelectionResult, LogicCoupling, NetworkExpansionResult
-from scine_chemoton.gears.elementary_steps.aggregate_filters import AggregateFilter, SelectedAggregateIdFilter
-from scine_chemoton.gears.elementary_steps.reactive_site_filters import ReactiveSiteFilter
+from scine_chemoton.filters.aggregate_filters import AggregateFilter, SelectedAggregateIdFilter
+from scine_chemoton.filters.reactive_site_filters import ReactiveSiteFilter
 
 
 class ConformerSelection(Selection, ABC):
@@ -33,7 +34,7 @@ class ConformerSelection(Selection, ABC):
             super().__init__(model, *args, **kwargs)
             self.include_thermochemistry = include_thermochemistry
 
-    options: Options  # required for mypy checks, so it knows which options object to check
+    options: ConformerSelection.Options  # required for mypy checks, so it knows which options object to check
 
     def _have_aggregates_sanity_check(self) -> NetworkExpansionResult:
         """
@@ -99,7 +100,7 @@ class CentroidConformerSelection(ConformerSelection):
             include_thermochemistry = False
             super().__init__(model, include_thermochemistry, *args, **kwargs)
 
-    options: Options  # required for mypy checks, so it knows which options object to check
+    options: CentroidConformerSelection.Options  # required for mypy checks, so it knows which options object to check
 
     def _structure_selection(self, aggregate: Union[db.Compound, db.Flask]) -> List[db.ID]:
         structures = self._get_allowed_structures(aggregate)
@@ -110,6 +111,8 @@ class LowestEnergyConformerSelection(ConformerSelection):
     """
     Selects the lowest energy conformer of each aggregate.
     """
+
+    options: LowestEnergyConformerSelection.Options
 
     def __init__(self, model: db.Model,  # pylint: disable=keyword-arg-before-vararg
                  additional_aggregate_filters: Optional[List[AggregateFilter]] = None,
@@ -157,7 +160,7 @@ class ClusterSelection(ConformerSelection, ABC):
             self.n_clusters = n_clusters
             self.cluster_rmsd_cutoff = cluster_rmsd_cutoff
 
-    options: Options  # required for mypy checks, so it knows which options object to check
+    options: ClusterSelection.Options  # required for mypy checks, so it knows which options object to check
 
     def __init__(self, model: db.Model,
                  additional_aggregate_filters: Optional[List[AggregateFilter]] = None,
@@ -187,7 +190,7 @@ class ClusterSelection(ConformerSelection, ABC):
     @staticmethod
     def _distance_matrix(structures: List[db.Structure]) -> np.ndarray:
         """
-        Constructs an nxn matrix of distances between all pairs of n structures.
+        Constructs a nxn matrix of distances between all pairs of n structures.
 
         Parameters
         ----------
@@ -228,6 +231,8 @@ class ClusterSelection(ConformerSelection, ABC):
 
     def _structure_selection(self, aggregate: Union[db.Compound, db.Flask]) -> List[db.ID]:
         structures = self._get_allowed_structures(aggregate)
+        if len(structures) == 1:
+            return [structures[0].id()]
         distance_matrix = self._distance_matrix(structures)
         cluster_selection = self._cluster_selection(structures, distance_matrix)
         return [structure.id() for i, structure in enumerate(structures) if i in cluster_selection]
@@ -238,6 +243,8 @@ class ClusterSelection(ConformerSelection, ABC):
 
 
 class ClusterCentroidConformerSelection(ClusterSelection):
+
+    options: ClusterCentroidConformerSelection.Options
 
     def _cluster_selection(self, structures: List[db.Structure], distance_matrix: np.ndarray) -> List[int]:
 
@@ -258,6 +265,8 @@ class ClusterCentroidConformerSelection(ClusterSelection):
 
 
 class LowestEnergyConformerPerClusterSelection(ClusterSelection):
+
+    options: LowestEnergyConformerPerClusterSelection.Options
 
     def _cluster_selection(self, structures: List[db.Structure], distance_matrix: np.ndarray) -> List[int]:
 

@@ -6,6 +6,8 @@ See LICENSE.txt for details.
 """
 
 # Standard library imports
+from abc import ABC
+from typing import Any, Dict
 from warnings import warn
 
 
@@ -14,25 +16,22 @@ class ReactiveComplexes:
     The base class for all reactive complex generators.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.options = self.Options()
 
-    class Options:
+    class Options(ABC):
         """
         Options attribute to be implemented by child classes
         """
 
-        def __init__(self):
-            raise NotImplementedError
-
-    def set_options(self, option_dict):
+    def set_options(self, option_dict: Dict[str, Any]) -> None:
         """
         Sets the options for the ReactiveComplexes from a dictionary.
         Generates a warning if an option is unknown.
 
         Parameters
         ----------
-        option_dict :: Dict[str, Union[bool, int, float]]
+        option_dict : Dict[str, Any]
             Dictionary with options to be used for generating reactive
             complexes.
         """

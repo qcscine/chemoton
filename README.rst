@@ -9,7 +9,7 @@ Introduction
 With Chemoton you can explore complex chemical reaction networks in an automated
 fashion. Based on a Python framework, workflows can be built that probe reactivity
 of chemical systems with quantum chemical methods. Various quantum chemical software
-programs and job schedulers are supported via the back-end software SCINE Puffin.
+programs and job schedulers are supported by the back-end software SCINE Puffin.
 
 License and Copyright Information
 ---------------------------------
@@ -127,10 +127,18 @@ explorations can be as simple as:
 
 .. code-block:: bash
 
-   cp <chemoton-git>/scine_chemoton/__main__.py my_awesome_exploration.py
+   chemoton_main=$(python3 -c 'from scine_chemoton import __main__ as m; print(m.__file__)')
+   echo $chemoton_main
+   cp $chemoton_main my_awesome_exploration.py
 
 and editing the file to your liking: disabling gears, adding filters or
 just changing methods.
+
+In order to directly have analysis tools for the network at hand
+or run explorations without coding,
+we recommend our graphical user interface 
+`Heron <https://github.com/qcscine/heron>`_.
+
 
 How to Cite
 -----------
@@ -144,6 +152,33 @@ In addition, we kindly request you to cite the following article when using Chem
 J. P. Unsleber, S. A. Grimmel, M. Reiher,
 "Chemoton 2.0: Autonomous Exploration of Chemical Reaction Networks",
 *J. Chem. Theory Comput.*, **2022**, *18*, 5393.
+
+If you are applying SCINE Pathfinder in your exploration or analysis, we kindly request you to cite the following article:
+
+P. L. Türtscher, M. Reiher,
+"Pathfinder - Navigating and Analyzing Chemical Reaction Networks with an Efficient Graph-Based Approach",
+*J. Chem. Inf. Model.*, **2023**, *63*, 147.
+
+If you are applying kinetic modeling in your exploration or analysis, we kindly request you to cite the following article:
+J. Proppe, M. Reiher,
+"Mechanism Deduction from Noisy Chemical Reaction Networks",
+*J. Chem. Theory Comput.*, **2019**, *15*, 357.
+
+M. Bensberg, M. Reiher,
+"Concentration-Flux-Steered Mechanism Exploration with an Organocatalysis Application",
+*Isr. J. Chem.*, **2023**, *63*, 147.
+
+If you are applying the Steering Wheel in your exploration, we kindly request you to cite the following article:
+M. Steiner, M. Reiher,
+"A human-machine interface for automatic exploration of chemical reaction networks",
+*Nat. Commun.*, **2024**, 15, 3680.
+
+Furthermore, when publishing results obtained with any SCINE module, please cite the following paper:
+
+T. Weymuth, J. P. Unsleber, P. L. Türtscher, M. Steiner, J.-G. Sobez, C. H. Müller, M. Mörchen,
+V. Klasovita, S. A. Grimmel, M. Eckhoff, K.-S. Csizi, F. Bosia, M. Bensberg, M. Reiher,
+"SCINE—Software for chemical interaction networks", *J. Chem. Phys.*, **2024**, *160*, 222501
+(DOI `10.1063/5.0206974 <https://doi.org/10.1063/5.0206974>`_).
 
 Support and Contact
 -------------------

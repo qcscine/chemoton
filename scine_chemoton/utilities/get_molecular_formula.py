@@ -4,10 +4,54 @@ __copyright__ = """ This code is licensed under the 3-clause BSD license.
 Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
-# from typing import Union
+from typing import Dict
+from copy import deepcopy
+
 import scine_database as db
 import scine_utilities as utils
 import scine_molassembler as masm
+
+
+def get_elements_in_structure(structure: db.Structure) -> Dict[str, int]:
+    """
+    Get the number of atoms sorted by element for the given structure.
+
+    Parameters
+    ----------
+    structure : db.Structure
+        The structure.
+    Returns
+    -------
+    Dict[str: int]
+        A dictionary containing the element symbol and the number of occurrences.
+    """
+    elements = [str(e) for e in structure.get_atoms().elements]
+    return {e: elements.count(e) for e in elements}
+
+
+def combine_element_counts(counts_one: Dict[str, int], counts_two: Dict[str, int]) -> Dict[str, int]:
+    """
+    Combine two dictionaries with element counts.
+
+    Parameters
+    ----------
+    counts_one : Dict[str, int]
+        A dictionary with element counts. The keys are the element symbols. The values are the number of occurrences.
+    counts_two : Dict[str, int]
+        The second dictionary.
+
+    Returns
+    -------
+    Dict[str, int]
+        The combined dictionary.
+    """
+    total_counts: Dict[str, int] = deepcopy(counts_one)
+    for key, value in counts_two.items():
+        if key in total_counts:
+            total_counts[key] += value
+        else:
+            total_counts[key] = value
+    return total_counts
 
 
 def get_molecular_formula_of_structure(structure_id: db.ID, structures: db.Collection) -> str:
@@ -16,14 +60,14 @@ def get_molecular_formula_of_structure(structure_id: db.ID, structures: db.Colle
 
     Parameters
     ----------
-    structure_id :: db.ID
+    structure_id : db.ID
         The database ID of the structure.
-    structures :: db.Collection
+    structures : db.Collection
         The structure collection.
 
     Returns
     -------
-    mform :: str
+    mform : str
         The molecular formula of the given structure, e.g. for water "H2O (c:0, m:1)".
     """
     struct = db.Structure(structure_id, structures)
@@ -46,20 +90,20 @@ def get_molecular_formula_of_aggregate(object_id: db.ID, object_type: db.Compoun
 
     Parameters
     ----------
-    object_id :: db.ID
+    object_id : db.ID
         The database ID of the aggregate.
-    object_type :: db.CompoundOrFlask
+    object_type : db.CompoundOrFlask
         The aggregate type (db.CompoundOrFlask.COMPOUND or db.CompoundOrFlask.FLASK).
-    compounds :: db.Collection
+    compounds : db.Collection
         The compound collection.
-    flasks :: db.Collection
+    flasks : db.Collection
         The flask collection
-    structures :: db.Collection
+    structures : db.Collection
         The structure collection.
 
     Returns
     -------
-    molecular formula :: str
+    molecular formula : str
         The molecular formula of the given aggregate according to the aggregates type.
 
     """
@@ -67,6 +111,8 @@ def get_molecular_formula_of_aggregate(object_id: db.ID, object_type: db.Compoun
         molecular_formula = get_molecular_formula_of_compound(object_id, compounds, structures)
     elif object_type == db.CompoundOrFlask.FLASK:
         molecular_formula = get_molecular_formula_of_flask(object_id, flasks, structures)
+    else:
+        raise RuntimeError('Invalid object type. Expected COMPOUND or FLASK.')
 
     return molecular_formula
 
@@ -77,11 +123,11 @@ def get_molecular_formula_of_compound(compound_id: db.ID, compounds: db.Collecti
 
     Parameters
     ----------
-    compound_id :: db.ID
+    compound_id : db.ID
         The database ID of the compound.
-    compounds :: db.Collection
+    compounds : db.Collection
         The compound collection.
-    structures :: db.Collection
+    structures : db.Collection
         The structure collection.
 
     Returns
@@ -136,7 +182,7 @@ def get_molecular_formula_from_cbor_string(cbor_graph: str) -> str:
 
     Parameters
     ----------
-    cbor_graph :: str
+    cbor_graph : str
         The string of a CBOR graph.
 
     Returns

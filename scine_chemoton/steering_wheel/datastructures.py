@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
 Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
 
+import datetime
 from abc import ABC, abstractmethod
-from collections import UserDict
+from collections import UserDict, defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
 from multiprocessing.connection import Connection
-from typing import Any, List, Optional, Union, Tuple
+from typing import Any, List, Optional, Union, Tuple, Type, Dict, Callable
 
 import scine_database as db
 import scine_utilities as utils
@@ -18,10 +21,11 @@ import scine_utilities as utils
 from scine_chemoton.engine import Engine
 from scine_chemoton.gears import Gear, HasName, HoldsCollections
 from scine_chemoton.gears.elementary_steps import ElementaryStepGear
-from scine_chemoton.gears.elementary_steps.aggregate_filters import AggregateFilter
-from scine_chemoton.gears.elementary_steps.reactive_site_filters import ReactiveSiteFilter
-from scine_chemoton.gears.elementary_steps.trial_generator.fast_dissociations import FurtherExplorationFilter
+from scine_chemoton.filters.aggregate_filters import AggregateFilter
+from scine_chemoton.filters.reactive_site_filters import ReactiveSiteFilter
+from scine_chemoton.filters.further_exploration_filters import FurtherExplorationFilter
 from scine_chemoton.gears.elementary_steps.trial_generator import TrialGenerator
+from scine_chemoton.gears.kinetics import KineticsBase
 from scine_chemoton.utilities.datastructure_transfer import ReadAble
 from scine_chemoton.utilities.options import BaseOptions
 
@@ -192,13 +196,25 @@ class ExplorationSchemeStep(ABC, HasName, HoldsCollections):
     """
 
     class Options(BaseOptions):
+        """
+        Options for the exploration scheme step.
+        """
+
         def __init__(self, model: db.Model, *args, **kwargs):
+            """
+            Construct it with a given model
+
+            Parameters
+            ----------
+            model : db.Model
+                The model given to all subclasses.
+            """
             if not isinstance(model, db.Model):
                 raise TypeError("model must be a Model object")
             self.model = model
             super().__init__(*args, **kwargs)
 
-    options: Options  # required for mypy checks, so it knows which options object to check
+    options: ExplorationSchemeStep.Options
 
     def __init__(self, model: db.Model, *args, **kwargs):
         super().__init__()
@@ -215,7 +231,13 @@ class ExplorationSchemeStep(ABC, HasName, HoldsCollections):
         self._result = result
 
     @abstractmethod
-    def __call__(self, credentials: db.Credentials, last_output: Optional[Any] = None) -> Any:
+    def __call__(
+            self,
+            credentials: db.Credentials,
+            last_output: Optional[Any] = None,
+            notify_partial_steps_callback:
+            Optional[Callable[[Union[NoRestartInfoPresent, RestartPartialExpansionInfo]], None]] = None,
+            restart_information: Optional[RestartPartialExpansionInfo] = None) -> Any:
         pass
 
     def __str__(self):
@@ -226,75 +248,6 @@ class ExplorationSchemeStep(ABC, HasName, HoldsCollections):
         Compare type and options.
         """
         return self.name == other.name and self.options == other.options
-
-
-class GearOptions(UserDict):
-    """
-    A container with additional sanity checks to hold and modify the options of each gear.
-    The keys are the names of the gears and the values are a tuple of the gear's options and the
-    TrialGenerator's options in case the gear holds a TrialGenerator, otherwise second entry is None.
-
-    Notes
-    -----
-    Currently does not support initialization from existing dictionary.
-    """
-
-    def __init__(self, gears: List[Gear], model: Optional[db.Model] = None):
-        """
-        Convenience method to only plug-in gears and an optional for model, that is then already added
-        to each option. This builds the respective dictionary based on the common API of the gears.
-
-        Parameters
-        ----------
-        gears : List[Gear]
-            List of gears to generate options for.
-        model : Optional[db.Model], optional
-            Optional model to add to the options, by default None.
-        """
-        super().__init__()
-        self._loop_impl(gears, model)
-
-    def _loop_impl(self, gears: List[Gear], model: Optional[db.Model] = None):
-        """
-        Implementation for adding options by giving gears.
-        """
-        for gear in gears:
-            self.sanity_check(gear)
-            if model is not None and hasattr(gear.options, "model"):
-                gear.options.model = model
-            self.data[gear.name] = self.generate_value(gear)
-
-    def __iadd__(self, other: Union[List[Gear], Gear]):
-        """
-        Addition method to add gears to the options.
-        """
-        if isinstance(other, Gear):
-            add = [other]
-        else:
-            add = other
-        if not isinstance(add, list) or not add or not isinstance(add[0], Gear):
-            raise TypeError(f"Can only add a single gear or a list of gears to {self.__class__.__name__}, "
-                            f"you added {add}")
-        self._loop_impl(add)
-        return self
-
-    @staticmethod
-    def generate_value(gear: Gear) -> Tuple[Gear.Options, Optional[TrialGenerator.Options]]:
-        """
-        Builds a single tuple value from a gear based on known Chemoton API.
-        """
-        if isinstance(gear, ElementaryStepGear):
-            return gear.options, gear.trial_generator.options
-        else:
-            return gear.options, None
-
-    @staticmethod
-    def sanity_check(gear: Gear):
-        if not hasattr(gear, "options") or gear.options is None:
-            raise TypeError(f"The gear '{gear.name}' is missing options!")
-
-    def __setitem__(self, key, value):
-        self.data[key] = value
 
 
 @dataclass
@@ -325,7 +278,15 @@ class ProtocolEntry:
     limited_runs: bool = field(init=False)
     engine: Engine = field(init=False)
 
+    _gears_that_can_stop_themselves: List[Type] = field(init=False, repr=False, default_factory=lambda: [KineticsBase])
+    _methods_to_ensure_that_gear_stops_itself: Dict[Type[Gear], Callable[[Gear], None]] = \
+        field(init=False, repr=False, default_factory=(lambda: {
+            KineticsBase:  # type: ignore
+            lambda gear: setattr(gear.options, "stop_if_no_new_aggregates_are_activated", True)
+        }))
+
     def __post_init__(self):
+        assert len(self._gears_that_can_stop_themselves) == len(self._methods_to_ensure_that_gear_stops_itself)
         self.was_stopped = False
         self.name = self.gear.name
         self.limited_runs = self.n_runs > 0
@@ -333,12 +294,17 @@ class ProtocolEntry:
             raise RuntimeError(f"Invalid protocol for {self.name}, "
                                f"multiple forked runs would most likely lead to an inconsistent database.")
         if not self.fork and not self.limited_runs:
-            raise RuntimeError(f"Invalid protocol for {self.name}, "
-                               f"unforked engines must not run indefinitely")
+            for gear_type, method in self._methods_to_ensure_that_gear_stops_itself.items():
+                if isinstance(self.gear, gear_type):
+                    method(self.gear)
+                    break
+            else:
+                raise RuntimeError(f"Invalid protocol for {self.name}, "
+                                   f"unforked engines must not run indefinitely")
         self.engine = Engine(self.credentials, fork=self.fork)
         self.engine.set_gear(self.gear)
 
-    def run(self):
+    def run(self) -> None:
         """
         Run the gear in the specified mode.
         Due to better flexibility, this class only holds the information about the number of runs,
@@ -346,10 +312,20 @@ class ProtocolEntry:
         """
         self.engine.set_gear(self.gear)
         self.engine.run(single=self.limited_runs)
+        if not self.limited_runs and not self.fork:
+            # gear stopped itself
+            self.was_stopped = True
 
-    def stop(self):
+    def is_running(self) -> bool:
+        return self.engine.is_running()
+
+    def stop(self) -> None:
         self.engine.stop()
         self.engine.join()
+        self.was_stopped = True
+
+    def terminate(self) -> None:
+        self.engine.terminate()
         self.was_stopped = True
 
 
@@ -363,6 +339,128 @@ class StopPreviousProtocolEntries:
         """
         Dummy method
         """
+
+
+class GearOptions(UserDict):
+    """
+    A container with additional sanity checks to hold and modify the options of each gear.
+    The keys are the names of the gears and the values are a tuple of the gear's options and the
+    TrialGenerator's options in case the gear holds a TrialGenerator, otherwise the second entry is None.
+
+    Notes
+    -----
+    Currently does not support initialization from existing dictionary.
+    """
+
+    def __init__(self, gears_and_indices: Optional[List[Tuple[Gear, Optional[int]]]] = None,
+                 model: Optional[db.Model] = None):
+        """
+        Convenience method to only plug-in gears and an optional for model, that is then already added
+        to each option. This builds the respective dictionary based on the common API of the gears.
+
+        Parameters
+        ----------
+        gears_and_indices : Optional[List[Tuple[Gear, Optional[int]]]], optional
+            List of gears to generate options for, by default None.
+            The optional integer represents if this options should apply to all gears of this type (None)
+            or only to the gear with the given index (starting at zero).
+        model : Optional[db.Model], optional
+            Optional model to add to the options, by default None.
+        """
+        super().__init__()
+        if gears_and_indices is not None:
+            self._loop_impl(gears_and_indices, model)
+
+    def _loop_impl(self, gears_and_indices: List[Tuple[Gear, Optional[int]]], model: Optional[db.Model] = None):
+        """
+        Implementation for adding options by giving gears.
+        """
+        for gear, index in gears_and_indices:
+            if model is not None:
+                gear.options.model = model
+            self.data[(gear.name, index)] = self.generate_value(gear)
+
+    def __iadd__(self, other: Union[List[Tuple[Gear, Optional[int]]], Tuple[Gear, Optional[int]]]):
+        """
+        Addition method to add gears to the options.
+        """
+        if isinstance(other, tuple) and len(other) == 2 and isinstance(other[0], Gear):
+            add: List[Tuple[Gear, Optional[int]]] = [other]
+        else:
+            add = other  # type: ignore
+        if not isinstance(add, list) or not add or not isinstance(add[0], tuple) or not len(add[0]) == 2 \
+                or not isinstance(add[0][0], Gear):
+            raise TypeError(f"Can only add a single gear or a list of gears to {self.__class__.__name__}, "
+                            f"you added {add}")
+        self._loop_impl(add)
+        return self
+
+    @staticmethod
+    def generate_value(gear: Gear) -> Tuple[Gear.Options, Optional[TrialGenerator.Options]]:
+        """
+        Builds a single tuple value from a gear based on known Chemoton API.
+        """
+        if isinstance(gear, ElementaryStepGear):
+            return gear.options, gear.trial_generator.options
+        else:
+            return gear.options, None
+
+    def key_check(self, key: Tuple[str, Optional[int]]) -> None:
+        if not isinstance(key, tuple) or len(key) != 2:
+            raise TypeError(f"{self.__class__.__name__} requires a tuple of length 2 as key")
+
+    def __getitem__(self, key: Tuple[str, Optional[int]]) -> Tuple[Gear.Options, Optional[TrialGenerator.Options]]:
+        self.key_check(key)
+        return super().__getitem__(key)
+
+    def __setitem__(self, key: Tuple[str, Optional[int]],
+                    value: Tuple[Gear.Options, Optional[TrialGenerator.Options]]) -> None:
+        self.key_check(key)
+        if not isinstance(value, tuple) or len(value) != 2:
+            raise TypeError(f"Can only set a tuple of length 2 as value for {self.__class__.__name__}, "
+                            f"you added {value}")
+        super().__setitem__(key, value)
+
+    def apply_to_protocol(self, protocol: List[Union[ProtocolEntry, StopPreviousProtocolEntries]]) -> None:
+        if not self.data:
+            return
+        loop_count: Dict[str, int] = defaultdict(int)
+        used_options = set()
+        for entry in protocol:
+            if isinstance(entry, StopPreviousProtocolEntries):
+                continue
+            gear = entry.gear
+            this_gear_count = loop_count[gear.name]
+            loop_count[gear.name] += 1
+            # check for keys with None that signal that these options apply to all gears of this type
+            key: Tuple[str, Optional[int]] = (gear.name, None)
+            options = self.data.get(key)
+            if options is not None:
+                self._give_gear_option(gear, options)
+                used_options.add(key)
+            # check for keys with index that signal that these options apply to this specific gear
+            key = (gear.name, this_gear_count)
+            options = self.data.get(key)
+            if options is not None:
+                self._give_gear_option(gear, options)
+                used_options.add(key)
+        if len(used_options) != len(self.data):
+            unused_options = set(self.data.keys()) - used_options
+            description = "these gears" if len(unused_options) > 1 else "this gear"
+            raise TypeError(f"Specified options for '{unused_options}, but {description} is not present in the "
+                            f"step protocol {protocol}")
+
+    def _give_gear_option(self, gear: Gear, options: Tuple[Gear.Options, Optional[TrialGenerator.Options]]) -> None:
+        """
+        Convenience method to give the options to a gear.
+        """
+        gear.options = options[0]
+        if options[1] is not None:
+            if not isinstance(gear, ElementaryStepGear):
+                raise NotImplementedError(f"Gear options for '{gear.name}' hold another set of options, "
+                                          f"but this gear is not an elementary step gear. "
+                                          f"This is not supported.")
+            gear.trial_generator.options = options[1]
 
 
 class StopSplitCommunicationMethod:
@@ -381,3 +479,18 @@ class StructureInformation:
     geometry: Union[utils.AtomCollection, utils.PeriodicSystem]
     charge: int
     multiplicity: int
+
+
+@dataclass
+class RestartPartialExpansionInfo:
+    protocol_step_index: int
+    start_id: Optional[db.ID]
+    start_time: datetime.datetime
+    n_already_executed_protocol_steps: int = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.n_already_executed_protocol_steps = self.protocol_step_index + 1
+
+
+class NoRestartInfoPresent:
+    pass

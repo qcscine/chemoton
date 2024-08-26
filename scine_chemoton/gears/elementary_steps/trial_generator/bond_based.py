@@ -23,6 +23,9 @@ import scine_molassembler as masm
 from scine_chemoton.utilities.options import BaseOptions
 from .connectivity_analyzer import ReactionType, ConnectivityAnalyzer
 from . import TrialGenerator, _sanity_check_wrapper
+from ...network_refinement.enabling import (
+    EnableCalculationResults, PlaceHolderCalculationEnabling, EnableJobSpecificCalculations
+)
 
 
 class BondBased(TrialGenerator):
@@ -37,6 +40,13 @@ class BondBased(TrialGenerator):
         The filter applied to determine reactive sites, reactive pairs and trial
         reaction coordinates.
     """
+
+    def __init__(self):
+        super().__init__()
+        self.results_enabling_policy: EnableCalculationResults = PlaceHolderCalculationEnabling()
+        """
+        If given (must be of class EnableJobSpecificCalculations), the results enabling policy is applied.
+        """
 
     class Options(TrialGenerator.Options):
         """
@@ -72,7 +82,7 @@ class BondBased(TrialGenerator):
                 "minimal_spin_multiplicity",
             )
 
-            def __init__(self):
+            def __init__(self) -> None:
                 self.job: db.Job = db.Job("scine_react_complex_nt2")
                 """
                 db.Job (Scine::Database::Calculation::Job)
@@ -178,7 +188,7 @@ class BondBased(TrialGenerator):
                 "job_settings_disconnective",
             )
 
-            def __init__(self):
+            def __init__(self) -> None:
                 self.job: db.Job = db.Job("scine_react_complex_nt2")
                 """
                 db.Job (Scine::Database::Calculation::Job)
@@ -255,7 +265,10 @@ class BondBased(TrialGenerator):
                     Empty by default.
                 """
 
-        def __init__(self, parent: Optional[TrialGenerator] = None):
+        unimolecular_options: UnimolOptions
+        bimolecular_options: BimolOptions
+
+        def __init__(self, parent: Optional[TrialGenerator] = None) -> None:
             super().__init__(parent)
             self.unimolecular_options = self.UnimolOptions()
             """
@@ -268,6 +281,8 @@ class BondBased(TrialGenerator):
                 The options for reactions involving two molecules, that are set up
                 to be associative in nature.
             """
+
+    options: Options
 
     def clear_cache(self):
         pass
@@ -360,7 +375,7 @@ class BondBased(TrialGenerator):
             reactive_inter_coords = list(combinations(filtered_unshifted_inter_pairs, n_inter_form))
             for (inter_coord, align1, align2, rot, spread, ) in \
                     self.options.bimolecular_options.complex_generator.generate_reactive_complexes(
-                        structure_list[0], structure_list[1], reactive_inter_coords):
+                        structure_list[0], structure_list[1], reactive_inter_coords):  # type: ignore
 
                 # Shift to complex indexing
                 shifted_inter_coord = tuple((pair[0], pair[1] + n_atoms1) for pair in inter_coord)
@@ -374,10 +389,10 @@ class BondBased(TrialGenerator):
 
             filter_result = self.reactive_site_filter.filter_reaction_coordinates(
                 structure_list,
-                list(batch.keys())
+                list(batch.keys())  # type: ignore
             )
             for filtered in filter_result:
-                result[(filtered, n_diss)] = batch[filtered]
+                result[(filtered, n_diss)] = batch[filtered]  # type: ignore
         return result
 
     @_sanity_check_wrapper
@@ -389,10 +404,10 @@ class BondBased(TrialGenerator):
 
         Parameters
         ----------
-        structure_list :: List[db.Structure]
+        structure_list : List[db.Structure]
             List of the two structures to be considered.
             The Structures have to be linked to a database.
-        with_exact_settings_check :: bool
+        with_exact_settings_check : bool
             If True, more expensive queries are carried out to check if the settings of the
             calculations are exactly the same as the settings of the trial generator. This allows to add more
             inclusive additional reaction trials but the queries are less efficient, therefore this option
@@ -434,10 +449,10 @@ class BondBased(TrialGenerator):
 
         Parameters
         ----------
-        structure :: db.Structure
+        structure : db.Structure
             The structure to be considered. The Structure has to
             be linked to a database.
-        with_exact_settings_check :: bool
+        with_exact_settings_check : bool
             If True, more expensive queries are carried out to check if the settings of the
             calculations are exactly the same as the settings of the trial generator. This allows to add more
             inclusive additional reaction trials but the queries are less efficient, therefore this option
@@ -478,29 +493,35 @@ class BondBased(TrialGenerator):
             structure.add_calculations(self.options.unimolecular_options.job.order, [new_calculation_ids[0]])
 
     def _quick_unimolecular_already_exists(self, structure: db.Structure, do_fast_query: bool) -> bool:
+        if not do_fast_query:
+            return False
         # Rule out compounds too small for intramolecular reactions right away
         atoms = structure.get_atoms()
         if atoms.size() == 1:
             return False
         if atoms.size() == 2 and self.options.unimolecular_options.max_bond_dissociations < 1:
             return False
-        return do_fast_query and calculation_exists_in_structure(
-            self.options.unimolecular_options.job.order,
-            [structure.id()],
-            self.options.model,
-            self._structures,
-            self._calculations)
+        if not calculation_exists_in_structure(self.options.unimolecular_options.job.order, [structure.id()],
+                                               self.options.model, self._structures, self._calculations):
+            return False
+        if isinstance(self.results_enabling_policy, EnableJobSpecificCalculations):
+            self.results_enabling_policy.process_calculations_of_structures([structure.id()])
+        return True
 
     def _quick_bimolecular_already_exists(self, structure_list: List[db.Structure], do_fast_query: bool) -> bool:
         # Check number of compounds
         if len(structure_list) != 2:
             raise RuntimeError("Exactly two structures are needed for setting up a bimolecular reaction.")
-        return do_fast_query and calculation_exists_in_structure(
-            self.options.bimolecular_options.job.order,
-            [s.id() for s in structure_list],
-            self.options.model,
-            self._structures,
-            self._calculations)
+        if not do_fast_query:
+            return False
+        structure_ids = [s.id() for s in structure_list]
+        if not calculation_exists_in_structure(self.options.bimolecular_options.job.order,
+                                               structure_ids, self.options.model,
+                                               self._structures, self._calculations):
+            return False
+        if isinstance(self.results_enabling_policy, EnableJobSpecificCalculations):
+            self.results_enabling_policy.process_calculations_of_structures(structure_ids)
+        return True
 
     @_sanity_check_wrapper
     def unimolecular_coordinates(self, structure: db.Structure, with_exact_settings_check: bool = False) \
@@ -545,7 +566,7 @@ class BondBased(TrialGenerator):
                     batch += [asso_pairs + diss_pairs]
             filter_result = self.reactive_site_filter.filter_reaction_coordinates(
                 [structure],
-                batch
+                batch  # type: ignore
             )
             result.append((filter_result, n_diss))
 
@@ -553,7 +574,9 @@ class BondBased(TrialGenerator):
 
     @_sanity_check_wrapper
     def estimate_n_unimolecular_trials(
-        self, structure_file: str, n_reactive_bound_pairs: int = -1, n_reactive_unbound_pairs: int = -1
+        self, structure_file: str,
+        n_reactive_bound_pairs: Optional[int] = None,
+        n_reactive_unbound_pairs: Optional[int] = None
     ):
         """
         Estimates the number of unimolecular reactive coordinate trials expected
@@ -572,12 +595,10 @@ class BondBased(TrialGenerator):
             An xyz or mol file with the structure of interest.
         n_reactive_bound_pairs : int, optional
             The number of bound reactive pairs to consider.
-            If smaller than zero, all bound atom pairs are included.
-            By default -1.
+            If None, all bound atom pairs are included.
         n_reactive_unbound_pairs : int, optional
             The number of unbound reactive pairs to consider.
-            If smaller than zero, all unbound atom pairs are included.
-            By default -1.
+            If None, all unbound atom pairs are included.
 
         Returns
         -------
@@ -621,11 +642,11 @@ class BondBased(TrialGenerator):
         structure_file1: str,
         structure_file2: str,
         attack_points_per_site: int = 3,
-        n_inter_reactive_pairs: int = -1,
-        n_reactive_bound_pairs1: int = -1,
-        n_reactive_unbound_pairs1: int = -1,
-        n_reactive_bound_pairs2: int = -1,
-        n_reactive_unbound_pairs2: int = -1,
+        n_inter_reactive_pairs: Optional[int] = None,
+        n_reactive_bound_pairs1: Optional[int] = None,
+        n_reactive_unbound_pairs1: Optional[int] = None,
+        n_reactive_bound_pairs2: Optional[int] = None,
+        n_reactive_unbound_pairs2: Optional[int] = None,
     ):
         """
         Estimates the number of bimolecular reactive coordinate trials expected
@@ -663,26 +684,21 @@ class BondBased(TrialGenerator):
             By default 3.
         n_inter_reactive_pairs : int, optional
             The number of intermolecular reactive pairs to consider.
-            If smaller than zero, all interstructural atom pairs are included.
-            By default -1.
+            If None, all interstructural atom pairs are included.
         n_reactive_bound_pairs1 : int, optional
             The number of bound reactive pairs in the first structure to
-            consider. If smaller than zero, all bound atom pairs of structure 1
+            consider. If None, all bound atom pairs of structure 1
             are included.
-            By default -1.
         n_reactive_bound_pairs2 : int, optional
             The number of bound reactive pairs in the second structure to
-            consider. If smaller than zero, all bound atom pairs of structure 2
+            consider. If None, all bound atom pairs of structure 2
             are included.
-            By default -1.
         n_reactive_unbound_pairs1 : int, optional
             The number of unbound reactive pairs in the first structure to
-            consider. If smaller than zero, all unbound atom pairs are included.
-            By default -1.
+            consider. If None, all unbound atom pairs are included.
         n_reactive_unbound_pairs2 : int, optional
             The number of unbound reactive pairs in the second structure to
-            consider. If smaller than zero, all unbound atom pairs are included.
-            By default -1.
+            consider. If None, all unbound atom pairs are included.
 
         Returns
         -------
@@ -699,7 +715,7 @@ class BondBased(TrialGenerator):
         n_unbound_pairs2, n_bound_pairs2 = self._get_bound_unbound_pairs_from_atoms(
             atoms2, n_reactive_bound_pairs2, n_reactive_unbound_pairs2
         )
-        n_inter_pairs = atoms1.size() * atoms2.size() if n_inter_reactive_pairs < 0 else n_inter_reactive_pairs
+        n_inter_pairs = atoms1.size() * atoms2.size() if n_inter_reactive_pairs is None else n_inter_reactive_pairs
         n_bound_pairs = n_bound_pairs1 + n_bound_pairs2
         n_unbound_pairs = n_unbound_pairs1 + n_unbound_pairs2
 
@@ -778,7 +794,7 @@ class BondBased(TrialGenerator):
         Parameters
         ----------
 
-        reactive_structures :: List[db.ID]
+        reactive_structures : List[db.ID]
             List of the IDs of the reactants.
         association_pairs:: List[Tuple(int, int))]
             List of atom index pairs in between which a bond formation is to be
@@ -786,48 +802,48 @@ class BondBased(TrialGenerator):
         dissociation_pairs:: List[Tuple(int, int))]
             List of atom index pairs in between which a bond dissociation is to
             be encouraged.
-        job :: scine_database.Job
-        settings :: scine_utilities.ValueCollection
-        lhs_alignment :: List[float], length=9
+        job : scine_database.Job
+        settings : scine_utilities.ValueCollection
+        lhs_alignment : List[float], length=9
             In case of two structures building the reactive complex, this option
             describes a rotation of the first structure (index 0) that aligns
             the reaction coordinate along the x-axis (pointing towards +x).
             The rotation assumes that the geometric mean position of all
             atoms in the reactive site (``lhs_list``) is shifted into the
             origin.
-        rhs_alignment :: List[float], length=9
+        rhs_alignment : List[float], length=9
             In case of two structures building the reactive complex, this option
             describes a rotation of the second structure (index 1) that aligns
             the reaction coordinate along the x-axis (pointing towards -x).
             The rotation assumes that the geometric mean position of all
             atoms in the reactive site (``rhs_list``) is shifted into the
             origin.
-        x_rotation :: float
+        x_rotation : float
             In case of two structures building the reactive complex, this option
             describes a rotation angle around the x-axis of one of the two
             structures after ``lhs_alignment`` and ``rhs_alignment`` have
             been applied.
-        spread :: float
+        spread : float
             In case of two structures building the reactive complex, this option
             gives the distance by which the two structures are moved apart along
             the x-axis after ``lhs_alignment``, ``rhs_alignment``, and
             ``x_rotation`` have been applied.
-        displacement :: float
+        displacement : float
             In case of two structures building the reactive complex, this option
             adds a random displacement to all atoms (random direction, random
             length). The maximum length of this displacement (per atom) is set to
             be the value of this option.
-        multiplicity :: int
+        multiplicity : int
             This option sets the ``spin_multiplicity`` of the reactive complex.
-        charge :: int
+        charge : int
             This option sets the ``molecular_charge`` of the reactive complex.
-        check_for_existing :: bool
+        check_for_existing : bool
             Whether it should be checked if a calculation with these exact
             settings and model already exists or not (default: False)
 
         Returns
         -------
-        calculation :: scine_database.ID
+        calculation : scine_database.ID
             A calculation that is on hold.
         """
         this_settings = self._get_settings(settings)
@@ -846,23 +862,28 @@ class BondBased(TrialGenerator):
         if charge is not None:
             this_settings["rc_molecular_charge"] = charge
 
-        if job.order == "scine_react_complex_nt2":
+        if "nt2" in job.order:
             # nt2 job takes lists of integer where elements 0/1, 2/3 ... N-1, N are combined with each other
             # Flatten pair lists
             this_settings["nt_nt_associations"] = [idx for idx_pair in association_pairs for idx in idx_pair]
             this_settings["nt_nt_dissociations"] = [idx for idx_pair in dissociation_pairs for idx in idx_pair]
         else:
             raise RuntimeError(
-                "Only 'scine_react_complex_nt2' order supported for bond-based reactive complex calculations."
+                "Only 'NT2'-based job orders are supported for bond-based reactive complex calculations."
             )
 
         if len(reactive_structures) > 1:
             this_settings["rc_minimal_spin_multiplicity"] = bool(
                 self.options.bimolecular_options.minimal_spin_multiplicity)
 
-        if check_for_existing and get_calculation_id(job.order, reactive_structures, self.options.model,
-                                                     self._calculations, settings=this_settings) is not None:
-            return None
+        if check_for_existing:
+            calc_id = get_calculation_id(job.order, reactive_structures, self.options.model, self._calculations,
+                                         settings=this_settings)
+            if calc_id is not None:
+                if isinstance(self.results_enabling_policy, EnableJobSpecificCalculations):
+                    self.results_enabling_policy.process(db.Calculation(calc_id, self._calculations))
+                return None
+
         calculation = db.Calculation()
         calculation.link(self._calculations)
         calculation.create(self.options.model, job, reactive_structures)
@@ -920,7 +941,9 @@ class BondBased(TrialGenerator):
 
     @staticmethod
     def _get_bound_unbound_pairs_from_atoms(
-        atoms: utils.AtomCollection, n_reactive_bound_pairs: int = -1, n_reactive_unbound_pairs: int = -1
+        atoms: utils.AtomCollection,
+        n_reactive_bound_pairs: Optional[int] = None,
+        n_reactive_unbound_pairs: Optional[int] = None
     ):
         """
         Counts how many bound and unbound atom pairs there are in the given atom collection according to distance-based
@@ -934,12 +957,10 @@ class BondBased(TrialGenerator):
             The atom collection of interest.
         n_reactive_bound_pairs : int, optional
             The number of bound reactive pairs to consider.
-            If smaller than zero, all bound atom pairs are included.
-            By default -1.
+            If None, all bound atom pairs are included.
         n_reactive_unbound_pairs : int, optional
             The number of bound reactive pairs to consider.
-            If smaller than zero, all unbound atom pairs are included.
-            By default -1.
+            If None, all unbound atom pairs are included.
 
         Returns
         -------
@@ -951,20 +972,20 @@ class BondBased(TrialGenerator):
         RuntimeError
             Raises if the structure is not corresponding to one connected molecule.
         """
-        if n_reactive_bound_pairs < 0 or n_reactive_unbound_pairs < 0:
+        if n_reactive_bound_pairs is None or n_reactive_unbound_pairs is None:
             bond_orders = utils.BondDetector.detect_bonds(atoms)
             # Get the number of connected and unconnected atom pairs
             graph_result = masm.interpret.graphs(atoms, bond_orders, masm.interpret.BondDiscretization.Binary)
             n_atoms = atoms.size()
             n_pairs = comb(n_atoms, 2)
-            if len(graph_result.graphs) != 1:
-                raise RuntimeError(
-                    "Atom collection contains more than one molecule according to distance-based bond orders."
-                )
-            graph = graph_result.graphs[0]
 
-        n_bound_pairs = graph.E if n_reactive_bound_pairs < 0 else n_reactive_bound_pairs
-        n_unbound_pairs = n_pairs - graph.E if n_reactive_unbound_pairs < 0 else n_reactive_unbound_pairs
+        n_bound_pairs = sum([g.E for g in graph_result.graphs]) if n_reactive_bound_pairs is None \
+            else max(n_reactive_bound_pairs, 0)
+        if n_reactive_unbound_pairs is None:
+            # pylint: disable-next=(possibly-used-before-assignment)
+            n_unbound_pairs = n_pairs - sum([g.E for g in graph_result.graphs])
+        else:
+            n_unbound_pairs = max(n_reactive_unbound_pairs, 0)
         return n_unbound_pairs, n_bound_pairs
 
     def get_unimolecular_job_order(self) -> str:

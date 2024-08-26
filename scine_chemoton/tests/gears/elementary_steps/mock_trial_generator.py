@@ -42,6 +42,8 @@ class MockGenerator(TrialGenerator):
             self.bimolecular_options = self.MockOptions()
             self.settings: Dict[str, str] = {}
 
+    options: Options
+
     def __init__(self):
         super().__init__()
         self.options = self.Options()

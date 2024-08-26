@@ -14,14 +14,24 @@ import numpy as np
 
 # Third party imports
 import scine_database as db
-from scine_database.queries import stop_on_timeout, calculation_exists_in_structure, get_calculation_id_from_structure
+from scine_database.queries import (
+    stop_on_timeout,
+    calculation_exists_in_structure,
+    get_calculation_id_from_structure,
+    optimized_labels,
+)
 import scine_utilities as utils
 import scine_molassembler as masm
 
 # Local application imports
 from . import Gear
 from ..utilities.calculation_creation_helpers import finalize_calculation
-from ..utilities.masm import mol_from_cbor
+from ..utilities.masm import mol_from_cbor, mols_from_properties
+from .network_refinement.enabling import AggregateEnabling
+from scine_chemoton.utilities.place_holder_model import (
+    construct_place_holder_model,
+    PlaceHolderModelType
+)
 
 
 class BasicAggregateHousekeeping(Gear):
@@ -44,7 +54,7 @@ class BasicAggregateHousekeeping(Gear):
     Using the molecular graphs the Structures are then sorted into Compounds/Flasks.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self._required_collections = ["calculations", "compounds", "flasks",
                                       "properties", "structures", "reactions"]
@@ -60,6 +70,12 @@ class BasicAggregateHousekeeping(Gear):
         """
         Caching map from compound id to list of structure ids and decision lists.
         """
+        self.aggregate_enabling: AggregateEnabling = AggregateEnabling()
+        """
+        AggregateEnabling
+            If a structure is added to an aggregate, the analysis of the corresponding aggregate is enabled
+            according to this policy.
+        """
 
     class Options(Gear.Options):
         """
@@ -71,10 +87,10 @@ class BasicAggregateHousekeeping(Gear):
             "bond_order_settings",
             "graph_job",
             "graph_settings",
-            "exclude_misguided_conformer_optimizations"
+            "exclude_misguided_conformer_optimizations",
         ]
 
-        def __init__(self):
+        def __init__(self) -> None:
             super().__init__()
             self.bond_order_job: db.Job = db.Job("scine_bond_orders")
             """
@@ -104,8 +120,10 @@ class BasicAggregateHousekeeping(Gear):
             """
             bool
                 If true, no additional aggregate is created if the structure was generated only by geometry
-                optimization.
+                optimization. The default policy does nothing.
             """
+
+    options: Options
 
     def _create_unique_structure_map(self):
         for compound in stop_on_timeout(self._compounds.iterate_all_compounds()):
@@ -116,6 +134,8 @@ class BasicAggregateHousekeeping(Gear):
             for s_id in structure_ids:
                 structure = db.Structure(s_id, self._structures)
                 if structure.get_label() in [db.Label.DUPLICATE, db.Label.MINIMUM_GUESS]:
+                    continue
+                if not structure.has_graph("masm_decision_list"):
                     continue
                 self._unique_structures[key].append((s_id, structure.get_graph("masm_decision_list")))
 
@@ -174,10 +194,8 @@ class BasicAggregateHousekeeping(Gear):
                         return a_id
         return None
 
-    def _check_graph(self, structure: db.Structure) -> Tuple[bool, Union[None, str]]:
-        job_setup = False
-        graph = None
-        if structure.has_graph("masm_cbor_graph"):
+    def _check_graph(self, structure: db.Structure) -> Optional[str]:
+        if structure.has_graph("masm_cbor_graph") and structure.has_graph("masm_decision_list"):
             # Check if graph exists
             graph = structure.get_graph("masm_cbor_graph")
             label = structure.get_label()
@@ -189,15 +207,14 @@ class BasicAggregateHousekeeping(Gear):
                 if label == db.Label.COMPLEX_OPTIMIZED or label == db.Label.USER_COMPLEX_OPTIMIZED:
                     warn(f"Structure '{str(structure.id())}' received incorrect label '{str(label)}', "
                          f"according to its graph, it is actually NOT a complex.")
-            job_setup = False
-        elif structure.has_properties("bond_orders"):
-            self._setup_graph_job(structure.id())
-            job_setup = True
-        else:
-            self._setup_bond_order_job(structure.id())
-            job_setup = True
+            return graph
 
-        return job_setup, graph
+        if structure.has_properties("bond_orders"):
+            self._setup_graph_job(structure.id())
+            return None
+
+        self._setup_bond_order_job(structure.id())
+        return None
 
     def _label_structure_as_duplicate(self, structure: db.Structure, duplicate_id: db.ID):
         structure.set_label(db.Label.DUPLICATE)
@@ -237,15 +254,13 @@ class BasicAggregateHousekeeping(Gear):
 
     def _store_as_compound(self, structure: db.Structure):
         compound = db.Compound(db.ID(), self._compounds)
-        compound.create([structure.id()])
-        compound.disable_exploration()
+        compound.create([structure.id()], exploration_disabled=True)
         structure.set_aggregate(compound.id())
         self._add_to_map(compound, self._compound_map)
 
     def _store_as_flask(self, structure: db.Structure):
         flask = db.Flask(db.ID(), self._flasks)
-        flask.create([structure.id()], [])
-        flask.disable_exploration()
+        flask.create([structure.id()], [], exploration_disabled=True)
         structure.set_aggregate(flask.id())
         self._add_to_map(flask, self._flask_map)
 
@@ -262,7 +277,7 @@ class BasicAggregateHousekeeping(Gear):
         # Setup query for optimized structures without aggregate
         selection = {
             "$and": [
-                {"label": {"$in": ["complex_optimized", "minimum_optimized", "user_optimized"]}},
+                {"label": {"$in": optimized_labels()}},
                 {"aggregate": ""},
                 {"analysis_disabled": {"$ne": True}},
             ]
@@ -270,15 +285,20 @@ class BasicAggregateHousekeeping(Gear):
         # Loop over all results
         for structure in stop_on_timeout(self._structures.iterate_structures(dumps(selection))):
             structure.link(self._structures)
-            if self.stop_at_next_break_point:
+            if self.have_to_stop_at_next_break_point():
                 return
             # # # Continue if a job for has been setup
-            job_setup, graph = self._check_graph(structure)
-            if job_setup:
+            graph = self._check_graph(structure)
+            if graph is None:
                 continue
             # If a graph exists but no aggregate is registered, generate a new aggregate
             # or append the structure to an existing compound
-            matching_aggregate = self._get_matching_aggregate(structure)
+            try:
+                matching_aggregate = self._get_matching_aggregate(structure)
+            except IndexError:
+                print("Structure: " + structure.id().string() + " has invalid Molassember serialization.")
+                print("The structure is set as IRRELEVANT for further analysis.")
+                structure.set_label(db.Label.IRRELEVANT)
             if matching_aggregate is not None:
                 # Check if duplicate in same aggregate
                 duplicate = self._query_duplicate(structure, matching_aggregate)
@@ -288,6 +308,7 @@ class BasicAggregateHousekeeping(Gear):
                     # only add aggregate info for non-duplicates
                     structure.set_aggregate(matching_aggregate.id())
                     matching_aggregate.add_structure(structure.id())
+                self.aggregate_enabling.process(matching_aggregate)
             else:
                 # Create a new aggregate but only if the structure is not a misguided conformer optimization
                 # TODO this query may become a bottleneck for huge databases.
@@ -333,8 +354,16 @@ class BasicAggregateHousekeeping(Gear):
     ) -> Tuple[str, int, int, int, List[masm.Molecule]]:
         # We could even think about adding the graph here too ...
         centroid = db.Structure(aggregate.get_centroid(), self._structures)
-        graph = centroid.get_graph("masm_cbor_graph")
-        mols = [mol_from_cbor(m) for m in graph.split(";")]
+        try:
+            graph = centroid.get_graph("masm_cbor_graph")
+            mols = [mol_from_cbor(m) for m in graph.split(";")]
+        except RuntimeError as e:
+            tmp = mols_from_properties(centroid, self._properties)
+            if tmp is None:
+                raise RuntimeError(
+                    f'Error: Graph deserialization and recreation failed for {centroid.id().string}'
+                ) from e
+            mols = tmp
         sum_formula = self._get_sum_formula(mols)
         return sum_formula, len(graph.split(";")), centroid.get_charge(), centroid.get_multiplicity(), \
             mols
@@ -347,8 +376,16 @@ class BasicAggregateHousekeeping(Gear):
           * multiplicity
         Returns None if no matching aggregate in DB yet
         """
-        graph = structure.get_graph("masm_cbor_graph")
-        mols = [mol_from_cbor(m) for m in graph.split(";")]
+        try:
+            graph = structure.get_graph("masm_cbor_graph")
+            mols = [mol_from_cbor(m) for m in graph.split(";")]
+        except RuntimeError as e:
+            tmp = mols_from_properties(structure, self._properties)
+            if tmp is None:
+                raise RuntimeError(
+                    f'Error: Graph deserialization and recreation failed for {structure.id().string}'
+                ) from e
+            mols = tmp
         charge = structure.get_charge()
         multiplicity = structure.get_multiplicity()
         sum_formula = self._get_sum_formula(mols)
@@ -382,6 +419,9 @@ class BasicAggregateHousekeeping(Gear):
             decision_list = structure.get_graph("masm_decision_list")
             model = structure.get_model()
             for sid, ref_decision_list in similar_structures:
+                # Check that similar structure is not identical to the given ID
+                if sid == structure.id():
+                    continue
                 if not masm.JsonSerialization.equal_decision_lists(decision_list, ref_decision_list):
                     continue
                 similar_structure = db.Structure(sid, self._structures)
@@ -428,11 +468,11 @@ class ThermoAggregateHousekeeping(BasicAggregateHousekeeping):
             "absolute_frequency_threshold"
         ]
 
-        def __init__(self):
+        def __init__(self) -> None:
             super().__init__()
             self.validation_job: db.Job = db.Job("scine_geometry_validation")
             """
-            db.Job (Scine::Database::Calculation::Job)
+            db.Job
                 The Job used for the geometry validation calculations.
                 The default is: the 'scine_geometry_validation' order on a single core.
             """
@@ -442,25 +482,24 @@ class ThermoAggregateHousekeeping(BasicAggregateHousekeeping):
                 Additional settings passed to the geometry validation order calculation.
                 Empty by default.
             """
-            self.structure_model: Optional[db.Model] = None
+            self.structure_model: db.Model = construct_place_holder_model()
             """
-            Optional[db.Model (Scine::Database::Model)]
+            Optional[db.Model]
                 Validation calculations are only started for structures with the given model.
             """
 
             self.absolute_frequency_threshold: float = 50.0
             """
-            Abs Frequency threshold in cm^-1.
+            float
+                Abs Frequency threshold in cm^-1.
             """
 
-    def __init__(self):
-        super().__init__()
-        self.options = self.Options()
+    options: Options
 
     def _check_for_aggregates(self):
         # Setup query for optimized structures without aggregate
         selection = {"$and": [
-            {"label": {"$in": ["complex_optimized", "minimum_optimized", "user_optimized", "user_complex_optimized"]}},
+            {"label": {"$in": optimized_labels()}},
             {"aggregate": ""},
             {"analysis_disabled": {"$ne": True}},
         ]
@@ -468,25 +507,30 @@ class ThermoAggregateHousekeeping(BasicAggregateHousekeeping):
         # Loop over all results
         for structure in stop_on_timeout(self._structures.iterate_structures(dumps(selection))):
             structure.link(self._structures)
-            if self.stop_at_next_break_point:
+            if self.have_to_stop_at_next_break_point():
                 return
             # Structure Model Check, might be cached
-            if self.options.structure_model is not None:
+            if not isinstance(self.options.structure_model, PlaceHolderModelType):
                 if structure.get_model() != self.options.structure_model:
                     continue
             # # # Start Graph Check
             # # # Continue if a job for has been setup
-            job_setup, graph = self._check_graph(structure)
-            if job_setup:
+            graph = self._check_graph(structure)
+            if graph is None:
                 continue
 
             # If a graph exists but no aggregate is registered, generate a new aggregate
             # or append the structure to an existing compound
 
             # # # Look, if aggregate is there
-            matching_aggregate = self._get_matching_aggregate(structure)
+            try:
+                matching_aggregate = self._get_matching_aggregate(structure)
+            except IndexError:
+                print("Structure: " + structure.id().string() + " has invalid Molassember serialization.")
+                print("The structure is set as IRRELEVANT for further analysis.")
+                structure.set_label(db.Label.IRRELEVANT)
             if matching_aggregate is not None:
-                # # # Here comes a frequency check as well, maybe, maybe for sure
+                # # # Frequency check
                 keep_going, valid_minimum = self._check_frequencies_and_validation_job(structure)
                 # Move on to next structure as either a validation job has been setup or
                 # or the structure was attempted to be validated already
@@ -503,7 +547,7 @@ class ThermoAggregateHousekeeping(BasicAggregateHousekeeping):
 
             # # # Few more checks and make new aggregate
             else:
-                # # # Here comes the frequency check, for sure
+                # # # Frequency check
                 keep_going, valid_minimum = self._check_frequencies_and_validation_job(structure)
                 # Move on to next structure as either a validation job has been setup or
                 # or the structure was attempted to be validated already
@@ -526,8 +570,8 @@ class ThermoAggregateHousekeeping(BasicAggregateHousekeeping):
 
     def _check_frequencies_and_validation_job(self, structure: db.Structure) -> Tuple[bool, bool]:
         """
-        Checks if structure is minimum, sets up a validation job if not setup yet and disables the structure, if it is
-        not a valid minimum and a validation has been attempted already.
+        Checks if structure is minimum, sets up a validation job if not setup yet and disables the structure,
+        if it is not a valid minimum and a validation has been attempted already.
         The latter two should continue the loop.
 
         Parameters

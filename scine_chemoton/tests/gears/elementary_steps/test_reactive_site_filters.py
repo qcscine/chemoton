@@ -6,11 +6,11 @@ See LICENSE.txt for details.
 """
 
 # Standard library imports
-from typing import List, Tuple
 import os
 import json
 import unittest
 from itertools import combinations, product
+from typing import List, Tuple
 
 # Third party imports
 import scine_database as db
@@ -20,7 +20,7 @@ from scine_database import test_database_setup as db_setup
 from ...resources import resources_root_path
 
 # Local application imports
-from ....gears.elementary_steps.reactive_site_filters import (
+from scine_chemoton.filters.reactive_site_filters import (
     MasmChemicalRankingFilter,
     SimpleRankingFilter,
     ReactiveSiteFilter,
@@ -33,29 +33,26 @@ from ....gears.elementary_steps.reactive_site_filters import (
     AtomPairFunctionalGroupFilter,
     SubStructureFilter,
 )
-from ....gears.elementary_steps.reaction_rules.distance_rules import (
+from scine_chemoton.reaction_rules.distance_rules import (
     DistanceRuleAndArray,
     DistanceRuleOrArray,
     SimpleDistanceRule,
     FunctionalGroupRule,
     AlwaysTrue,
 )
-from ....gears.elementary_steps.reaction_rules.polarization_rules import (
+from scine_chemoton.reaction_rules.polarization_rules import (
     PolarizationRuleAndArray,
     PaulingElectronegativityRule,
     PolarizationFunctionalGroupRule
 )
-from ....gears.elementary_steps.aggregate_filters import AggregateFilter
+from scine_chemoton.filters.aggregate_filters import AggregateFilter
 
 # we are using star imports here, because we test `eval(repr(cls))`, which requires to know all classes
 # in these submodules
-from scine_chemoton.gears.elementary_steps. \
-    reaction_rules.element_rules import *  # pylint: disable=(wildcard-import,unused-wildcard-import)  # noqa
-from scine_chemoton.gears.elementary_steps. \
-    reaction_rules.distance_rules import *  # pylint: disable=(wildcard-import,unused-wildcard-import)  # noqa
-from scine_chemoton.gears.elementary_steps. \
-    reaction_rules.polarization_rules import *  # pylint: disable=(wildcard-import,unused-wildcard-import)  # noqa
-from ....gears.elementary_steps.reaction_rules.reaction_rule_library import (
+from scine_chemoton.reaction_rules.element_rules import *  # pylint: disable=(wildcard-import,unused-wildcard-import)  # noqa
+from scine_chemoton.reaction_rules.distance_rules import *  # pylint: disable=(wildcard-import,unused-wildcard-import)  # noqa
+from scine_chemoton.reaction_rules.polarization_rules import *  # pylint: disable=(wildcard-import,unused-wildcard-import)  # noqa
+from scine_chemoton.reaction_rules.reaction_rule_library import (
     CarbonylX,
     CHOlefinC,
     SpNCX,

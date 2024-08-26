@@ -20,7 +20,7 @@ from ....resources import resources_root_path
 
 # Local application imports
 from .....gears.elementary_steps.trial_generator.fragment_based import FragmentBased
-from .....gears.elementary_steps.reactive_site_filters import ReactiveSiteFilter
+from scine_chemoton.filters.reactive_site_filters import ReactiveSiteFilter
 
 
 def test_bimol_associations():

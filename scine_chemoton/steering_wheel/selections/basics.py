@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 # -*- coding: utf-8 -*-
 __copyright__ = """ This code is licensed under the 3-clause BSD license.
 Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
@@ -10,11 +11,11 @@ from typing import List, Optional, Union
 
 import scine_database as db
 
-from scine_chemoton.gears.elementary_steps.aggregate_filters import (
+from scine_chemoton.filters.aggregate_filters import (
     AggregateFilter,
     SelectedAggregateIdFilter
 )
-from scine_chemoton.gears.elementary_steps.reactive_site_filters import (
+from scine_chemoton.filters.reactive_site_filters import (
     ReactiveSiteFilter,
 )
 from ..datastructures import SelectionResult, LogicCoupling
@@ -25,6 +26,8 @@ class AllFromPreviousResultSelection(Selection):
     """
     Selects all aggregates and structures from the previous step result.
     """
+
+    options: AllFromPreviousResultSelection.Options
 
     def _select(self) -> SelectionResult:
         step_result = self.get_step_result()
@@ -41,6 +44,8 @@ class ProductsSelection(Selection):
     """
     Selects all aggregates and structures that are products of the reactions in the previous step result.
     """
+
+    options: ProductsSelection.Options
 
     def _select(self) -> SelectionResult:
         step_result = self.get_step_result()
@@ -62,12 +67,14 @@ class LowestBarrierSelection(Selection):
     Selects the n lowest barrier aggregates and structures from the previous step result.
     """
 
+    options: LowestBarrierSelection.Options
+
     def __init__(self, model: db.Model, n_lowest: int,  # pylint: disable=keyword-arg-before-vararg
                  include_thermochemistry: bool = False,
                  additional_aggregate_filters: Optional[List[AggregateFilter]] = None,
                  additional_reactive_site_filters: Optional[List[ReactiveSiteFilter]] = None,
                  logic_coupling: Union[str, LogicCoupling] = LogicCoupling.AND,
-                 *args, **kwargs):
+                 *args, **kwargs) -> None:
         super().__init__(model, additional_aggregate_filters, additional_reactive_site_filters, logic_coupling,
                          *args, **kwargs)
         self._n_lowest = n_lowest
@@ -98,12 +105,14 @@ class BarriersWithinRangeSelection(Selection):
     have a barrier lower than the given maximum barrier.
     """
 
+    options: BarriersWithinRangeSelection.Options
+
     def __init__(self, model: db.Model, max_barrier: float,  # pylint: disable=keyword-arg-before-vararg
                  include_thermochemistry: bool = False,
                  additional_aggregate_filters: Optional[List[AggregateFilter]] = None,
                  additional_reactive_site_filters: Optional[List[ReactiveSiteFilter]] = None,
                  logic_coupling: Union[str, LogicCoupling] = LogicCoupling.AND,
-                 *args, **kwargs):
+                 *args, **kwargs) -> None:
         super().__init__(model, additional_aggregate_filters, additional_reactive_site_filters, logic_coupling,
                          *args, **kwargs)
         self._max_barrier = max_barrier  # in kJ/mol
@@ -132,6 +141,8 @@ class AllUserInputsSelection(SafeFirstSelection):
     """
     Selects all aggregates and structures that are user inputs.
     """
+
+    options: AllUserInputsSelection.Options
 
     def _select(self) -> SelectionResult:
         query = {

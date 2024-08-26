@@ -17,7 +17,14 @@ from scine_database import test_database_setup as db_setup
 from ....resources import resources_root_path
 
 # Local application imports
-from .....gears.elementary_steps.trial_generator.bond_based import BondBased
+from scine_chemoton.gears.elementary_steps.trial_generator.bond_based import BondBased
+from scine_chemoton.filters.reactive_site_filters import AtomPairFunctionalGroupFilter
+from scine_chemoton.reaction_rules.distance_rules import FunctionalGroupRule, DistanceRuleAndArray
+from scine_chemoton.gears.network_refinement.enabling import (
+    EnableJobSpecificCalculations,
+    EnableAllStructures,
+    AggregateEnabling,
+)
 
 
 def test_bimol():
@@ -255,6 +262,29 @@ def test_bimol():
     trial_generator.bimolecular_reactions(structure_list)
     hits = calculations.query_calculations(json.dumps({}))
     assert len(hits) == 372
+
+    # Check enabling policy
+    trial_generator.results_enabling_policy = EnableJobSpecificCalculations(
+        model, "scine_react_complex_nt2",
+        structure_enabling_policy=EnableAllStructures(aggregate_enabling_policy=AggregateEnabling()))
+    trial_generator.results_enabling_policy.initialize_collections(manager)
+    _, results_s_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.MINIMUM_OPTIMIZED)
+    results_structure = db.Structure(results_s_id, structures)
+    results_structure.disable_analysis()
+    calculation = db.Calculation(hits[0].id(), calculations)
+    calculation.disable_exploration()
+    calculation.disable_analysis()
+    results = calculation.get_results()
+    results.set_structures([results_s_id])
+    calculation.set_results(results)
+    calculation.set_status(db.Status.COMPLETE)
+    # Enable structure again by running the policy through the trial generator.
+    trial_generator.bimolecular_reactions(structure_list)
+    assert results_structure.analyze()
+    assert results_structure.explore()
+    trial_generator.bimolecular_reactions(structure_list)
+    assert results_structure.analyze()
+    assert results_structure.explore()
 
     # Cleaning
     manager.wipe()
@@ -768,6 +798,30 @@ def test_unimol_associations():
         n_diss = len(calculation.get_setting("nt_nt_dissociations"))
         assert n_diss == 0
         assert 2 <= n_formed + n_diss <= 4
+
+    # Check enabling policy
+    trial_generator.results_enabling_policy = EnableJobSpecificCalculations(
+        model, "scine_react_complex_nt2",
+        structure_enabling_policy=EnableAllStructures(aggregate_enabling_policy=AggregateEnabling()))
+    trial_generator.results_enabling_policy.initialize_collections(manager)
+    _, results_s_id = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.MINIMUM_OPTIMIZED)
+    results_structure = db.Structure(results_s_id, structures)
+    results_structure.disable_analysis()
+    results_structure.disable_exploration()
+    calculation = db.Calculation(hits[0].id(), calculations)
+    calculation.disable_exploration()
+    calculation.disable_analysis()
+    results = calculation.get_results()
+    results.set_structures([results_s_id])
+    calculation.set_results(results)
+    calculation.set_status(db.Status.COMPLETE)
+    # Enable structure again by running the policy through the trial generator.
+    trial_generator.unimolecular_reactions(structure)
+    assert results_structure.analyze()
+    assert results_structure.explore()
+    trial_generator.unimolecular_reactions(structure)
+    assert results_structure.analyze()
+    assert results_structure.explore()
 
     # Cleaning
     manager.wipe()
@@ -1320,3 +1374,111 @@ def test_estimate_n_bimolecular_trials():
         structure_file1, structure_file2, attack_points_per_site=2, n_inter_reactive_pairs=0
     )
     assert n_trials == 0
+
+
+def test_complex():
+    """
+    Tests whether reactive complexes can be explored with the bond-based trial generator
+    """
+    # Connect to test DB
+    manager = db_setup.get_clean_db("chemoton_test_complex_bond_based")
+
+    # Get collections
+    structures = manager.get_collection("structures")
+    flasks = manager.get_collection("flasks")
+    calculations = manager.get_collection("calculations")
+
+    # Add fake data
+    model = db_setup.get_fake_model()
+    rr = resources_root_path()
+    for mol in ["ga_complex"]:
+        graph = json.load(open(os.path.join(rr, mol + ".json"), "r"))
+        structure = db.Structure()
+        structure.link(structures)
+        structure.create(os.path.join(rr, mol + ".xyz"), 0, 1)
+        structure.set_label(db.Label.COMPLEX_OPTIMIZED)
+        structure.set_graph("masm_cbor_graph", graph["masm_cbor_graph"])
+        structure.set_graph("masm_idx_map", graph["masm_idx_map"])
+        structure.set_graph("masm_decision_list", graph["masm_decision_list"])
+        flask = db.Flask()
+        flask.link(flasks)
+        flask.create([structure.id()], [])
+        structure.set_aggregate(flask.id())
+
+    ethene_c = {'C': DistanceRuleAndArray([
+        FunctionalGroupRule(0, 'C', (3, 3), {'C': 1, 'H': 2}, True),
+        FunctionalGroupRule(1, 'C', (3, 3), {'C': 1, 'H': 2}, True),
+    ])}
+    ethene_h = {'H': DistanceRuleAndArray([
+        FunctionalGroupRule(0, 'H', (1, 1), {'C': 1}, True),
+        FunctionalGroupRule(1, 'C', (3, 3), {'C': 1, 'H': 2}, True),
+        FunctionalGroupRule(2, 'C', (3, 3), {'C': 1, 'H': 2}, True),
+    ])}
+    c_to_ga = {'C': DistanceRuleAndArray([
+        FunctionalGroupRule(0, 'C', (4, 4), {'C': 1, 'H': 2, 'Ga': 1}, True),
+        FunctionalGroupRule(1, 'Ga', (3, 3), {'C': 1, 'O': 2}, True),
+    ])}
+
+    # filter
+    association_rules = [
+        # Ethene C with Ga
+        ({'Ga': True}, ethene_c),
+        # Ethene H and C bound to Ga
+        (ethene_h, c_to_ga)
+    ]
+    dissociation_rules = [
+        # Ga-C
+        ({'Ga': True}, c_to_ga),
+        # Ethene C-H
+        (ethene_c, ethene_h)
+    ]
+
+    # Setup trial generator for either one dissociation or one association
+    trial_generator = BondBased()
+    trial_generator.reactive_site_filter = AtomPairFunctionalGroupFilter(association_rules, dissociation_rules)
+    trial_generator.initialize_collections(manager)
+    trial_generator.options.model = model
+    trial_generator.options.unimolecular_options.min_bond_modifications = 1
+    trial_generator.options.unimolecular_options.max_bond_modifications = 4
+    trial_generator.options.unimolecular_options.min_bond_dissociations = 0
+    trial_generator.options.unimolecular_options.max_bond_dissociations = 2
+    trial_generator.options.unimolecular_options.min_bond_formations = 0
+    trial_generator.options.unimolecular_options.max_bond_formations = 2
+
+    # Expected number of hits:
+    #   H2C=CH2 + Ga-CH2-CH3
+    # with 2 max bond formations, 2 max bond dissociations, 4 max bond modifications
+    # 4 + 1 = 5 allowed single dissociations
+    # (5 over 2) = 10 allowed double dissociations
+    # 4 + 2 = 6 allowed single associations
+    # (6 over 2) = 15 allowed double associations
+    # 1 Ass + 1 Diss = 6 * 5 = 30
+    # 1 Ass + 2 Diss = 6 + 10 = 60
+    # 2 Ass + 1 Diss = 15 * 5 = 75
+    # 2 Ass + 2 Diss = 15 * 10 = 150
+    n_expected = 5 + 10 + 6 + 15 + 30 + 60 + 75 + 150
+    hits = structures.query_structures(json.dumps({"label": "reactive_complex_guess"}))
+    assert len(hits) == 0
+    hits = calculations.query_calculations(json.dumps({}))
+    assert len(hits) == 0
+
+    trial_generator.unimolecular_reactions(structure)
+    hits = calculations.query_calculations(json.dumps({}))
+    assert len(hits) == n_expected
+
+    # Run a second time
+    trial_generator.unimolecular_reactions(structure)
+    hits = calculations.query_calculations(json.dumps({}))
+    assert len(hits) == n_expected
+
+    for hit in hits:
+        calculation = db.Calculation(hit.id(), calculations)
+        assert len(calculation.get_structures()) == 1
+        assert calculation.get_status() == db.Status.HOLD
+        assert calculation.get_model() == model
+        assert calculation.get_job().order == "scine_react_complex_nt2"
+        n_formed = len(calculation.get_setting("nt_nt_associations"))
+        assert n_formed in (0, 2, 4)  # 2 entries per pair
+        n_diss = len(calculation.get_setting("nt_nt_dissociations"))
+        assert n_diss in (0, 2, 4)
+        assert 0 <= n_formed + n_diss <= 4 * 2

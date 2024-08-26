@@ -23,12 +23,12 @@ def mol_to_cbor(mol: masm.Molecule) -> str:
 
     Parameters
     ----------
-    mol :: masm.Molecule
+    mol : masm.Molecule
         Molecule to serialize
 
     Returns
     -------
-    serialization :: str
+    serialization : str
         The string-serialized molecule representation
     """
     serializer = masm.JsonSerialization
@@ -47,12 +47,12 @@ def mol_from_cbor(cbor_str: str) -> masm.Molecule:
 
     Parameters
     ----------
-    cbor_str :: str
+    cbor_str : str
         String to deserialize into a Molecule
 
     Returns
     -------
-    molecule :: masm.Molecule
+    molecule : masm.Molecule
         The deserialized molecule
     """
     serializer = masm.JsonSerialization
@@ -62,18 +62,54 @@ def mol_from_cbor(cbor_str: str) -> masm.Molecule:
     return serialization.to_molecule()
 
 
+def mols_from_properties(structure: db.Structure, properties: db.Collection) -> Optional[List[masm.Molecule]]:
+    """
+    Generate all molecules based on atomic positions in a structure and
+    the bond orders stored in attache properties.
+
+    Parameters
+    ----------
+    structure : db.Structure
+        The structure whose contained molecule(s) to analyze.
+    properties : db.Collection
+        The collection holding all properties.
+
+    Returns
+    -------
+    molecules : List[masm.Molecule]
+        A list of all the molecules contained in the database structure.
+    """
+    atoms = structure.get_atoms()
+    distance_bos = utils.BondDetector.detect_bonds(atoms)
+    # Check/get bond orders
+    if not structure.has_property('bond_orders'):
+        return None
+    bo_property_id = structure.get_property('bond_orders')
+    bo_property = db.SparseMatrixProperty(bo_property_id)
+    bo_property.link(properties)
+    # Update bond orders
+    bond_orders = utils.BondOrderCollection(len(atoms))
+    bond_orders.matrix = bo_property.data()
+    final_bo_matrix = (bond_orders.matrix).maximum(distance_bos.matrix)
+    final_bo_matrix = (final_bo_matrix).multiply(distance_bos.matrix)
+    bos = utils.BondOrderCollection(len(atoms))
+    bos.matrix = final_bo_matrix
+    # Build and return molecules
+    return masm.interpret.molecules(atoms, bos, set(), {}, masm.interpret.BondDiscretization.Binary).molecules
+
+
 def deserialize_molecules(structure: db.Structure) -> List[masm.Molecule]:
     """
     Retrieves all molecules stored for a structure
 
     Parameters
     ----------
-    structure :: db.Structure
+    structure : db.Structure
         The structure whose contained molecules to deserialize
 
     Returns
     -------
-    molecules :: List[masm.Molecule]
+    molecules : List[masm.Molecule]
         A list of all the molecules contained in the database structure
     """
     multiple_cbors = structure.get_graph("masm_cbor_graph")
@@ -86,17 +122,17 @@ def distinguish_components(components: List[int], map_unary: Callable[[int], Any
 
     Parameters
     ----------
-    components :: List[int]
+    components : List[int]
         A per-index mapping to a component index. Must contain only sequential
         numbers starting from zero.
-    map_unary :: Callable[[int], Any]
+    map_unary : Callable[[int], Any]
         A unary callable that is called with an index, not a component index,
         yielding some comparable type. Components of indices are then split
         by matching results of invocations of this callable.
 
     Returns
     -------
-    components :: List[int]
+    components : List[int]
         A per-index mapping to a component index. Contains only sequential
         numbers starting from zero.
     """
@@ -131,14 +167,14 @@ def distinct_components(mol: masm.Molecule, h_only: bool) -> List[int]:
 
     Parameters
     ----------
-    mol :: masm.Molecule
+    mol : masm.Molecule
         A molecule whose atoms to generate distinct components for
-    h_only :: bool
+    h_only : bool
         Whether to only apply ranking deduplication to hydrogen atoms
 
     Returns
     -------
-    components :: List[int]
+    components : List[int]
         A flat per-atom index mapping to a component index. Contains only
         sequential numbers starting from zero.
     """
@@ -157,14 +193,14 @@ def distinct_atoms(mol: masm.Molecule, h_only: bool) -> List[int]:
 
     Parameters
     ----------
-    mol :: masm.Molecule
+    mol : masm.Molecule
         A molecule whose atoms to list distinct atoms for
-    h_only :: bool
+    h_only : bool
         Whether to only apply ranking deduplication to hydrogen atoms
 
     Returns
     -------
-    components :: List[int]
+    components : List[int]
         A list of ranking-distinct atoms
     """
 
@@ -183,9 +219,9 @@ def distinct_atoms(mol: masm.Molecule, h_only: bool) -> List[int]:
 
 def make_sorted_pair(a: int, b: int) -> Tuple[int, int]:
     if b < a:
-        return (b, a)
+        return b, a
 
-    return (a, b)
+    return a, b
 
 
 ComponentDistanceTuple = namedtuple("ComponentDistanceTuple", ["mol_idx", "components", "distance"])
@@ -270,22 +306,22 @@ def get_atom_pairs(
 
     Parameters
     ----------
-    atoms :: utils.AtomCollection
-        The atom collection that is investigated.
-    distance_bounds :: Tuple[int, int]
+    structure : db.Structure
+        The structure that is investigated
+    distance_bounds : Tuple[int, int]
         The minimum and maximum distance between two points that is allowed so
         that they are considered a valid atom pair.
-    prune :: str
-        Whether to prune atom pairings by molassembler's ranking distinct
+    prune : str
+        Whether to prune atom pairings by Molassembler's ranking distinct
         atoms descriptor. Allowed values: `'None'`, `'Hydrogen'`, `'All'`
-    superset :: Optional[Set[Tuple[int, int]]]
+    superset : Optional[Set[Tuple[int, int]]]
         Optional superset of pairs to filter. If set, will filter the passed
-        set. Otherwise generates atom pairings from all possible pairs in the
+        set. Otherwise, generates atom pairings from all possible pairs in the
         molecule.
 
     Returns
     -------
-    pairs :: Set[Tuple[int, int]]
+    pairs : Set[Tuple[int, int]]
         The indices of valid atom pairs.
     """
     valid_option_values = ["None", "Hydrogen", "All"]

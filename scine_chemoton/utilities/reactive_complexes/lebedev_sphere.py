@@ -15,18 +15,18 @@ class LebedevSphere:
 
     @property
     def points(self) -> np.ndarray:
-        """np.ndarray :: The points of the Lebedev sphere."""
+        """np.ndarray : The points of the Lebedev sphere."""
         return self._points
 
     @property
     def nearest_neighbors(self) -> List[List[int]]:
-        """List[List[int]] :: The nearest neighbors of all points on the sphere."""
+        """List[List[int]] : The nearest neighbors of all points on the sphere."""
         return self._nearest_neighbors
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}()"
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._points = np.array(
             [
                 [+1.0000000, +0.0000000, +0.0000000],

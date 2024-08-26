@@ -8,11 +8,13 @@ See LICENSE.txt for details.
 # Standard library imports
 from abc import ABC, abstractmethod
 from collections import UserDict
-from ctypes import c_int
+from ctypes import c_int, c_bool
 from enum import Enum
+from multiprocessing import Value
+from multiprocessing.sharedctypes import SynchronizedBase
 from setproctitle import setproctitle
-from typing import List, Callable, Optional
-import signal
+from typing import List, Generator, Tuple, Any, ItemsView, Union
+from typing_extensions import TypeVar
 import time
 
 # Third party imports
@@ -20,21 +22,38 @@ import scine_database as db
 
 from scine_chemoton.utilities import connect_to_db
 from scine_chemoton.utilities.options import BaseOptions
+from scine_chemoton.utilities.place_holder_model import (
+    ModelNotSetError,
+    construct_place_holder_model,
+    PlaceHolderModelType
+)
+
+T = TypeVar('T')
 
 
 class HoldsCollections:
 
-    def __init__(self):
-        super().__init__()  # necessary for multiple inheritance
-        self._required_collections: List[str] = []
-        self._manager = None
-        self._calculations = None
-        self._compounds = None
-        self._elementary_steps = None
-        self._flasks = None
-        self._properties = None
-        self._reactions = None
-        self._structures = None
+    _required_collections: List[str]
+    _manager: db.Manager
+    _calculations: db.Collection
+    _compounds: db.Collection
+    _elementary_steps: db.Collection
+    _flasks: db.Collection
+    _properties: db.Collection
+    _reactions: db.Collection
+    _structures: db.Collection
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._required_collections = []
+        self._manager = None  # type: ignore
+        self._calculations = None  # type: ignore
+        self._compounds = None  # type: ignore
+        self._elementary_steps = None  # type: ignore
+        self._flasks = None  # type: ignore
+        self._properties = None  # type: ignore
+        self._reactions = None  # type: ignore
+        self._structures = None  # type: ignore
 
     @staticmethod
     def possible_attributes() -> List[str]:
@@ -65,21 +84,25 @@ class HoldsCollections:
             setattr(self, "_parent", None)
         for attr in self.possible_attributes():
             setattr(self, f"_{attr}", None)
-        self._unset_collections_of_attributes(self)
+        self = self._unset_collections_of_attributes(self)  # pylint: disable=(self-cls-assignment)
 
-    def _unset_collections_of_attributes(self, inst):
+    def _unset_collections_of_attributes(self, inst: T) -> T:
+        items: Union[Generator[Tuple[Any, Any], None, None], ItemsView[Any, Any]]
         if isinstance(inst, dict) or isinstance(inst, UserDict):
             items = inst.items()
         elif hasattr(inst, '__dict__'):
             items = inst.__dict__.items()
         elif hasattr(inst, '__slots__'):
-            items = ((s, getattr(inst, s)) for s in inst.__slots__)
+            slots = inst.__slots__
+            if isinstance(slots, str):
+                slots = [slots]
+            items = ((s, getattr(inst, s)) for s in slots)
         else:
             return inst
         for key, attr in list(items):
-            if isinstance(attr, HoldsCollections):
+            if hasattr(attr, "unset_collections"):
                 attr.unset_collections()
-            elif isinstance(attr, db.Collection) or isinstance(attr, db.Manager):
+            elif isinstance(attr, db.Collection) or isinstance(attr, db.Manager) or isinstance(attr, SynchronizedBase):
                 if isinstance(inst, dict) or isinstance(inst, UserDict):
                     inst[key] = None
                 else:
@@ -96,7 +119,8 @@ class HoldsCollections:
                     else:
                         setattr(inst, key, attr)
                     continue
-            if hasattr(attr, '__iter__') and hasattr(attr, "__setitem__") and not isinstance(attr, str):
+            if hasattr(attr, '__iter__') and hasattr(attr, "__setitem__") \
+                    and not isinstance(attr, str) and not isinstance(attr, PlaceHolderModelType):
                 for i, a in list(enumerate(attr)):
                     a = self._unset_collections_of_attributes(a)
                     attr[i] = a
@@ -109,7 +133,7 @@ class HoldsCollections:
 
 class HasName:
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()  # necessary for multiple inheritance
         self._name = 'Chemoton' + self.__class__.__name__
 
@@ -152,11 +176,11 @@ class Gear(ABC, HoldsCollections, HasName):
 
         __slots__ = ("model", "cycle_time")
 
-        def __init__(self):
+        def __init__(self) -> None:
             super().__init__()
-            self.model = db.Model("PM6", "PM6", "")
+            self.model: db.Model = construct_place_holder_model()
             """
-            Model
+            db.Model
                 The model the Gear is working with.
             """
             self.cycle_time: int = 10
@@ -168,36 +192,29 @@ class Gear(ABC, HoldsCollections, HasName):
                 cycle times and not cause multiple cycles of the same Gear.
             """
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.options = self.Options()
         self.name = 'Chemoton' + self.__class__.__name__ + 'Gear'
-        self.stop_at_next_break_point = False
+        self._stop_at_next_break_point = Value(c_bool, False)
+        self._model_is_required = True
+
+    def have_to_stop_at_next_break_point(self) -> bool:
+        if self._stop_at_next_break_point is None:
+            self._stop_at_next_break_point = Value(c_bool, False)
+        return self._stop_at_next_break_point.value  # type: ignore
+
+    def stop_at_break_point(self, stop: bool) -> None:
+        if self._stop_at_next_break_point is None:
+            self._stop_at_next_break_point = Value(c_bool, stop)
+        else:
+            self._stop_at_next_break_point.value = stop  # type: ignore
 
     def __eq__(self, other):
         if not isinstance(other, Gear):
             return False
-        return self.stop_at_next_break_point == other.stop_at_next_break_point \
+        return self.have_to_stop_at_next_break_point() == other.have_to_stop_at_next_break_point() \
             and self.options == other.options
-
-    class _DelayedKeyboardInterrupt:
-        def __init__(self, callable: Optional[Callable]):
-            self.signal_received = False
-            self.callable = callable
-
-        def __enter__(self):
-            self.old_handler = \
-                signal.signal(signal.SIGINT, self.handler)  # pylint: disable=attribute-defined-outside-init
-
-        def handler(self, sig, frame):
-            self.signal_received = (sig, frame)
-            if self.callable is not None:
-                self.callable()
-
-        def __exit__(self, type, value, traceback):
-            signal.signal(signal.SIGINT, self.old_handler)
-            if self.signal_received:
-                self.old_handler(*self.signal_received)
 
     def __call__(self, credentials: db.Credentials, loop_count: c_int, single: bool = False):
         """
@@ -206,19 +223,23 @@ class Gear(ABC, HoldsCollections, HasName):
 
         Parameters
         ----------
-        credentials :: db.Credentials (Scine::Database::Credentials)
+        credentials : db.Credentials (Scine::Database::Credentials)
             The credentials to a database storing a reaction network.
-        loop_count :: c_int
+        loop_count : c_int
             A shared memory integer that allows to communicate the number of loops
             across processes.
-        single :: bool
+        single : bool
             If true, runs only a single iteration of the actual loop.
             Default: false, meaning endless repetition of the loop.
         """
+        self.stop_at_break_point(False)
         self._give_current_process_own_name()
 
         # Make sure cycle time exists
         sleep_time = self.options.cycle_time
+        if self._model_is_required and isinstance(self.options.model, PlaceHolderModelType):
+            raise ModelNotSetError(f"The model option has not been set for {self.name}, "
+                                   f"please specify a model before running the gear.")
 
         # Prepare database connection and members
         _initialize_a_gear_to_a_db(self, credentials)
@@ -226,21 +247,21 @@ class Gear(ABC, HoldsCollections, HasName):
         # Infinite loop with sleep
         last_cycle = time.time()
         # Instant first loop
-        with self._DelayedKeyboardInterrupt(callable=self.stop):
-            self._loop_impl()
+        self._loop_impl()
         loop_count.value += 1
         # Stop if only a single loop was requested
         if single:
             return
         while True:
+            if self.have_to_stop_at_next_break_point():
+                return
             # Wait if needed
             now = time.time()
             if now - last_cycle < sleep_time:
                 time.sleep(sleep_time - now + last_cycle)
             last_cycle = time.time()
 
-            with self._DelayedKeyboardInterrupt(callable=self.stop):
-                self._loop_impl()
+            self._loop_impl()
             loop_count.value += 1
 
     @abstractmethod
@@ -251,7 +272,7 @@ class Gear(ABC, HoldsCollections, HasName):
         pass
 
     def stop(self) -> None:
-        self.stop_at_next_break_point = True
+        self.stop_at_break_point(True)
 
 
 def _initialize_a_gear_to_a_db(gear: Gear, credentials: db.Credentials) -> None:

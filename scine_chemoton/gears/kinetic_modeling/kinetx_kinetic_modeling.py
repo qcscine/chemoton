@@ -5,11 +5,14 @@ Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Gr
 See LICENSE.txt for details.
 """
 
+from typing import List, Dict
+
 # Third party imports
 import scine_database as db
 import scine_utilities as utils
 
 from .prepare_kinetic_modeling_job import KineticModelingJobFactory
+from ...utilities.model_combinations import ModelCombination
 
 
 class KinetxKineticModelingJobFactory(KineticModelingJobFactory):
@@ -17,10 +20,12 @@ class KinetxKineticModelingJobFactory(KineticModelingJobFactory):
     A class that creates KiNetX kinetic modeling jobs.
     """
 
-    def __init__(self, electronic_model: db.Model, hessian_model: db.Model, manager: db.Manager,
-                 only_electronic: bool = False):
-        super().__init__(electronic_model=electronic_model, hessian_model=hessian_model, manager=manager,
-                         only_electronic=only_electronic)
+    def __init__(self, model_combinations: List[ModelCombination], model_combinations_reactions: List[ModelCombination],
+                 manager: db.Manager,
+                 only_electronic: bool = False) -> None:
+        super().__init__(model_combinations=model_combinations,
+                         model_combinations_reactions=model_combinations_reactions,
+                         manager=manager, only_electronic=only_electronic)
 
     def create_kinetic_modeling_job(self, settings: utils.ValueCollection) -> bool:
         reactions, aggregates = self._setup_general_settings(settings)
@@ -34,6 +39,11 @@ class KinetxKineticModelingJobFactory(KineticModelingJobFactory):
         assert None not in rhs
         settings["lhs_rates"] = lhs  # type: ignore
         settings["rhs_rates"] = rhs  # type: ignore
+
+        all_structure_ids = [a.get_db_object().get_centroid() for a in aggregates.values()]
+        if self._calc_already_set_up(all_structure_ids, settings):
+            return False
+
         return self._finalize_calculation(settings, [a.get_db_object().get_centroid() for a in aggregates.values()])
 
     @staticmethod
@@ -50,3 +60,10 @@ class KinetxKineticModelingJobFactory(KineticModelingJobFactory):
             "convergence": 1e-10,
             "concentration_label_postfix": ""
         })
+
+    def _identical_model_definition(self, _: utils.ValueCollection, __: Dict):
+        return True
+
+    @staticmethod
+    def order_dependent_setting_keys() -> List[str]:
+        return []

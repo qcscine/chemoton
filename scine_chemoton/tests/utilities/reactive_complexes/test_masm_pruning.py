@@ -18,7 +18,7 @@ def test_masm_pruning():
     class MockStructure(object):
         graph: dict = {}
 
-        def __init__(self, graph: dict):
+        def __init__(self, graph: dict) -> None:
             self.graph = graph
 
         def get_graph(self, key: str) -> str:

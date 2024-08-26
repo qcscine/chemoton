@@ -9,6 +9,7 @@ See LICENSE.txt for details.
 import os
 import unittest
 from json import dumps
+import pytest
 
 # Third party imports
 import scine_database as db
@@ -21,8 +22,9 @@ from ..resources import resources_root_path
 
 # Local application imports
 from ...engine import Engine
-from ...gears.elementary_steps.aggregate_filters import MolecularWeightFilter
+from scine_chemoton.filters.aggregate_filters import MolecularWeightFilter
 from ...gears.thermo import BasicThermoDataCompletion
+from scine_chemoton.utilities.place_holder_model import ModelNotSetError
 
 
 class ThermoTests(unittest.TestCase, HoldsCollections):
@@ -34,6 +36,16 @@ class ThermoTests(unittest.TestCase, HoldsCollections):
 
     def tearDown(self) -> None:
         self._manager.wipe()
+
+    def test_failure_with_no_model(self):
+        # Connect to test DB
+        manager = db_setup.get_clean_db("chemoton_test_missing_model_check")
+        self.custom_setup(manager)
+        thermo_gear = BasicThermoDataCompletion()
+        thermo_engine = Engine(manager.get_credentials(), fork=False)
+        thermo_engine.set_gear(thermo_gear)
+        with pytest.raises(ModelNotSetError):
+            thermo_engine.run(single=True)
 
     def test_hessian_calculation(self):
         # Connect to test DB
@@ -258,6 +270,63 @@ class ThermoTests(unittest.TestCase, HoldsCollections):
         hits = self._calculations.query_calculations(dumps({}))
         assert len(hits) == 1
         assert hits[0].get_structures()[0] == structure.id()
+
+    def test_hessian_for_single_atom(self):
+        # Connect to test DB
+        manager = db_setup.get_clean_db("chemoton_hessian_for_single_atom")
+        self.custom_setup(manager)
+
+        # Add structure data
+        model = db.Model("FAKE", "FAKE", "F-AKE")
+        rr = resources_root_path()
+        # First structure
+        structure = db.Structure()
+        structure.link(self._structures)
+        structure.create(os.path.join(rr, "chloride.xyz"), -1, 1)
+        structure.set_label(db.Label.USER_OPTIMIZED)
+        structure.set_model(model)
+        # Second structure
+        model2 = db.Model("realfake", "realfake", "realf-ake")
+        structure2 = db.Structure()
+        structure2.link(self._structures)
+        structure2.create(os.path.join(rr, "chloride.xyz"), -1, 1)
+        structure2.set_label(db.Label.MINIMUM_OPTIMIZED)
+        structure2.set_model(model2)
+
+        compound = db.Compound(db.ID(), self._compounds)
+        compound.create([structure.id()])
+        structure.set_aggregate(compound.id())
+        compound.add_structure(structure2.id())
+        structure2.set_aggregate(compound.id())
+
+        # Setup gear
+        thermo_gear = BasicThermoDataCompletion()
+        thermo_gear.options.model = model
+        thermo_gear.options.structure_model = model
+        thermo_engine = Engine(manager.get_credentials(), fork=False)
+        thermo_engine.set_gear(thermo_gear)
+
+        # Run a single loop
+        thermo_engine.run(single=True)
+
+        # Checks
+        hits = self._properties.query_properties(dumps({}))
+        assert len(hits) == 2
+        assert hits[0].get_structure() == structure.id()
+        assert hits[1].get_structure() == structure.id()
+        assert structure.has_property('gibbs_energy_correction')
+        hits = structure.query_properties('gibbs_energy_correction', model, self._properties)
+        assert len(hits) == 1
+        assert structure.has_property('hessian')
+        hits = structure.query_properties('hessian', model, self._properties)
+        assert len(hits) == 1
+        hessian_prop = db.DenseMatrixProperty(hits[0])
+        hessian_prop.link(self._properties)
+        hessian = hessian_prop.data
+        assert hessian.shape == (3, 3)
+        for i in range(3):
+            for j in range(3):
+                assert hessian[i][j] == 0.0
 
 
 def test_wrong_structure_model():

@@ -71,7 +71,7 @@ class FragmentBased(TrialGenerator):
                 "minimal_spin_multiplicity",
             )
 
-            def __init__(self):
+            def __init__(self) -> None:
                 self.job: db.Job = db.Job("scine_react_complex_nt")
                 """
                 db.Job (Scine::Database::Calculation::Job)
@@ -132,7 +132,7 @@ class FragmentBased(TrialGenerator):
                 "job_settings_disconnective",
             )
 
-            def __init__(self):
+            def __init__(self) -> None:
                 self.enabled: bool = True
                 """
                 bool
@@ -178,7 +178,7 @@ class FragmentBased(TrialGenerator):
                 "max_within_fragment_graph_distance",
             )
 
-            def __init__(self):
+            def __init__(self) -> None:
                 self.enabled = True
                 """
                 bool
@@ -231,7 +231,11 @@ class FragmentBased(TrialGenerator):
                     `consider_diatomic_fragments` is `True`. (default: 1)
                 """
 
-        def __init__(self, parent: Optional[TrialGenerator] = None):
+        unimolecular_dissociation_options: UnimolDissociationOptions
+        unimolecular_association_options: UnimolAssociationOptions
+        bimolecular_association_options: BimolAssociationOptions
+
+        def __init__(self, parent: Optional[TrialGenerator] = None) -> None:
             super().__init__(parent)
             self.unimolecular_dissociation_options = self.UnimolDissociationOptions()
             """
@@ -252,7 +256,9 @@ class FragmentBased(TrialGenerator):
                 to be associative in nature.
             """
 
-    def clear_cache(self):
+    options: Options
+
+    def clear_cache(self) -> None:
         pass
 
     @_sanity_check_wrapper
@@ -302,10 +308,10 @@ class FragmentBased(TrialGenerator):
 
         Parameters
         ----------
-        structure_list :: List[db.Structure]
+        structure_list : List[db.Structure]
             List of the two structures to be considered.
             The Structures have to be linked to a database.
-        with_exact_settings_check :: bool
+        with_exact_settings_check : bool
             If True, more expensive queries are carried out to check if the settings of the
             calculations are exactly the same as the settings of the trial generator. This allows to add more
             inclusive additional reaction trials but the queries are less efficient, therefore this option
@@ -400,7 +406,7 @@ class FragmentBased(TrialGenerator):
             structure_list, shifted_inter_coords
         )
         # Shift back
-        inter_coords = self._shift_reaction_coordinates(filtered_inter_coords, -n_atoms1)
+        inter_coords = self._shift_reaction_coordinates(filtered_inter_coords, -n_atoms1)  # type: ignore
 
         # For each coord generate the corresponding reactive complexes
         for (
@@ -410,7 +416,7 @@ class FragmentBased(TrialGenerator):
             rot,
             spread,
         ) in self.options.bimolecular_association_options.complex_generator.generate_reactive_complexes(
-            structure_list[0], structure_list[1], inter_coords
+            structure_list[0], structure_list[1], inter_coords  # type: ignore
         ):
             yield inter_pairs, align1, align2, rot, spread
 
@@ -591,10 +597,10 @@ class FragmentBased(TrialGenerator):
 
         Parameters
         ----------
-        structure :: db.Structure
+        structure : db.Structure
             The structure to be considered. The Structure has to
             be linked to a database.
-        with_exact_settings_check :: bool
+        with_exact_settings_check : bool
             If True, more expensive queries are carried out to check if the settings of the
             calculations are exactly the same as the settings of the trial generator. This allows to add more
             inclusive additional reaction trials but the queries are less efficient, therefore this option
@@ -696,45 +702,45 @@ class FragmentBased(TrialGenerator):
         Parameters
         ----------
 
-        reactive_structures :: List[db.ID]
+        reactive_structures : List[db.ID]
             List of the IDs of the reactants and, for intermolecular reactions,
             the reactive complex.
-        reaction_type :: ReactionType
+        reaction_type : ReactionType
             Type of the reaction to be set up.
-        lhs_list, rhs_list :: List[int]
+        lhs_list, rhs_list : List[int]
             Indices of the reactive sites within the reactive complex.
-        job :: since_database.Job
-        settings :: scine_utilities.ValueCollection
-        lhs_alignment :: List[float], length=9
+        job : since_database.Job
+        settings : scine_utilities.ValueCollection
+        lhs_alignment : List[float], length=9
             In case of two structures building the reactive complex, this option
             describes a rotation of the first structure (index 0) that aligns
             the reaction coordinate along the x-axis (pointing towards +x).
             The rotation assumes that the geometric mean position of all
             atoms in the reactive site (``lhs_list``) is shifted into the
             origin.
-        rhs_alignment :: List[float], length=9
+        rhs_alignment : List[float], length=9
             In case of two structures building the reactive complex, this option
             describes a rotation of the second structure (index 1) that aligns
             the reaction coordinate along the x-axis (pointing towards -x).
             The rotation assumes that the geometric mean position of all
             atoms in the reactive site (``rhs_list``) is shifted into the
             origin.
-        x_rotation :: float
+        x_rotation : float
             In case of two structures building the reactive complex, this option
             describes a rotation angle around the x-axis of one of the two
             structures after ``lhs_alignment`` and ``rhs_alignment`` have
             been applied.
-        spread :: float
+        spread : float
             In case of two structures building the reactive complex, this option
             gives the distance by which the two structures are moved apart along
             the x-axis after ``lhs_alignment``, ``rhs_alignment``, and
             ``x_rotation`` have been applied.
-        displacement :: float
+        displacement : float
             In case of two structures building the reactive complex, this option
             adds a random displacement to all atoms (random direction, random
             length). The maximum length of this displacement (per atom) is set to
             be the value of this option.
-        check_for_existing :: bool
+        check_for_existing : bool
             Whether it should be checked if a calculation with these exact
             settings and model already exists or not (default: False)
         """

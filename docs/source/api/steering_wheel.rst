@@ -1,6 +1,10 @@
 Steering Wheel
 ==============
 
+Data Structures
+---------------
+.. automodule:: scine_chemoton.steering_wheel.datastructures
+
 Interfaces
 ----------
 .. autoclass:: scine_chemoton.steering_wheel.SteeringWheel
@@ -8,10 +12,6 @@ Interfaces
 .. autoclass:: scine_chemoton.steering_wheel.selections.SelectionAndArray
 .. autoclass:: scine_chemoton.steering_wheel.selections.SelectionOrArray
 .. autoclass:: scine_chemoton.steering_wheel.network_expansions.NetworkExpansion
-
-Data Structures
----------------
-.. automodule:: scine_chemoton.steering_wheel.datastructures
 
 Implementations
 ---------------
