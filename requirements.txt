@@ -1,12 +1,15 @@
 # List required packages in this file, one per line.
-numpy
 networkx
+numpy==1.26.4
+polymethod
 psutil
-typing_extensions>=4.4,<5.0
-scine_art>=2.0,<2.1
-scine_database>=1.4,<1.5
-scine_utilities>=10.0,<10.1
-scine_molassembler>=3.0,<3.1
+pymatgen==2023.8.10
+typing_extensions
+scine_art
+scine_database
+scine_utilities
+scine_molassembler
 scipy
 setproctitle
+pyyaml
 wrapt

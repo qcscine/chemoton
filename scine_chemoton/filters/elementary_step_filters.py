@@ -28,12 +28,18 @@ class ElementaryStepFilter(HoldsCollections, HasName):
         self._remove_chemoton_from_name()
 
     def __and__(self, o):
+        """
+        Overloaded `&` operator to chain rules with logical 'and'.
+        """
         if not isinstance(o, ElementaryStepFilter):
             raise TypeError("ElementaryStepFilter expects ReactionFilter "
                             "(or derived class) to chain with.")
         return ElementaryStepFilterAndArray([self, o])
 
     def __or__(self, o):
+        """
+        Overloaded `|` operator to chain rules with logical 'or'.
+        """
         if not isinstance(o, ElementaryStepFilter):
             raise TypeError("ElementaryStepFilter expects ReactionFilter "
                             "(or derived class) to chain with.")

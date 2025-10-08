@@ -1,0 +1,55 @@
+Phases:
+- Species:
+  - name: reactant_id 
+    radicalelectrons: 0
+    thermo:
+      polys:
+      - Tmax: 5000.0
+        Tmin: 1.0
+        coefs:
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+        - -175339254.13495895
+        - 61.61954141626856
+        type: NASApolynomial
+      type: NASA
+    type: Species
+  - name: product_id
+    radicalelectrons: 0
+    thermo:
+      polys:
+      - Tmax: 5000.0
+        Tmin: 1.0
+        coefs:
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+        - 0.0
+        - -175337137.67785612
+        - 67.34206592712133
+        type: NASApolynomial
+      type: NASA
+    type: Species
+  name: phase
+Reactions:
+- kinetics:
+    A: 9025378585312.99
+    Ea: 21037.8725
+    n: 0.0
+    type: Arrhenius
+  products:
+  - reactant_id 
+  reactants:
+  - product_id 
+  type: ElementaryReaction
+Solvents:
+- mu:
+    mu: 0.000369
+    type: ConstantViscosity
+  name: acetonitrile
+  type: Solvent
+Units: {}

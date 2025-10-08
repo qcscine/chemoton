@@ -13,9 +13,9 @@ import os
 # Third party imports
 import scine_database as db
 import scine_utilities as utils
+from scine_database import test_database_setup as db_setup
 
 # Local application tests imports
-from scine_database import test_database_setup as db_setup
 from ....gears import HoldsCollections
 from ...resources import resources_root_path
 
@@ -24,6 +24,42 @@ from ....utilities.db_object_wrappers.reaction_wrapper import Reaction
 from ....utilities.db_object_wrappers.wrapper_caches import MultiModelReactionCache, MultiModelCacheFactory
 from ....utilities.db_object_wrappers.thermodynamic_properties import ReferenceState
 from ....utilities.model_combinations import ModelCombination
+
+
+def add_reaction(manager: db.Manager, e1, e2, ets):
+    structures = manager.get_collection("structures")
+    elementary_steps = manager.get_collection("elementary_steps")
+    reactions = manager.get_collection("reactions")
+    properties = manager.get_collection("properties")
+
+    f_id_1, s_id_1 = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.COMPLEX_OPTIMIZED)
+    f_id_2, s_id_2 = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.COMPLEX_OPTIMIZED)
+    s_1 = db.Structure(s_id_1, structures)
+    s_2 = db.Structure(s_id_2, structures)
+
+    db_setup.add_random_energy(s_1, (e1 / utils.HARTREE_PER_KJPERMOL, e1 / utils.HARTREE_PER_KJPERMOL),
+                               properties)
+    db_setup.add_random_energy(s_2, (e2 / utils.HARTREE_PER_KJPERMOL, e2 / utils.HARTREE_PER_KJPERMOL),
+                               properties)
+
+    model = db_setup.get_fake_model()
+    ts = db.Structure()
+    ts.link(structures)
+    ts.create(os.path.join(resources_root_path(), "water.xyz"), 0, 1)
+    ts.set_label(db.Label.TS_OPTIMIZED)
+    ts.set_model(model)
+    db_setup.add_random_energy(ts, (ets / utils.HARTREE_PER_KJPERMOL, ets / utils.HARTREE_PER_KJPERMOL),
+                               properties)
+
+    new_step = db.ElementaryStep()
+    new_step.link(elementary_steps)
+    new_step.create([s_id_1], [s_id_2])
+    new_step.set_transition_state(ts.id())
+    new_reaction = db.Reaction()
+    new_reaction.link(reactions)
+    new_reaction.create([f_id_1], [f_id_2], [db.CompoundOrFlask.FLASK], [db.CompoundOrFlask.FLASK])
+    new_reaction.add_elementary_step(new_step.id())
+    return new_reaction, s_1, s_2, ts
 
 
 class TestReactionWrapper(unittest.TestCase, HoldsCollections):
@@ -63,13 +99,32 @@ class TestReactionWrapper(unittest.TestCase, HoldsCollections):
         self.custom_setup(manager)
         model = db.Model("FAKE", "FAKE", "F-AKE")
         ref = ReferenceState(298.15, 1e+5)
-        hessian = np.zeros((9, 9))
+        water_hessian = np.asarray([
+            [0.36647218415, -0.19686744467, 0.075679967953, -0.32218740014, 0.20925410358,
+             -0.021533989199, -0.044239967603, -0.012588937262, -0.054298790044],
+            [-0.19690008026, 0.32717966817, 0.2349580946, 0.24190692867, -0.17611641081,
+             -0.0073972973886, -0.045127077254, -0.15110334448, -0.22770579793],
+            [0.075668504675, 0.23499423498, 0.3590979212, 0.019125469482, -0.035995673283,
+             -0.028100877642, -0.09485785008, -0.19911075354, -0.33112480642],
+            [-0.32222889145, 0.24200032545, 0.019194331212, 0.32225650417, -0.23487938382,
+             -0.010313672577, 2.3432972687e-05, -0.0070332340347, -0.0088115815734],
+            [0.2093629349, -0.17616252381, -0.03607348316, -0.23487823759, 0.1931001407,
+             0.034721341318, 0.02556546834, -0.016969326212, 0.0012704472369],
+            [-0.021468156598, -0.0074726773919, -0.028088096172, -0.010313982661, 0.034721696195,
+             0.034212862852, 0.031807114724, -0.027327793528, -0.0061217826359],
+            [-0.044339713113, -0.045017321907, -0.094779378773, 2.3412011546e-05, 0.025565775972,
+             0.03180712902, 0.044220438895, 0.019566115664, 0.063055983244],
+            [-0.01246207735, -0.1510452638, -0.19888745662, -0.0070339450406, -0.016968623427,
+             -0.027327147494, 0.019566084555, 0.16808568367, 0.22644129844],
+            [-0.054204818519, -0.22752122314, -0.33102435314, -0.0088120623893, 0.0012707943262,
+             -0.0061214385116, 0.063055780638, 0.22644139438, 0.3372705704]
+        ])
 
         for structure in self._structures.iterate_all_structures():
             structure.link(self._structures)
             hessian_property = db.DenseMatrixProperty()
             hessian_property.link(self._properties)
-            hessian_property.create(model, "hessian", hessian)
+            hessian_property.create(model, "hessian", water_hessian)
             structure.add_property("hessian", hessian_property.id())
             hessian_property.set_structure(structure.id())
 
@@ -85,35 +140,21 @@ class TestReactionWrapper(unittest.TestCase, HoldsCollections):
             assert abs(k[1] - k[1]) < 1e-9
             assert abs(r - r) < 1e-9
 
-    def add_reaction(self, manager: db.Manager, e1, e2, ets):
-        f_id_1, s_id_1 = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.COMPLEX_OPTIMIZED)
-        f_id_2, s_id_2 = db_setup.insert_single_empty_structure_aggregate(manager, db.Label.COMPLEX_OPTIMIZED)
-        s_1 = db.Structure(s_id_1, self._structures)
-        s_2 = db.Structure(s_id_2, self._structures)
-
-        db_setup.add_random_energy(s_1, (e1 / utils.HARTREE_PER_KJPERMOL, e1 / utils.HARTREE_PER_KJPERMOL),
-                                   self._properties)
-        db_setup.add_random_energy(s_2, (e2 / utils.HARTREE_PER_KJPERMOL, e2 / utils.HARTREE_PER_KJPERMOL),
-                                   self._properties)
-
-        model = db_setup.get_fake_model()
-        ts = db.Structure()
-        ts.link(self._structures)
-        ts.create(os.path.join(resources_root_path(), "water.xyz"), 0, 1)
-        ts.set_label(db.Label.TS_OPTIMIZED)
-        ts.set_model(model)
-        db_setup.add_random_energy(ts, (ets / utils.HARTREE_PER_KJPERMOL, ets / utils.HARTREE_PER_KJPERMOL),
-                                   self._properties)
-
-        new_step = db.ElementaryStep()
-        new_step.link(self._elementary_steps)
-        new_step.create([s_id_1], [s_id_2])
-        new_step.set_transition_state(ts.id())
-        new_reaction = db.Reaction()
-        new_reaction.link(self._reactions)
-        new_reaction.create([f_id_1], [f_id_2], [db.CompoundOrFlask.FLASK], [db.CompoundOrFlask.FLASK])
-        new_reaction.add_elementary_step(new_step.id())
-        return new_reaction, s_1, s_2, ts
+            if not reaction_wrapper.barrierless(ref) and (len(reaction_wrapper.get_lhs_aggregates()) == 1
+                                                          or len(reaction_wrapper.get_rhs_aggregates()) == 1):
+                zero_energy = reaction_wrapper.get_transition_state_free_energy(utils.vacuum_zero_kelvin())
+                micro_kf, micro_kb = reaction_wrapper.get_rrkm_rate_constants(
+                    np.asarray([zero_energy + 0.001]), active_rotors=True, reference_state=ref)
+                if micro_kb is not None:
+                    assert abs(micro_kb[0] - micro_kb[0]) < 1e-9
+                if micro_kf is not None:
+                    assert abs(micro_kf[0] - micro_kf[0]) < 1e-9
+            if reaction_wrapper.barrierless(ref):
+                assert reaction_wrapper.get_transition_state_wavenumber(ref) is None
+            else:
+                wavenumber = reaction_wrapper.get_transition_state_wavenumber(ref)
+                reference_wavenumber = 1157.0369229397152
+                assert abs(wavenumber - reference_wavenumber) < 1e-2
 
     def test_deterministic_reaction(self):
         manager = db_setup.get_clean_db("chemoton_test_reaction_wrapper")
@@ -122,7 +163,7 @@ class TestReactionWrapper(unittest.TestCase, HoldsCollections):
         e1 = -634.6730820353
         e2 = -634.6568134574
         ets = -634.6145146309
-        new_reaction, s_1, s_2, ts = self.add_reaction(manager, e1, e2, ets)
+        new_reaction, s_1, s_2, ts = add_reaction(manager, e1, e2, ets)
         lhs_barrier = ets - e1
         rhs_barrier = ets - e2
         rxn_energy = e2 - e1
@@ -219,7 +260,7 @@ class TestReactionWrapper(unittest.TestCase, HoldsCollections):
         e1 = -76.847
         e2 = -76.849
         ets = -76.845
-        new_reaction, _, _, _ = self.add_reaction(manager, e1, e2, ets)
+        new_reaction, _, _, _ = add_reaction(manager, e1, e2, ets)
         model = db_setup.get_fake_model()
         wrapper = Reaction(new_reaction.id(), manager, model, model, only_electronic=True)
         assert wrapper.analyze()

@@ -5,8 +5,10 @@ Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Gr
 See LICENSE.txt for details.
 """
 
+import math
 from typing import Optional, Tuple, List, Dict
 
+import numpy as np
 import scine_database as db
 import scine_utilities as utils
 from scine_database.energy_query_functions import rate_constant_from_barrier, get_energy_for_structure
@@ -15,6 +17,7 @@ from .aggregate_wrapper import Aggregate
 from .aggregate_cache import AggregateCache
 from .thermodynamic_properties import ReferenceState
 from .ensemble_wrapper import Ensemble
+from scine_chemoton.utilities.kinetics.eckart_tunneling import EckartTunneling
 
 
 class Reaction(Ensemble):
@@ -52,6 +55,13 @@ class Reaction(Ensemble):
         self._has_barrierless_elementary_step = False  # Barrierless reactions are treated differently (vide infra).
         self._n_steps_last = 0  # Keep track of the number of elementary steps in each reaction.
         self._ts_id_to_step_map: Dict[int, db.ID] = {}
+        self.__transition_state_wavenumber: Optional[float] = None
+
+    def set_test_transition_state_wavenumber(self, test_transition_state_wavenumber: float) -> None:
+        """
+        Set the wavenumber for the transition state. This can be used for unit tests.
+        """
+        self.__transition_state_wavenumber = test_transition_state_wavenumber
 
     def circle_reaction(self):
         return self._is_circle_reaction
@@ -95,7 +105,127 @@ class Reaction(Ensemble):
                                              self._structures, self._properties) is not None
                     for s_id in reactants[0] + reactants[1]])
 
-    def get_lhs_free_energy(self, reference_state: ReferenceState) -> Optional[float]:
+    def get_wigner_transmission_coefficients(self, reference_state: ReferenceState) -> Optional[float]:
+        """
+        Getter for the wigner transmission coefficient.
+
+        Parameters
+        ----------
+        reference_state : ReferenceState
+            The reference state is required to select a representative structure from the transition state ensemble.
+
+        Returns
+        -------
+        The wigner transmission coefficient.
+        """
+        harmonic_frequency = self.get_transition_state_wavenumber(reference_state)
+        if harmonic_frequency is None or harmonic_frequency >= 0.0:
+            return None
+        harmonic_frequency *= utils.SPEED_OF_LIGHT * 100.0  # conversion to Hz
+        kbT = reference_state.temperature * utils.BOLTZMANN_CONSTANT
+        return 1 + 1/24 * (utils.PLANCK_CONSTANT * abs(harmonic_frequency) / kbT) ** 2  # type: ignore
+
+    def get_transition_state_wavenumber(self, reference_state: ReferenceState) -> Optional[float]:
+        """
+        Getter for the wavenumber of the transition state in cm^-1.
+
+        Parameters
+        ----------
+        reference_state : ReferenceState
+            The reference state. This is only used to select a transition state structure from the ensemble.
+
+        Returns
+        -------
+            If available, it returns the wavenumber of the transition state in cm^-1.
+        """
+        if self.__transition_state_wavenumber is not None:
+            return self.__transition_state_wavenumber
+        if self.barrierless(reference_state):
+            return None
+        molecular_degrees_of_freedom = self.get_molecular_degrees_of_freedom(reference_state)
+        if molecular_degrees_of_freedom is None:
+            return None
+        normal_modes = molecular_degrees_of_freedom.get_normal_modes_container()
+        harmonic_frequency = normal_modes.get_wave_numbers()[0]
+        return harmonic_frequency
+
+    def get_eckart_tunneling_penetration(self, reference_state: ReferenceState, delta_e: float = 1e-5,
+                                         access_energy_in_rt: float = 40.0) -> Optional[float]:
+        """
+        Getter for the transmission coefficient from the Eckart tunneling model.
+
+        Parameters
+        ----------
+        reference_state : ReferenceState
+            The reference state is required to select representative structures for the ensemble.
+        delta_e: float, optional
+            This parameter controls how dense the numerical integration grid is.
+        access_energy_in_rt: float, optional
+            This parameter controls the upper limit to which the integration is done. By default, it is integrated
+            up to 40 RT above the transition state.
+
+        Returns
+        -------
+        If available, it returns the Eckart tunneling/transmission coefficient Gamma = k_quantum/k_classical.
+        """
+        if self.barrierless(reference_state):
+            return None
+        lhs_barrier, rhs_barrier = self.get_free_energy_of_activation(reference_state, only_electronic_energies=True)
+        if lhs_barrier is None or rhs_barrier is None:
+            return None
+        rt_in_au = utils.MOLAR_GAS_CONSTANT * reference_state.temperature * 1e-3 * utils.HARTREE_PER_KJPERMOL
+        delta_V_1: float = min(lhs_barrier, rhs_barrier)
+        delta_e = min(delta_e, delta_V_1 / 10)
+        energy_grid = np.arange(0.0, delta_V_1 + access_energy_in_rt * rt_in_au, delta_e)
+        kappa = self.get_eckart_tunneling_function(energy_grid, reference_state)
+        if kappa is None:
+            return None
+        gamma = math.exp(delta_V_1/rt_in_au) * np.sum(np.exp(- energy_grid / rt_in_au) * kappa) * delta_e / rt_in_au
+        return gamma
+
+    def get_eckart_tunneling_function(self, energies: np.ndarray,
+                                      reference_state: ReferenceState) -> Optional[np.ndarray]:
+        """
+        Calculate the eckart tunneling function for the given energy range.
+
+        Parameters
+        ----------
+        energies : np.ndarray
+            The energy range.
+        reference_state : ReferenceState
+            The reference state is required to select representative structures for the ensemble.
+
+        Returns
+        -------
+        The transmission probability for the given energies.
+        """
+        eckart_tunneling = self.get_eckart_tunneling_object(reference_state)
+        if eckart_tunneling is None:
+            return None
+        return np.asarray([eckart_tunneling.calculate_tunneling_function(energy) for energy in energies])
+
+    def get_eckart_tunneling_object(self, reference_state: ReferenceState) -> Optional[EckartTunneling]:
+        """
+        Getter for the Eckart tunneling calculator object.
+
+        Parameters
+        ----------
+        reference_state : ReferenceState
+            The reference state is required to select representative structures for the ensemble.
+
+        Returns
+        -------
+        The Eckart tunneling calculator object.
+        """
+        wavenumber = self.get_transition_state_wavenumber(reference_state)
+        if wavenumber is None:
+            return None
+        lhs_barrier, rhs_barrier = self.get_free_energy_of_activation(reference_state)
+        if lhs_barrier is None or rhs_barrier is None or lhs_barrier < 1e-6 or rhs_barrier < 1e-6:
+            return None
+        return EckartTunneling(wavenumber, lhs_barrier, rhs_barrier)
+
+    def get_lhs_free_energy(self, reference_state: ReferenceState, only_electronic: bool = False) -> Optional[float]:
         """
         Getter for the total free energy of the LHS.
 
@@ -103,18 +233,21 @@ class Reaction(Ensemble):
         ----------
         reference_state : ReferenceState
             The reference state.
+        only_electronic : bool
+            If true, only the electronic energies are summed.
 
         Returns
         -------
         Optional[float]
             The total free energy if available. Otherwise, None.
         """
-        lhs_energies = [a.get_free_energy(reference_state) for a in self._lhs]
+        lhs_energies = [a.get_free_energy(reference_state) for a in self._lhs] if not only_electronic\
+            else [a.get_electronic_energy(reference_state) for a in self._lhs]
         if None in lhs_energies:
             return None
         return sum(lhs_energies)  # type: ignore
 
-    def get_rhs_free_energy(self, reference_state: ReferenceState) -> Optional[float]:
+    def get_rhs_free_energy(self, reference_state: ReferenceState, only_electronic: bool = False) -> Optional[float]:
         """
         Getter for the total free energy of the RHS.
 
@@ -122,18 +255,87 @@ class Reaction(Ensemble):
         ----------
         reference_state : ReferenceState
             The reference state.
+        only_electronic : bool
+            If true, only the electronic energies are summed.
 
         Returns
         -------
         Optional[float]
             The total free energy if available. Otherwise, None.
         """
-        rhs_energies = [a.get_free_energy(reference_state) for a in self._rhs]
+        rhs_energies = [a.get_free_energy(reference_state) for a in self._rhs] if not only_electronic\
+            else [a.get_electronic_energy(reference_state) for a in self._rhs]
         if None in rhs_energies:
             return None
         return sum(rhs_energies)  # type: ignore
 
-    def get_transition_state_free_energy(self, reference_state: ReferenceState) -> Optional[float]:
+    def unimolecular(self):
+        """
+        Check if the reaction is unimolecular.
+
+        Returns
+        -------
+            Returns true if the reaction is unimolecular. False, otherwise.
+        """
+        return len(self.get_lhs_aggregates()) == 1 and len(self.get_rhs_aggregates()) == 1
+
+    def one_sided_unimolecular(self):
+        """
+        Returns true if at least one side of the reaction is unimolecular.
+
+        Returns
+        -------
+            Returns true if at least one side of the reaction is unimolecular. False, otherwise.
+        """
+        return len(self.get_lhs_aggregates()) == 1 or len(self.get_rhs_aggregates()) == 1
+
+    def get_rrkm_rate_constants(self, energies: np.ndarray,
+                                active_rotors: bool = False,
+                                reference_state: ReferenceState = utils.vacuum_zero_kelvin()) \
+            -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """
+        Getter for the (unimolecular, microcanonical) RRKM rate constants.
+
+        Parameters
+        ----------
+        energies : np.ndarray
+            The energy range over which the rate constants will be calculated.
+        active_rotors : bool
+            If true, the rotational degrees of freedom are considered active, i.e., energy may be distributed to them.
+        reference_state : ReferenceState
+            The reference state which is used to pick the structure representative to the molecular ensemble.
+
+        Returns
+        -------
+        Tuple[np.ndarray, np.ndarray]
+            The forward and backward rate constants over the energy range. Returns None if data for the reaction
+            is missing. Furthermore, None is returned for each reaction side that is not unimolecular.
+        """
+        ts_df = self.get_molecular_degrees_of_freedom(reference_state)
+        r_df = self.get_lhs_aggregates()[0].get_molecular_degrees_of_freedom(reference_state)
+        p_df = self.get_rhs_aggregates()[0].get_molecular_degrees_of_freedom(reference_state)
+        if ts_df is None or r_df is None or p_df is None:
+            return None, None
+        r_is_uni = len(self.get_lhs_aggregates()) == 1
+        p_is_uni = len(self.get_rhs_aggregates()) == 1
+        if not r_is_uni and not p_is_uni:
+            return None, None
+
+        if r_is_uni and p_is_uni:
+            rrkm = utils.RRKMRateConstantCalculator(r_df, ts_df, p_df, active_rotor=active_rotors)
+            kf, kb = rrkm.get_rate_constants(energies)
+        elif r_is_uni:
+            rrkm = utils.RRKMRateConstantCalculator(r_df, ts_df, active_rotor=active_rotors)
+            kf, kb = rrkm.get_rate_constants(energies)
+        else:
+            rrkm = utils.RRKMRateConstantCalculator(p_df, ts_df, active_rotor=active_rotors)
+            kb, kf = rrkm.get_rate_constants(energies)
+        kf_return: Optional[np.ndarray] = kf if r_is_uni else None  # just to satisfy mypy
+        kb_return: Optional[np.ndarray] = kb if p_is_uni else None
+        return kf_return, kb_return
+
+    def get_transition_state_free_energy(self, reference_state: ReferenceState,
+                                         only_electronic_energies: bool = False) -> Optional[float]:
         """
         Getter fo the free energy of the transition state ensemble in Hartree.
 
@@ -141,26 +343,33 @@ class Reaction(Ensemble):
         ----------
         reference_state
             The reference state (temperature, and pressure)
+        only_electronic_energies : bool, optional
+            If true, only the electronic energy is returned. Default is False.
 
         Returns
         -------
         The free energy of the transition in Hartree.
         """
+        e_lhs = self.get_lhs_free_energy(reference_state, only_electronic=only_electronic_energies)
+        if e_lhs is None:
+            return None
+        e_rhs = self.get_rhs_free_energy(reference_state, only_electronic=only_electronic_energies)
+        if e_rhs is None:
+            return None
         if self._has_barrierless_elementary_step:
-            e_lhs = self.get_lhs_free_energy(reference_state)
-            if e_lhs is None:
-                return None
-            e_rhs = self.get_rhs_free_energy(reference_state)
-            if e_rhs is None:
-                return None
             return max(e_lhs, e_rhs)
         # Update only if the reference state or the number of elementary steps changed.
         self._update_thermodynamics()
         if self._structure_thermodynamics.get_n_cached() == 0:
             return None
-        return self._structure_thermodynamics.get_ensemble_gibbs_free_energy(reference_state)
+        e_ts = self._structure_thermodynamics.get_ensemble_gibbs_free_energy(reference_state) \
+            if not only_electronic_energies else self.get_electronic_energy(reference_state)
+        if e_ts is None:
+            return None
+        return max(e_lhs, e_rhs, e_ts)
 
-    def get_free_energy_of_activation(self, reference_state: ReferenceState, in_j_per_mol: bool = False)\
+    def get_free_energy_of_activation(self, reference_state: ReferenceState, in_j_per_mol: bool = False,
+                                      only_electronic_energies: bool = False) \
             -> Tuple[Optional[float], Optional[float]]:
         """
         Getter for the free energy of activation/barriers as a tuple for lhs and rhs.
@@ -171,6 +380,8 @@ class Reaction(Ensemble):
             The reference state (temperature, and pressure)
         in_j_per_mol : bool, optional
             If true, the barriers are returned in J/mol (NOT kJ/mol), by default False
+        only_electronic_energies : bool, optional
+            If true, only electronic energies are used to calculate the barriers. By default, False.
 
         Returns
         -------
@@ -178,10 +389,10 @@ class Reaction(Ensemble):
             A tuple for the lhs and rhs barriers. Returns None if the energies are incomplete.
             For barrier-less reactions, one barrier will be the reaction energy, the other zero.
         """
-        e_lhs = self.get_lhs_free_energy(reference_state)
+        e_lhs = self.get_lhs_free_energy(reference_state, only_electronic=only_electronic_energies)
         if e_lhs is None:
             return None, None
-        e_rhs = self.get_rhs_free_energy(reference_state)
+        e_rhs = self.get_rhs_free_energy(reference_state, only_electronic=only_electronic_energies)
         if e_rhs is None:
             return None, None
         if self.barrierless(reference_state):

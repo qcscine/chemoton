@@ -39,14 +39,26 @@ class StructureFilter(HoldsCollections, HasName, _AbstractFilter):
         self._can_cache: bool = True
         self._currently_caches: bool = True
         self._cache: Dict[int, bool] = {}
+        self.independent_bimolecular_filtering: bool = True
+        """
+        bool
+            If True, the filter's decision in a bimolecular case is independent of the other structure, meaning that
+            the pair X-Y will never be True, if either X or Y are False.
+        """
 
     def __and__(self, o):
+        """
+        Overloaded `&` operator to chain rules with logical 'and'.
+        """
         if not isinstance(o, StructureFilter):
             raise TypeError("StructureFilter expects StructureFilter "
                             "(or derived class) to chain with.")
         return StructureFilterAndArray([self, o])
 
     def __or__(self, o):
+        """
+        Overloaded `|` operator to chain rules with logical 'or'.
+        """
         if not isinstance(o, StructureFilter):
             raise TypeError("StructureFilter expects StructureFilter "
                             "(or derived class) to chain with.")
@@ -175,11 +187,13 @@ class StructureFilterAndArray(StructureFilter):
                 self._currently_caches = False
                 break
         # Disable all caches if this array can cache
-        #   If this filter can not cache, lower filters
+        #   If this filter cannot cache, lower filters
         #   that can cache are still allowed to
         if self._can_cache:
             for f in self._filters:
                 f.disable_caching()
+        if all(f.independent_bimolecular_filtering for f in self._filters):
+            self.independent_bimolecular_filtering = True
 
     def _filter_impl(self, structure_one: db.Structure, structure_two: Optional[db.Structure] = None) -> bool:
         return all(f.filter(structure_one, structure_two) for f in self._filters)
@@ -224,11 +238,13 @@ class StructureFilterOrArray(StructureFilter):
                 self._currently_caches = False
                 break
         # Disable all caches if this array can cache
-        #   If this filter can not cache, lower filters
+        #   If this filter cannot cache, lower filters
         #   that can cache are still allowed to
         if self._can_cache:
             for f in self._filters:
                 f.disable_caching()
+        if all(f.independent_bimolecular_filtering for f in self._filters):
+            self.independent_bimolecular_filtering = True
 
     def _filter_impl(self, structure_one: db.Structure, structure_two: Optional[db.Structure] = None) -> bool:
         return any(f.filter(structure_one, structure_two) for f in self._filters)
@@ -397,6 +413,7 @@ class ElementSumCountFilter(StructureFilter):
             self.counts.update({utils.ElementInfo.element_from_symbol(k.capitalize()): v})
         # remembers the last compound_one to save time in bimolecular loop
         self._partial_cache: Tuple[db.ID, Counter] = (db.ID(), Counter())
+        self.independent_bimolecular_filtering = False
 
     def _filter_impl(self, structure_one: db.Structure,
                      structure_two: Optional[db.Structure] = None) -> bool:
@@ -431,6 +448,82 @@ class ElementSumCountFilter(StructureFilter):
         return True
 
 
+class ExactElementCountFilter(StructureFilter):
+    """
+    Filters by atom counts. All given structures must resolve to structures
+    that separately have exactly the specified element composition. No assumptions about atom
+    counts of possible combinations/products are made in this filter.
+    The filter also allows one to specify only certain elements to have an exact count,
+    while all unspecified elements could be made valid.
+    """
+
+    def __init__(self, atom_type_count: Dict[str, int], unspecified_elements_are_valid: bool = False) -> None:
+        """
+        Construct the filter with the allowed element counts.
+
+        Parameters
+        ----------
+        atom_type_count : Dict[str,int]
+            A dictionary giving the number (values) of allowed occurrences of each
+            atom type (atom symbol string given as keys). Atom symbols not given
+            as keys are interpreted as forbidden.
+        unspecified_elements_are_valid : bool
+            If false, structures that contain elements that have not been specified are invalid.
+            If true, structures may have additional elements that have not been specified, only the counts of the
+            specified elements are checked.
+        """
+        super().__init__()
+        self.counts: Counter = Counter()
+        self.unspecified_elements_are_valid = unspecified_elements_are_valid
+        for k, v in atom_type_count.items():
+            self.counts.update({utils.ElementInfo.element_from_symbol(k.capitalize()): v})
+        # remembers the last compound_one to save time in bimolecular loop
+        self._partial_cache: Tuple[db.ID, bool] = (db.ID(), False)
+
+    def _filter_impl(self, structure_one: db.Structure,
+                     structure_two: Optional[db.Structure] = None) -> bool:
+        # One structure case
+        if structure_two is None:
+            return self._check_atom_counts(structure_one, False)
+        # Two structures case
+        return self._check_atom_counts(structure_one, True) and self._check_atom_counts(structure_two, False)
+
+    def _check_atom_counts(self, structure: db.Structure, write_to_cache: bool) -> bool:
+        """
+        Checks the atom counts of the given structure against the requirements
+        set in the member variable.
+
+        Attributes
+        ----------
+        structure : db.Structure
+            The structure of which to check the atom counts.
+        write_to_cache : bool
+            If true, the result of the check will be written to the cache.
+
+        Returns
+        -------
+        result : bool
+            True if the structure passed the check/filter, False if not.
+        """
+        if structure.id() == self._partial_cache[0]:
+            return self._partial_cache[1]
+
+        def evaluate() -> bool:
+            this_count = Counter(structure.get_atoms().elements)
+            for k, v in self.counts.items():
+                count = this_count.get(k, 0)
+                if count != v:
+                    return False
+            if not self.unspecified_elements_are_valid and len(this_count) != len(self.counts):
+                return False
+            return True
+
+        ret = evaluate()
+        if write_to_cache:
+            self._partial_cache = (structure.id(), ret)
+        return ret
+
+
 class MolecularWeightFilter(StructureFilter):
     """
     Filters by molecular weight. All given structures must resolve to structures
@@ -456,6 +549,7 @@ class MolecularWeightFilter(StructureFilter):
         self.max_weight = max_weight
         self.allow_additions_above_limit = allow_additions_above_limit
         self._weight_cache: Dict[str, float] = {}
+        self.independent_bimolecular_filtering = self.allow_additions_above_limit
 
     def _filter_impl(self, structure_one: db.Structure,
                      structure_two: Optional[db.Structure] = None) -> bool:
@@ -590,7 +684,8 @@ class CatalystFilter(StructureFilter):
     catalyst, unless specified otherwise with flag (see parameters))
     """
 
-    def __init__(self, atom_type_count: Dict[str, int], restrict_unimolecular_to_catalyst: bool = False) -> None:
+    def __init__(self, atom_type_count: Dict[str, int], restrict_unimolecular_to_catalyst: bool = False,
+                 interpret_as_equal_or_larger: bool = False) -> None:
         """
         Construct the filter with the allowed element counts.
 
@@ -604,14 +699,19 @@ class CatalystFilter(StructureFilter):
             order to ban atoms, set their count to zero.
         restrict_unimolecular_to_catalyst : bool
             Whether unimolecular reactions should also be limited to the catalyst.
+        interpret_as_equal_or_larger : bool
+            If set to True, the given values are specified as minimum values and not as exact values
+            required to be present
         """
         super().__init__()
+        self._interpret_as_equal_or_larger = interpret_as_equal_or_larger
         self.counts: Counter = Counter()
         for k, v in atom_type_count.items():
             self.counts.update({utils.ElementInfo.element_from_symbol(k.capitalize()): v})
         # remembers the last compound_one to save time in bimolecular loop
         self._partial_cache: Tuple[db.ID, bool] = (db.ID(), False)
         self._restrict_unimolecular_to_catalyst = restrict_unimolecular_to_catalyst
+        self.independent_bimolecular_filtering = False
 
     def _filter_impl(self, structure_one: db.Structure,
                      structure_two: Optional[db.Structure] = None) -> bool:
@@ -645,8 +745,13 @@ class CatalystFilter(StructureFilter):
         def evaluate() -> bool:
             actual = Counter(structure.get_atoms().elements)
             for k, v in self.counts.items():
-                if actual.get(k, 0) != v:
-                    return False
+                actual_value = actual.get(k, 0)
+                if not self._interpret_as_equal_or_larger:
+                    if actual.get(k, 0) != v:
+                        return False
+                else:
+                    if actual_value < v:
+                        return False
             return True
 
         ret = evaluate()
@@ -659,6 +764,10 @@ class ChargeCombinationFilter(StructureFilter):
     """
     Avoid combination of two structures that both have negative charges or both have positive charges.
     """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.independent_bimolecular_filtering = False
 
     def _filter_impl(self, structure_one: db.Structure,
                      structure_two: Optional[db.Structure] = None) -> bool:
@@ -693,6 +802,7 @@ class SpecificChargeFilter(StructureFilter):
         self._charges = charges
         self._allow = allow
         self._both_charges_must_be_valid = both_charges_must_be_valid
+        self.independent_bimolecular_filtering = not self._both_charges_must_be_valid
 
     def _filter_impl(self, structure_one: db.Structure,
                      structure_two: Optional[db.Structure] = None) -> bool:
@@ -731,6 +841,7 @@ class AtomNumberFilter(StructureFilter):
         self.min_n_atoms = min_n_atoms
         # remembers the last structure_one to save time in bimolecular loop
         self._partial_cache: Tuple[db.ID, int] = (db.ID(), 0)
+        self.independent_bimolecular_filtering = False
 
     def _filter_impl(self, structure_one: db.Structure,
                      structure_two: Optional[db.Structure] = None) -> bool:

@@ -17,7 +17,7 @@ from scine_database.insert_concentration import insert_concentration_for_compoun
 
 # Local application tests imports
 from ....engine import Engine
-from ....gears.kinetic_modeling.kinetic_modeling import KineticModeling
+from ....gears.kinetic_modeling import KineticModeling
 from ...utilities.db_object_wrappers.test_thermodynamic_properties import TestThermodynamicProperties
 from ....utilities.model_combinations import ModelCombination
 from ....utilities.db_object_wrappers.wrapper_caches import MultiModelCacheFactory
@@ -350,7 +350,6 @@ def add_reaction(manager: db.Manager, ts_energy: float, lhs_energies: Optional[L
     new_step.set_reaction(new_reaction.id())
     for c in lhs_aggregates + rhs_aggregates:
         c.add_reaction(new_reaction.id())
-
     return new_reaction, lhs_aggregates, rhs_aggregates
 
 
@@ -501,6 +500,41 @@ def test_single_reaction():
         data.enthalpies[1] - e1_jpermol - hess_contribution) < 1e-2 or abs(
         data.enthalpies[2] - e1_jpermol - hess_contribution) < 1e-2
     assert len(data.entropies) == 3
+    calc.set_status(db.Status.COMPLETE)
+
+    gear3 = KineticModeling()
+    gear3.options.job = db.Job("rms_kinetic_modeling")
+    gear3.options.job_settings = KineticModeling.get_default_settings(gear3.options.job)
+    gear3.options.model_combinations = [ModelCombination(model)]
+    gear3.options.model_combinations_reactions = [ModelCombination(model)]
+
+    gear3.options.cycle_time = 0.1
+    kinetic_modeling_engine3 = Engine(manager.get_credentials(), fork=False)
+    kinetic_modeling_engine3.set_gear(gear3)
+    gear3.options.microcanonical_available_energy = ets + 0.1
+
+    n_calculations_before = calculations.count(dumps({}))
+    kinetic_modeling_engine3.run(single=True)
+    assert calculations.count(dumps({})) == n_calculations_before + 1
+    calc = calculations.find(dumps({"status": "hold"}))
+    calc_settings = calc.get_settings()
+    for ea in calc_settings["ea"]:
+        assert abs(ea - 2e+4) < 1e-2
+    for inv in calc_settings["inverted_reactions"]:
+        assert not inv
+    for reversible in calc_settings["reversible_reactions"]:
+        assert reversible
+    reference_prefactors = [2.0992039038602852e+18, 2.2221488278152445e+18]
+    # The reaction ordering may be inverted.
+    for arrhenius_prefactor, reference in zip(sorted(calc_settings["arrhenius_prefactors"]),
+                                              sorted(reference_prefactors)):
+        assert abs(arrhenius_prefactor - reference) < reference * 1e-9
+    reference_enthalpies = [34.9405, 34.9405, 34.9405]
+    for h, reference in zip(calc_settings["enthalpies"], reference_enthalpies):
+        assert abs(h - reference) < 1e-4
+    calc.set_status(db.Status.COMPLETE)
+    kinetic_modeling_engine3.run(single=True)
+    assert calculations.count(dumps({})) == n_calculations_before + 1
 
     # Cleaning
     manager.wipe()

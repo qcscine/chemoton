@@ -7,7 +7,7 @@ See LICENSE.txt for details.
 
 # Standard library imports
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Union, Tuple
+from typing import Dict, List, Optional, Union, Tuple, Iterator
 from os import path, walk
 from json import dumps
 import math
@@ -16,7 +16,6 @@ import math
 import numpy as np
 import scine_database as db
 import scine_molassembler as masm
-import scine_utilities as utils
 from scine_database.concentration_query_functions import query_concentration_with_object
 from scine_database.energy_query_functions import get_energy_for_structure
 from scine_database.queries import model_query
@@ -29,6 +28,7 @@ from scine_chemoton.filters.structure_filters import (
     CatalystFilter as StructureCatalystFilter,
     TrueMinimumFilter as StructureTrueMinimumFilter,
     ElementCountFilter as StructureElementCountFilter,
+    ExactElementCountFilter as StructureExactElementCountFilter,
     ElementSumCountFilter as StructureElementSumCountFilter,
     MolecularWeightFilter as StructureMolecularWeightFilter,
 )
@@ -46,6 +46,23 @@ class _AbstractFilter(ABC):
     @abstractmethod
     def supports_flasks(self) -> bool:
         pass
+
+    @abstractmethod
+    def independent_bimolecular_filtering(self) -> bool:
+        """
+        Returns
+        -------
+        bool
+            Whether the filtering decision in a bimolecular case is simply a logical "and" combination
+            of the two unimolecular cases such that::
+
+                aggregate_filter.filter(agg_one) and aggregate_filter.filter(agg_two) == \
+                        aggregate_filter.filter(agg_one, agg_two)
+
+            for all potential aggregates.
+            If True, this rules holds for all filter evaluations,
+            which allows potential optimizations in applying this filter.
+        """
 
 
 class AggregateFilter(HoldsCollections, HasName, _AbstractFilter):
@@ -80,12 +97,18 @@ class AggregateFilter(HoldsCollections, HasName, _AbstractFilter):
         self._cache: Dict[int, bool] = {}
 
     def __and__(self, o):
+        """
+        Overloaded `&` operator to chain rules with logical 'and'.
+        """
         if not isinstance(o, AggregateFilter):
             raise TypeError("AggregateFilter expects AggregateFilter "
                             "(or derived class) to chain with.")
         return AggregateFilterAndArray([self, o])
 
     def __or__(self, o):
+        """
+        Overloaded `|` operator to chain rules with logical 'or'.
+        """
         if not isinstance(o, AggregateFilter):
             raise TypeError("AggregateFilter expects AggregateFilter "
                             "(or derived class) to chain with.")
@@ -212,6 +235,9 @@ class AggregateFilter(HoldsCollections, HasName, _AbstractFilter):
     def supports_flasks(self) -> bool:
         return True
 
+    def independent_bimolecular_filtering(self) -> bool:
+        return True
+
 
 class PlaceHolderAggregateFilter(AggregateFilter):
     """
@@ -253,7 +279,7 @@ class AggregateFilterAndArray(AggregateFilter):
                 self._currently_caches = False
                 break
         # Disable all caches if this array can cache
-        #   If this filter can not cache, lower filters
+        #   If this filter cannot cache, lower filters
         #   that can cache are still allowed to
         if self._can_cache:
             for f in self._filters:
@@ -275,6 +301,9 @@ class AggregateFilterAndArray(AggregateFilter):
 
     def supports_flasks(self) -> bool:
         return all(f.supports_flasks() for f in self._filters)
+
+    def independent_bimolecular_filtering(self) -> bool:
+        return all(f.independent_bimolecular_filtering() for f in self._filters)
 
 
 class AggregateFilterOrArray(AggregateFilter):
@@ -307,7 +336,7 @@ class AggregateFilterOrArray(AggregateFilter):
                 self._currently_caches = False
                 break
         # Disable all caches if this array can cache
-        #   If this filter can not cache, lower filters
+        #   If this filter cannot cache, lower filters
         #   that can cache are still allowed to
         if self._can_cache:
             for f in self._filters:
@@ -321,7 +350,7 @@ class AggregateFilterOrArray(AggregateFilter):
         for f in self._filters:
             f.initialize_collections(manager)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[AggregateFilter]:
         return (f for f in self._filters)
 
     def __setitem__(self, key, value):
@@ -329,6 +358,10 @@ class AggregateFilterOrArray(AggregateFilter):
 
     def supports_flasks(self) -> bool:
         return all(f.supports_flasks() for f in self._filters)
+
+    def independent_bimolecular_filtering(self) -> bool:
+        # we still "all" here because otherwise if any filter changes its outcome, the result will change
+        return all(f.independent_bimolecular_filtering() for f in self._filters)
 
 
 class ElementCountFilter(AggregateFilter):
@@ -364,6 +397,51 @@ class ElementCountFilter(AggregateFilter):
         structure_one, structure_two = self._get_centroids(aggregate_one, aggregate_two)
         return self._structure_element_count_filter.filter(structure_one, structure_two)
 
+    def independent_bimolecular_filtering(self) -> bool:
+        return self._structure_element_count_filter.independent_bimolecular_filtering
+
+
+class ExactElementCountFilter(AggregateFilter):
+    """
+    Filters by atom counts. All given structures must resolve to structures
+    that separately have exactly the specified element composition. No assumptions about atom
+    counts of possible combinations/products are made in this filter.
+    The filter also allows one to specify only certain elements to have an exact count,
+    while all unspecified elements could be made valid.
+    """
+
+    def __init__(self, atom_type_count: Dict[str, int], unspecified_elements_are_valid: bool = False) -> None:
+        """
+        Construct the filter with the allowed element counts.
+
+        Parameters
+        ----------
+        atom_type_count : Dict[str,int]
+            A dictionary giving the number (values) of allowed occurrences of each
+            atom type (atom symbol string given as keys). Atom symbols not given
+            as keys are interpreted as forbidden.
+        unspecified_elements_are_valid : bool
+            If false, structures that contain elements that have not been specified are invalid.
+            If true, structures may have additional elements that have not been specified, only the counts of the
+            specified elements are checked.
+        """
+        super().__init__()
+        self._structure_element_count_filter = StructureExactElementCountFilter(
+            atom_type_count, unspecified_elements_are_valid
+        )
+
+    def initialize_collections(self, manager: db.Manager) -> None:
+        super().initialize_collections(manager)
+        self._structure_element_count_filter.initialize_collections(manager)
+
+    def _filter_impl(self, aggregate_one: Union[db.Compound, db.Flask],
+                     aggregate_two: Optional[Union[db.Compound, db.Flask]] = None) -> bool:
+        structure_one, structure_two = self._get_centroids(aggregate_one, aggregate_two)
+        return self._structure_element_count_filter.filter(structure_one, structure_two)
+
+    def independent_bimolecular_filtering(self) -> bool:
+        return self._structure_element_count_filter.independent_bimolecular_filtering
+
 
 class ElementSumCountFilter(AggregateFilter):
     """
@@ -396,6 +474,9 @@ class ElementSumCountFilter(AggregateFilter):
                      aggregate_two: Optional[Union[db.Compound, db.Flask]] = None) -> bool:
         structure_one, structure_two = self._get_centroids(aggregate_one, aggregate_two)
         return self._structure_element_sum_count_filter.filter(structure_one, structure_two)
+
+    def independent_bimolecular_filtering(self) -> bool:
+        return self._structure_element_sum_count_filter.independent_bimolecular_filtering
 
 
 class MolecularWeightFilter(AggregateFilter):
@@ -432,6 +513,9 @@ class MolecularWeightFilter(AggregateFilter):
         structure_one, structure_two = self._get_centroids(aggregate_one, aggregate_two)
         return self._structure_molecular_weight_filter.filter(structure_one, structure_two)
 
+    def independent_bimolecular_filtering(self) -> bool:
+        return self._structure_molecular_weight_filter.independent_bimolecular_filtering
+
 
 class IdFilter(AggregateFilter):
     """
@@ -444,7 +528,7 @@ class IdFilter(AggregateFilter):
 
         Parameters
         ----------
-        reactive_ids : List[str]
+        ids : List[str]
             The IDs of the aggregates to be considered as reactive.
         """
         super().__init__()
@@ -460,6 +544,9 @@ class IdFilter(AggregateFilter):
             aggregate_ids.add(aggregate_two.get_id().string())
         return aggregate_ids.issubset(self.reactive_ids)
 
+    def independent_bimolecular_filtering(self) -> bool:
+        return True
+
 
 class SelfReactionFilter(AggregateFilter):
     """
@@ -473,6 +560,9 @@ class SelfReactionFilter(AggregateFilter):
             return True
         # Get compound ids
         return aggregate_one.get_id() != aggregate_two.get_id()
+
+    def independent_bimolecular_filtering(self) -> bool:
+        return False
 
 
 class TrueMinimumFilter(AggregateFilter):
@@ -511,6 +601,9 @@ class TrueMinimumFilter(AggregateFilter):
         structure_one, structure_two = self._get_centroids(aggregate_one, aggregate_two)
         return self._structure_true_minimum_filter.filter(structure_one, structure_two)
 
+    def independent_bimolecular_filtering(self) -> bool:
+        return True
+
 
 class CatalystFilter(AggregateFilter):
     """
@@ -526,7 +619,8 @@ class CatalystFilter(AggregateFilter):
     catalyst, unless specified otherwise with flag (see parameters))
     """
 
-    def __init__(self, atom_type_count: Dict[str, int], restrict_unimolecular_to_catalyst: bool = False) -> None:
+    def __init__(self, atom_type_count: Dict[str, int], restrict_unimolecular_to_catalyst: bool = False,
+                 interpret_as_equal_or_larger: bool = False) -> None:
         """
         Construct the filter with the allowed element counts.
 
@@ -540,9 +634,13 @@ class CatalystFilter(AggregateFilter):
             order to ban atoms, set their count to zero.
         restrict_unimolecular_to_catalyst : bool
             Whether unimolecular reactions should also be limited to the catalyst.
+        interpret_as_equal_or_larger : bool
+            If set to True, the given values are specified as minimum values and not as exact values
+            required to be present
         """
         super().__init__()
-        self._structure_catalyst_filter = StructureCatalystFilter(atom_type_count, restrict_unimolecular_to_catalyst)
+        self._structure_catalyst_filter = StructureCatalystFilter(atom_type_count, restrict_unimolecular_to_catalyst,
+                                                                  interpret_as_equal_or_larger)
 
     def initialize_collections(self, manager: db.Manager) -> None:
         super().initialize_collections(manager)
@@ -552,6 +650,9 @@ class CatalystFilter(AggregateFilter):
                      aggregate_two: Optional[Union[db.Compound, db.Flask]] = None) -> bool:
         structure_one, structure_two = self._get_centroids(aggregate_one, aggregate_two)
         return self._structure_catalyst_filter.filter(structure_one, structure_two)
+
+    def independent_bimolecular_filtering(self) -> bool:
+        return False
 
 
 class AtomNumberFilter(AggregateFilter):
@@ -585,6 +686,9 @@ class AtomNumberFilter(AggregateFilter):
         structure_one, structure_two = self._get_centroids(aggregate_one, aggregate_two)
         return self._structure_atom_number_filter.filter(structure_one, structure_two)
 
+    def independent_bimolecular_filtering(self) -> bool:
+        return self._structure_atom_number_filter.independent_bimolecular_filtering
+
 
 class OneAggregateIdFilter(AggregateFilter):
     """
@@ -600,7 +704,7 @@ class OneAggregateIdFilter(AggregateFilter):
 
         Parameters
         ----------
-        reactive_ids : List[str]
+        ids : List[str]
             The IDs of the aggregates to be considered as reactive.
         """
         super().__init__()
@@ -613,6 +717,9 @@ class OneAggregateIdFilter(AggregateFilter):
         if aggregate_two is not None:
             if aggregate_two.get_id().string() in self.reactive_ids:
                 return True
+        return False
+
+    def independent_bimolecular_filtering(self) -> bool:
         return False
 
 
@@ -657,6 +764,9 @@ class SelectedAggregateIdFilter(AggregateFilter):
         one_is_selected = aggregate_one.get_id().string() in self.selected_ids or one_is_reactive
         two_is_selected = aggregate_two.get_id().string() in self.selected_ids or two_is_reactive
         return (one_is_reactive and two_is_selected) or (two_is_reactive and one_is_selected)
+
+    def independent_bimolecular_filtering(self) -> bool:
+        return False
 
 
 class ConcentrationPropertyFilter(AggregateFilter):
@@ -723,6 +833,9 @@ class ConcentrationPropertyFilter(AggregateFilter):
             concentrations.append(concentration)
         return max(concentrations)
 
+    def independent_bimolecular_filtering(self) -> bool:
+        return False
+
 
 class ChargeCombinationFilter(AggregateFilter):
     """
@@ -741,6 +854,9 @@ class ChargeCombinationFilter(AggregateFilter):
                      aggregate_two: Optional[Union[db.Compound, db.Flask]] = None) -> bool:
         structure_one, structure_two = self._get_centroids(aggregate_one, aggregate_two)
         return self._structure_charge_combination_filter.filter(structure_one, structure_two)
+
+    def independent_bimolecular_filtering(self) -> bool:
+        return self._structure_charge_combination_filter.independent_bimolecular_filtering
 
 
 class SpecificChargeFilter(AggregateFilter):
@@ -771,6 +887,9 @@ class SpecificChargeFilter(AggregateFilter):
                      aggregate_two: Optional[Union[db.Compound, db.Flask]] = None) -> bool:
         structure_one, structure_two = self._get_centroids(aggregate_one, aggregate_two)
         return self._structure_specific_charge_filter.filter(structure_one, structure_two)
+
+    def independent_bimolecular_filtering(self) -> bool:
+        return self._structure_specific_charge_filter.independent_bimolecular_filtering
 
 
 class LastKineticModelingFilter(AggregateFilter):
@@ -851,6 +970,9 @@ class LastKineticModelingFilter(AggregateFilter):
                     self._n_calculations_last = len(calc_ids) - i
                     break
 
+    def independent_bimolecular_filtering(self) -> bool:
+        return False
+
 
 class SelectedStructureIdFilter(SelectedAggregateIdFilter):
     """
@@ -869,6 +991,9 @@ class SelectedStructureIdFilter(SelectedAggregateIdFilter):
         one_is_selected = any(sid in self.selected_ids for sid in aggregate_one_structures)
         two_is_selected = any(sid in self.selected_ids for sid in aggregate_two_structures)
         return (one_is_reactive and two_is_selected) or (two_is_reactive and one_is_selected)
+
+    def independent_bimolecular_filtering(self) -> bool:
+        return False
 
 
 class CompoundCostPropertyFilter(AggregateFilter):
@@ -925,6 +1050,9 @@ class CompoundCostPropertyFilter(AggregateFilter):
         prop = db.NumberProperty(property_list[-1], self._properties)
         return prop.get_data()
 
+    def independent_bimolecular_filtering(self) -> bool:
+        return False
+
 
 class CompleteSubstructureFilter(AggregateFilter):
     """
@@ -957,21 +1085,9 @@ class CompleteSubstructureFilter(AggregateFilter):
                 for file_name in files:
                     if file_name.endswith(".xyz") or file_name.endswith(".mol") or file_name.endswith(".cbor") \
                             or file_name.endswith(".bson"):
-                        # todo replace once Molassembler has been updated
-                        # self._molecules.extend(masm.io.split(str(path.expanduser(path.join(file_path, file_name)))))
-                        ac, bo = utils.io.read(str(path.expanduser(path.join(file_path, file_name))))
-                        if bo.empty():
-                            bo = utils.BondDetector.detect_bonds(ac)
-                        self._molecules.extend(masm.interpret.molecules(
-                            ac, bo, masm.interpret.BondDiscretization.RoundToNearest).molecules)
+                        self._molecules.extend(masm.io.split(str(path.expanduser(path.join(file_path, file_name)))))
         elif path.isfile(file_or_directory_with_files):
-            # todo replace once Molassembler has been updated
-            # self._molecules = masm.io.split(str(path.expanduser(file_or_directory_with_files)))
-            ac, bo = utils.io.read(str(path.expanduser(file_or_directory_with_files)))
-            if bo.empty():
-                bo = utils.BondDetector.detect_bonds(ac)
-            self._molecules = masm.interpret.molecules(
-                ac, bo, masm.interpret.BondDiscretization.RoundToNearest).molecules
+            self._molecules = masm.io.split(str(path.expanduser(file_or_directory_with_files)))
         else:
             raise ValueError(f"Given path '{file_or_directory_with_files}' is neither a file nor a directory.")
         for m in self._molecules:
@@ -1009,6 +1125,9 @@ class CompleteSubstructureFilter(AggregateFilter):
     def disable_caching(self) -> None:
         super().disable_caching()
         self._aggregate_to_molecules_map = {}
+
+    def independent_bimolecular_filtering(self) -> bool:
+        return self._require_both_match_bimolecular
 
 
 class HasStructureWithModel(AggregateFilter):
@@ -1050,6 +1169,9 @@ class HasStructureWithModel(AggregateFilter):
             return False
         return True
 
+    def independent_bimolecular_filtering(self) -> bool:
+        return True
+
 
 class StopDuringExploration(AggregateFilter):
     """
@@ -1088,6 +1210,9 @@ class StopDuringExploration(AggregateFilter):
         if self._model is not None:
             selection["$and"] += model_query(self._model)
         return self._calculations.get_one_calculation(dumps(selection)) is None
+
+    def independent_bimolecular_filtering(self) -> bool:
+        return False
 
 
 class OnePotentialEnergySurface(AggregateFilter):
@@ -1154,6 +1279,9 @@ class OnePotentialEnergySurface(AggregateFilter):
                                        or (aggregate_one.id() in rhs and aggregate_two.id() in rhs))
         return charge == self.__ref_charge and element_counts == self.__ref_element_composition and has_joined_reaction
 
+    def independent_bimolecular_filtering(self) -> bool:
+        return False
+
 
 class ActivatedAggregateFilter(AggregateFilter):
     """
@@ -1173,3 +1301,6 @@ class ActivatedAggregateFilter(AggregateFilter):
             return aggregate_one.explore() and aggregate_one.analyze()
         return aggregate_one.explore() and aggregate_one.analyze() and \
             aggregate_two.explore() and aggregate_two.analyze()
+
+    def independent_bimolecular_filtering(self) -> bool:
+        return True

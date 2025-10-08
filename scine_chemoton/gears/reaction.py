@@ -129,6 +129,8 @@ class BasicReactionHousekeeping(Gear):
                     structure = db.Structure(structure_id, self._structures)
                     # check aggregate
                     if not structure.has_aggregate():
+                        if structure.get_label() == db.Label.SURFACE_ADSORPTION_GUESS:
+                            continue
                         all_structures_have_aggregates = False
                         break
                     if not structure.has_graph("masm_cbor_graph"):
@@ -208,7 +210,7 @@ class BasicReactionHousekeeping(Gear):
         assert key not in self._reaction_cache
         self._reaction_cache[key] = reaction.get_id().string()
 
-    def _replace_duplicate_structures(self, elementary_step: db.ElementaryStep):
+    def _replace_duplicate_structures(self, elementary_step: db.ElementaryStep) -> None:
         reactants = elementary_step.get_reactants(db.Side.BOTH)
         unique_lhs = self._make_unique_structure_id_list(reactants[0])
         unique_rhs = self._make_unique_structure_id_list(reactants[1])
@@ -239,7 +241,8 @@ class BasicReactionHousekeeping(Gear):
             inverted_spline = utils.bsplines.TrajectorySpline(elements, knots, trajectory, ts_position)
             elementary_step.set_spline(inverted_spline)
 
-    def _disable_barrierless_if_mixed_types_in_reaction(self, reaction: db.Reaction, new_step: db.ElementaryStep):
+    def _disable_barrierless_if_mixed_types_in_reaction(
+            self, reaction: db.Reaction, new_step: db.ElementaryStep) -> None:
         """
         If we have a regular elementary step and a barrierless elementary step for an identical reaction,
         we are for now distrusting the barrierless steps and disable them, but keep them in the reaction.

@@ -25,6 +25,13 @@ from ...resources import resources_root_path
 from ....engine import Engine
 from ....gears.elementary_steps.minimal import MinimalElementarySteps
 from .mock_trial_generator import MockGenerator
+from scine_chemoton.filters.aggregate_filters import (
+    SelfReactionFilter,
+    CatalystFilter,
+    AggregateFilterAndArray,
+    ExactElementCountFilter,
+    ElementCountFilter
+)
 
 
 class ElementaryStepMinimalTests(unittest.TestCase, HoldsCollections):
@@ -425,3 +432,133 @@ class ElementaryStepMinimalTests(unittest.TestCase, HoldsCollections):
 
         with pytest.raises(ValueError):
             es_gear.options.looped_collection = "something"
+
+    def test_bimol_with_aggregate_filters(self):
+        """
+        Test whether the correct number of bimolecular combinations is probed
+        """
+        # Connect to test DB
+        manager = db_setup.get_clean_db("chemoton_minimal_bimol_aggregate_filters")
+        self.custom_setup(manager)
+
+        # Add fake data
+        rr = resources_root_path()
+        cheap_model = db.Model("cheap", "CHEAP", "")
+
+        def reset():
+            manager.wipe()
+            manager.init()
+            for mol in ["hydrogen_molecule", "water", "hydrogenperoxide"]:
+                compound = db.Compound()
+                compound.link(self._compounds)
+                compound.create([])
+                # Adding more structures per compound should not have an effect
+                for i in range(2):
+                    graph = json.load(open(os.path.join(rr, mol + ".json"), "r"))
+                    structure = db.Structure()
+                    structure.link(self._structures)
+                    structure.create(os.path.join(rr, mol + ".xyz"), 0, 1)
+                    structure.set_label(db.Label.USER_OPTIMIZED)
+                    structure.set_graph("masm_cbor_graph", graph["masm_cbor_graph"])
+                    structure.set_graph("masm_idx_map", graph["masm_idx_map"])
+                    structure.set_graph("masm_decision_list", str(i))
+                    structure.set_model(cheap_model)
+                    compound.add_structure(structure.id())
+                    structure.set_aggregate(compound.id())
+
+            es_gear = MinimalElementarySteps()
+            es_gear.trial_generator = MockGenerator()
+            es_gear.options.model = cheap_model
+            es_gear.options.enable_unimolecular_trials = False
+            es_gear.options.enable_bimolecular_trials = True
+            es_gear.options.structure_model = cheap_model
+            return es_gear
+
+        # filter does not block anything
+        gear = reset()
+        gear.aggregate_filter = AggregateFilterAndArray([
+            ExactElementCountFilter({"H": 2}, unspecified_elements_are_valid=True)
+        ])
+        es_engine = Engine(manager.get_credentials(), fork=False)
+        es_engine.set_gear(gear)
+        es_engine.run(single=True)
+        # Expected numbers:
+        # Unimolecular: 0
+        # Bimolecular: 3 choose 2 with repetition: 6 (3 self reactions, H2O + H2, H2O + H2O2, H2O2 + H2)
+        assert gear.trial_generator.unimol_counter == 0
+        assert gear.trial_generator.bimol_counter == 6
+
+        # filter blocks 3 self reactions
+        gear = reset()
+        gear.aggregate_filter = SelfReactionFilter()
+        es_engine = Engine(manager.get_credentials(), fork=False)
+        es_engine.set_gear(gear)
+        es_engine.run(single=True)
+        # Expected numbers:
+        assert gear.trial_generator.unimol_counter == 0
+        assert gear.trial_generator.bimol_counter == 3
+
+        # filter blocks self reactions
+        gear = reset()
+        gear.aggregate_filter = AggregateFilterAndArray([
+            SelfReactionFilter(),
+        ])
+        es_engine = Engine(manager.get_credentials(), fork=False)
+        es_engine.set_gear(gear)
+        es_engine.run(single=True)
+        # Expected numbers:
+        assert gear.trial_generator.unimol_counter == 0
+        assert gear.trial_generator.bimol_counter == 3
+
+        # filter blocks H2 and H2O2 -> only water with water
+        gear = reset()
+        gear.aggregate_filter = ExactElementCountFilter({"H": 2, "O": 1}, unspecified_elements_are_valid=False)
+        es_engine = Engine(manager.get_credentials(), fork=False)
+        es_engine.set_gear(gear)
+        es_engine.run(single=True)
+        # Expected numbers:
+        assert gear.trial_generator.unimol_counter == 0
+        assert gear.trial_generator.bimol_counter == 1
+
+        # filter blocks H2O2 and reactions involving multiple O species (H2O + H2O), but enforces at least one O species
+        # -> only H2O + H2
+        gear = reset()
+        gear.aggregate_filter = AggregateFilterAndArray([
+            CatalystFilter({"O": 1}),
+            ElementCountFilter({"H": 2, "O": 1}),
+        ])
+        es_engine = Engine(manager.get_credentials(), fork=False)
+        es_engine.set_gear(gear)
+        es_engine.run(single=True)
+        # Expected numbers:
+        assert gear.trial_generator.unimol_counter == 0
+        assert gear.trial_generator.bimol_counter == 1
+
+        # same
+        gear = reset()
+        gear.aggregate_filter = AggregateFilterAndArray([
+            SelfReactionFilter(),
+            ElementCountFilter({"H": 2, "O": 1}),
+            CatalystFilter({"O": 1}),
+        ])
+        es_engine = Engine(manager.get_credentials(), fork=False)
+        es_engine.set_gear(gear)
+        es_engine.run(single=True)
+        # Expected numbers:
+        assert gear.trial_generator.unimol_counter == 0
+        assert gear.trial_generator.bimol_counter == 1
+
+        # filter blocks self reactions and reactions involving multiple O species (H2O + H2O),
+        # but enforces at least one O species
+        # H2O + H2 and H2O2 + H2
+        gear = reset()
+        gear.aggregate_filter = AggregateFilterAndArray([
+            CatalystFilter({"O": 1}),
+            SelfReactionFilter(),
+        ])
+        es_engine = Engine(manager.get_credentials(), fork=False)
+        es_engine.set_gear(gear)
+        es_engine.run(single=True)
+        # Expected numbers:
+        assert gear.trial_generator.unimol_counter == 0
+        assert gear.trial_generator.bimol_counter == 2

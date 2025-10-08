@@ -37,12 +37,18 @@ class ReactionFilter(HoldsCollections, HasName):
         self._remove_chemoton_from_name()
 
     def __and__(self, o):
+        """
+        Overloaded `&` operator to chain rules with logical 'and'.
+        """
         if not isinstance(o, ReactionFilter):
             raise TypeError("ReactionFilter expects ReactionFilter "
                             "(or derived class) to chain with.")
         return ReactionFilterAndArray([self, o])
 
     def __or__(self, o):
+        """
+        Overloaded `|` operator to chain rules with logical 'or'.
+        """
         if not isinstance(o, ReactionFilter):
             raise TypeError("ReactionFilter expects ReactionFilter "
                             "(or derived class) to chain with.")

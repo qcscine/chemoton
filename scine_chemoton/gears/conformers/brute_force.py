@@ -18,6 +18,7 @@ import scine_utilities as utils
 
 # Local application imports
 from .. import Gear
+from ...utilities.surfaces.periodic_utils import PeriodicUtils
 from scine_chemoton.filters.aggregate_filters import AggregateFilter
 
 
@@ -138,8 +139,10 @@ class BruteForceConformers(Gear):
             str_compound_id = str(compound_id)
             if str_compound_id in self._completed:
                 continue
-            if not self.aggregate_filter.filter(compound):
-                self._completed.add(str_compound_id)  # add filtered out to completed to avoid many filter evaluations
+            if PeriodicUtils.is_surface(compound, self._structures) or not self.aggregate_filter.filter(compound):
+                # add surface to avoid repeated label checks
+                # add filtered out to completed to avoid many filter evaluations
+                self._completed.add(str_compound_id)
                 continue
 
             # ============================== #
@@ -240,7 +243,9 @@ class BruteForceConformers(Gear):
             structure = db.Structure(sid, self._structures)
             if not structure.has_property("electronic_energy"):
                 continue
-            energy_property = structure.query_properties("electronic_energy", self.options.model, self._properties)
+            this_model = db.Model.__copy__(self.options.model)
+            this_model.periodic_boundaries = structure.get_model().periodic_boundaries
+            energy_property = structure.query_properties("electronic_energy", this_model, self._properties)
             if not energy_property:
                 raise RuntimeError(f"Could not find electronic energy for structure {sid}, "
                                    f"something might be wrong with the model for {self.name}:\n{self.options.model}")
@@ -249,9 +254,8 @@ class BruteForceConformers(Gear):
             if reference_energy is None:
                 reference_energy = energy
             energy -= reference_energy
-            temperature_model = db.Model.__copy__(self.options.model)
-            temperature_model.temperature = str(self.options.temperature)
-            boltzmann_property = db.NumberProperty.make("boltzmann_weight", temperature_model,
+            this_model.temperature = str(self.options.temperature)
+            boltzmann_property = db.NumberProperty.make("boltzmann_weight", this_model,
                                                         math.exp(-beta * energy), self._properties)
             boltzmann_property.set_comment("Energy 0-point: " + str(reference_energy))
             structure.add_property("boltzmann_weight", boltzmann_property.id())

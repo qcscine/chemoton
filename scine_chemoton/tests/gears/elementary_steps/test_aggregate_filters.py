@@ -30,6 +30,7 @@ from scine_chemoton.filters.aggregate_filters import (
     AtomNumberFilter,
     CompoundCostPropertyFilter,
     ElementCountFilter,
+    ExactElementCountFilter,
     ElementSumCountFilter,
     MolecularWeightFilter,
     IdFilter,
@@ -192,6 +193,95 @@ class AggregateFiltersTests(unittest.TestCase, HoldsCollections):
             ("arginine", "cyclohexene"): False,
             ("cyclohexene", "water"): False,
             ("cyclohexene", "arginine"): False,
+            ("cyclohexene", "cyclohexene"): False,
+        }
+        check()
+
+    def test_exact_element_count_filter(self):
+        # Connect to test DB
+        manager = db_setup.get_clean_db("chemoton_test_exact_element_count_filter")
+        self.custom_setup(manager)
+
+        # Add structure data
+        rr = resources_root_path()
+        test_compounds = {}
+        for xyz in ["water", "hydrogenperoxide", "cyclohexene"]:
+            structure = db.Structure()
+            structure.link(self._structures)
+            structure.create(os.path.join(rr, xyz + ".xyz"), 0, 1)
+            structure.set_label(db.Label.MINIMUM_OPTIMIZED)
+            structure.set_aggregate(db.ID())
+            compound = db.Compound()
+            compound.link(self._compounds)
+            compound.create([structure.id()])
+            structure.set_aggregate(compound.id())
+            test_compounds[xyz] = compound
+
+        # Setup filter
+        counts = {
+            "H": 2,
+        }
+        f = ExactElementCountFilter(counts, unspecified_elements_are_valid=True)
+        f.initialize_collections(manager)
+
+        expected_results = {
+            ("water",): True,
+            ("hydrogenperoxide",): True,
+            ("cyclohexene",): False,
+            ("water", "water"): True,
+            ("water", "hydrogenperoxide"): True,
+            ("water", "cyclohexene"): False,
+            ("hydrogenperoxide", "water"): True,
+            ("hydrogenperoxide", "hydrogenperoxide"): True,
+            ("hydrogenperoxide", "cyclohexene"): False,
+            ("cyclohexene", "water"): False,
+            ("cyclohexene", "hydrogenperoxide"): False,
+            ("cyclohexene", "cyclohexene"): False,
+        }
+
+        def check():
+            for k, v in expected_results.items():
+                if len(k) == 1:
+                    assert v == f.filter(test_compounds[k[0]])
+                elif len(k) == 2:
+                    assert v == f.filter(test_compounds[k[0]], test_compounds[k[1]])
+                else:
+                    assert False
+
+        check()
+        f = ExactElementCountFilter(counts, unspecified_elements_are_valid=False)
+        f.initialize_collections(manager)
+        expected_results = {
+            ("water",): False,
+            ("hydrogenperoxide",): False,
+            ("cyclohexene",): False,
+            ("water", "water"): False,
+            ("water", "hydrogenperoxide"): False,
+            ("water", "cyclohexene"): False,
+            ("hydrogenperoxide", "water"): False,
+            ("hydrogenperoxide", "hydrogenperoxide"): False,
+            ("hydrogenperoxide", "cyclohexene"): False,
+            ("cyclohexene", "water"): False,
+            ("cyclohexene", "hydrogenperoxide"): False,
+            ("cyclohexene", "cyclohexene"): False,
+        }
+        check()
+
+        counts["O"] = 1
+        f = ExactElementCountFilter(counts, unspecified_elements_are_valid=True)
+        f.initialize_collections(manager)
+        expected_results = {
+            ("water",): True,
+            ("hydrogenperoxide",): False,
+            ("cyclohexene",): False,
+            ("water", "water"): True,
+            ("water", "hydrogenperoxide"): False,
+            ("water", "cyclohexene"): False,
+            ("hydrogenperoxide", "water"): False,
+            ("hydrogenperoxide", "hydrogenperoxide"): False,
+            ("hydrogenperoxide", "cyclohexene"): False,
+            ("cyclohexene", "water"): False,
+            ("cyclohexene", "hydrogenperoxide"): False,
             ("cyclohexene", "cyclohexene"): False,
         }
         check()
@@ -451,6 +541,36 @@ class AggregateFiltersTests(unittest.TestCase, HoldsCollections):
         assert f.filter(test_compounds["arginine"], test_compounds["cyclohexene"])
         assert f.filter(test_compounds["cyclohexene"], test_compounds["water"])
         assert f.filter(test_compounds["cyclohexene"], test_compounds["arginine"])
+        assert not f.filter(test_compounds["cyclohexene"], test_compounds["cyclohexene"])
+
+        f = CatalystFilter(counts, restrict_unimolecular_to_catalyst=True)
+        f.initialize_collections(manager)
+        assert not f.filter(test_compounds["water"])
+        assert not f.filter(test_compounds["arginine"])
+        assert f.filter(test_compounds["cyclohexene"])
+        assert not f.filter(test_compounds["water"], test_compounds["water"])
+        assert not f.filter(test_compounds["water"], test_compounds["arginine"])
+        assert f.filter(test_compounds["water"], test_compounds["cyclohexene"])
+        assert not f.filter(test_compounds["arginine"], test_compounds["water"])
+        assert not f.filter(test_compounds["arginine"], test_compounds["arginine"])
+        assert f.filter(test_compounds["arginine"], test_compounds["cyclohexene"])
+        assert f.filter(test_compounds["cyclohexene"], test_compounds["water"])
+        assert f.filter(test_compounds["cyclohexene"], test_compounds["arginine"])
+        assert not f.filter(test_compounds["cyclohexene"], test_compounds["cyclohexene"])
+
+        f = CatalystFilter(counts, interpret_as_equal_or_larger=True)
+        f.initialize_collections(manager)
+        assert f.filter(test_compounds["water"])
+        assert f.filter(test_compounds["arginine"])
+        assert f.filter(test_compounds["cyclohexene"])
+        assert not f.filter(test_compounds["water"], test_compounds["water"])
+        assert f.filter(test_compounds["water"], test_compounds["arginine"])
+        assert f.filter(test_compounds["water"], test_compounds["cyclohexene"])
+        assert f.filter(test_compounds["arginine"], test_compounds["water"])
+        assert not f.filter(test_compounds["arginine"], test_compounds["arginine"])
+        assert not f.filter(test_compounds["arginine"], test_compounds["cyclohexene"])
+        assert f.filter(test_compounds["cyclohexene"], test_compounds["water"])
+        assert not f.filter(test_compounds["cyclohexene"], test_compounds["arginine"])
         assert not f.filter(test_compounds["cyclohexene"], test_compounds["cyclohexene"])
 
     def test_one_compound_id_filter(self):

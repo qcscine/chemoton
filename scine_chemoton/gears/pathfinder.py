@@ -12,11 +12,13 @@ import copy
 import json
 import math
 import warnings
+import yaml
 
 # Third party imports
 import networkx as nx
 import numpy as np
 import scine_database as db
+import scine_utilities as utils
 from scine_database.compound_and_flask_creation import get_compound_or_flask
 from scine_database.energy_query_functions import (
     get_energy_for_structure,
@@ -29,6 +31,12 @@ from scine_database.energy_query_functions import (
 from . import HoldsCollections
 from ..utilities.get_molecular_formula import get_molecular_formula_of_aggregate
 from ..utilities.options import BaseOptions
+from scine_chemoton.utilities.db_object_wrappers.thermodynamic_properties import ReferenceState
+from scine_chemoton.utilities.db_object_wrappers.reaction_wrapper import Reaction
+from scine_chemoton.utilities.db_object_wrappers.wrapper_caches import MultiModelCacheFactory
+from scine_chemoton.utilities.db_object_wrappers.reaction_cache import ReactionCache
+from scine_chemoton.utilities.model_combinations import ModelCombination
+from scine_chemoton.utilities.place_holder_model import construct_place_holder_model
 
 
 class DifferentSubgraphsError(Exception):
@@ -59,19 +67,19 @@ class Pathfinder(HoldsCollections):
     graph_handler
         A class handling the construction of the graph. Can be adapted to one's needs.
     _use_old_iterator : bool
-        Bool to indicate if the old iterator shall be used querying for paths between a source - target pair.
+        Boolean to indicate if the old iterator shall be used querying for paths between a source - target pair.
     _unique_iterator_memory : Tuple[Tuple[List[str], float], Iterator]
         Memory of iterator with the corresponding path and its length as well as the iterator.
     start_compounds : List[str]
         A list containing the compounds which are present at the start.
     start_compounds_set : bool
-        Bool to indicate if start_compounds are set.
+        Boolean to indicate if start_compounds are set.
     _pseudo_inf : float
         Float for edges with infinite weight.
     compound_costs : Dict[str, float]
         A dictionary containing the cost of the compounds with the compounds as keys.
     compound_costs_solved : bool
-        Bool to indicate if all compounds have a compound cost.
+        Boolean to indicate if all compounds have a compound cost.
     """
 
     def __init__(self, db_manager: db.Manager) -> None:
@@ -81,7 +89,9 @@ class Pathfinder(HoldsCollections):
                                       "elementary_steps", "structures", "properties"]
         self.initialize_collections(db_manager)
 
-        self.graph_handler: Union[Pathfinder.BasicHandler, Pathfinder.BarrierBasedHandler, None] = None
+        self.graph_handler: Union[Pathfinder.BasicHandler, Pathfinder.BarrierBasedHandler,
+                                  Pathfinder.MinimumReactionBarrierBasedHandler, Pathfinder.FromRMSFileBasedHandler,
+                                  None] = None
         # attribute to store iterator employed in find_unique_paths; path_object, iterator
         self._use_old_iterator = False
         self._unique_iterator_memory: Union[Tuple[Tuple[List[str], float],
@@ -100,7 +110,8 @@ class Pathfinder(HoldsCollections):
         A class to vary the setup of Pathfinder.
         """
         __slots__ = {"graph_handler", "barrierless_weight", "model", "filter_negative_barriers", "use_structure_model",
-                     "structure_model", "use_only_enabled_aggregates", "temperature", "barrier_limit"
+                     "structure_model", "use_only_enabled_aggregates", "temperature", "barrier_limit",
+                     "only_electronic_energies", "rms_file_name", "thermodynamics_model", "use_thermodynamics_model"
                      }
 
         def __init__(self) -> None:
@@ -130,6 +141,11 @@ class Pathfinder(HoldsCollections):
             bool
                 Allow only elementary steps with a given model.
             """
+            self.use_thermodynamics_model: bool = False
+            """
+            bool
+                Composite Gibbs energies. Should only be used with structure_model and electronic energy activated.
+            """
             self.use_only_enabled_aggregates: bool = False
             """
             bool
@@ -139,6 +155,11 @@ class Pathfinder(HoldsCollections):
             """
             db.Model
                 The model for the structures of compounds to be included in the graph.
+            """
+            self.thermodynamics_model: db.Model = db.Model("any", "any", "any")
+            """
+            db.Model
+                The model that is used to extract the thermodynamics corrections and add them to self.model.
             """
             self.temperature: float = 298.15
             """
@@ -151,10 +172,21 @@ class Pathfinder(HoldsCollections):
                 The maximum barrier for elementary steps to be included in the graph.
                 Only valid with 'barrier' graph handler
             """
+            self.only_electronic_energies: bool = False
+            """
+            bool
+                If True, only electronic energies will be considered for the weight calculation with the
+                MinimumReactionBarrierBasedHandler graph handler.
+            """
+            self.rms_file_name: str = ""
+            """
+            str
+                The name of the RMS input file for the FromRMSFileBasedHandler.
+            """
 
     @staticmethod
     def get_valid_graph_handler_options() -> List[str]:
-        return ["basic", "barrier"]
+        return ["basic", "barrier", "reaction-barrier", "from-rms-input"]
 
     def _construct_graph_handler(self):
         """
@@ -173,6 +205,8 @@ class Pathfinder(HoldsCollections):
             self.graph_handler.barrierless_weight = self.options.barrierless_weight
             self.graph_handler.use_structure_model = self.options.use_structure_model
             self.graph_handler.use_only_enabled_aggregates = self.options.use_only_enabled_aggregates
+            self.graph_handler.use_thermodynamics_model = self.options.use_thermodynamics_model
+            self.graph_handler.thermodynamics_model = self.options.thermodynamics_model
         elif self.options.graph_handler == "barrier":
             self.graph_handler = self.BarrierBasedHandler(
                 self._manager, self.options.model, self.options.structure_model)
@@ -181,11 +215,25 @@ class Pathfinder(HoldsCollections):
             self.graph_handler.filter_negative_barriers = self.options.filter_negative_barriers
             self.graph_handler.set_temperature(self.options.temperature)
             self.graph_handler.use_structure_model = self.options.use_structure_model
+            self.graph_handler.use_thermodynamics_model = self.options.use_thermodynamics_model
+            self.graph_handler.thermodynamics_model = self.options.thermodynamics_model
             self.graph_handler.use_only_enabled_aggregates = self.options.use_only_enabled_aggregates
             self.graph_handler.set_barrier_limit(self.options.barrier_limit)
             # Mapping of ESs and calculating normalization
             self.graph_handler._map_elementary_steps_to_reactions()
             self.graph_handler._calculate_rate_constant_normalization()
+        elif self.options.graph_handler == "reaction-barrier":
+            graph_handler = self.MinimumReactionBarrierBasedHandler(
+                self._manager, self.options.model, self.options.structure_model)
+            graph_handler.only_electronic = self.options.only_electronic_energies
+            graph_handler.use_only_enabled_aggregates = self.options.use_only_enabled_aggregates
+            self.graph_handler = graph_handler
+            self.graph_handler.barrierless_weight = self.options.barrierless_weight
+            self.graph_handler.initialize()
+        elif self.options.graph_handler == "from-rms-input":
+            self.graph_handler = self.FromRMSFileBasedHandler(self._manager, self.options.rms_file_name,
+                                                              self.options.temperature)
+            self.graph_handler.initialize()
 
     def _reset_iterator_memory(self):
         """
@@ -199,15 +247,22 @@ class Pathfinder(HoldsCollections):
         Build the nx.DiGraph() from a list of filtered reactions.
         """
         self._reset_iterator_memory()
-        # # # Reset bools for compound costs
+        # # # Reset booleans for compound costs
         self.compound_costs_solved = False
         self.graph_updated_with_compound_costs = False
         # Build graph
         self._construct_graph_handler()
         assert self.graph_handler
-        for rxn_id in self.graph_handler.get_valid_reaction_ids():
-            rxn = db.Reaction(rxn_id, self._reactions)
-            self.graph_handler.add_reaction(rxn)
+        # Fallback strategy, if there are no reactions in the database yet
+        if self._reactions.count(json.dumps({})) == 0:
+            warnings.warn("No reactions in database. Building graph with aggregates only.")
+            for aggregate_id, aggregate_type in self.graph_handler.get_valid_aggregate_ids():
+                aggregate = get_compound_or_flask(aggregate_id, aggregate_type, self._compounds, self._flasks)
+                self.graph_handler.add_aggregate(aggregate, aggregate_type)
+        else:
+            for rxn_id in self.graph_handler.get_valid_reaction_ids():
+                rxn = db.Reaction(rxn_id, self._reactions)
+                self.graph_handler.add_reaction(rxn)
 
     def extract_connected_graph(self, included_nodes: List[str]) -> nx.DiGraph:
         """
@@ -414,6 +469,7 @@ class Pathfinder(HoldsCollections):
             for i, side in enumerate([reactants, products]):
                 for j, aggregate_id in enumerate(side):
                     # # # Identify Compound or Flask
+                    aggregate_type = None
                     if self.graph_handler.graph.nodes[aggregate_id]['type'] == db.CompoundOrFlask.COMPOUND.name:
                         aggregate_type = db.CompoundOrFlask.COMPOUND
                     elif self.graph_handler.graph.nodes[aggregate_id]['type'] == db.CompoundOrFlask.FLASK.name:
@@ -440,6 +496,62 @@ class Pathfinder(HoldsCollections):
             sequence_string += rxn_eq + "\n"
 
         return sequence_string
+
+    def get_elementary_step_sequence_as_list(self, path: List[str]) -> List[str]:
+        """
+        Returns the elementary step sequence as a list of strings.
+
+        Parameters
+        ----------
+        path : List[str]
+            The path representing the elementary step sequence.
+
+        Returns
+        -------
+        List[str]
+            The elementary step sequence as a list of reaction equations.
+
+        Raises
+        ------
+        RuntimeError
+            If an invalid aggregate type is encountered in the graph nodes.
+        """
+        sequence_list: List[str] = []
+        assert self.graph_handler
+        # # # Loop over elementary steps by dissecting path
+        for k in np.arange(0, len(path) - 2, 2):
+            step = path[k:k + 3]
+            # # # Count Reactants
+            reactants = [step[0]]
+            reactants += self.graph_handler.graph.edges[step[0], step[1]]['required_compounds']
+            # # # Count Products
+            products = [step[2]]
+            products += self.graph_handler.graph.edges[step[1], step[2]]['required_compounds']
+
+            rxn_eq = ""
+            for i, side in enumerate([reactants, products]):
+                for j, aggregate_id in enumerate(side):
+                    # # # Identify Compound or Flask
+                    if self.graph_handler.graph.nodes[aggregate_id]['type'] == db.CompoundOrFlask.COMPOUND.name:
+                        aggregate_type = db.CompoundOrFlask.COMPOUND
+                    elif self.graph_handler.graph.nodes[aggregate_id]['type'] == db.CompoundOrFlask.FLASK.name:
+                        aggregate_type = db.CompoundOrFlask.FLASK
+                    else:
+                        raise RuntimeError('Invalid aggregate type encountered in your graph nodes. '
+                                           'Please check the graph nodes.')
+
+                    aggregate_str = get_molecular_formula_of_aggregate(
+                        db.ID(aggregate_id), aggregate_type, self._compounds, self._flasks, self._structures)
+
+                    rxn_eq += aggregate_str
+
+                    if j < len(side) - 1:
+                        rxn_eq += " + "
+                if i == 0:
+                    rxn_eq += " -> "
+            sequence_list.append(rxn_eq)
+
+        return sequence_list
 
     def get_overall_reactants(self, path: List[str]) -> List[List[Tuple[str, float]]]:
         """
@@ -507,6 +619,7 @@ class Pathfinder(HoldsCollections):
                 for j, cmp_count in enumerate(side):
                     aggregate_id = cmp_count[0]
                     # # # Identify Compound or Flask
+                    aggregate_type = None
                     if self.graph_handler.graph.nodes[aggregate_id]['type'] == db.CompoundOrFlask.COMPOUND.name:
                         aggregate_type = db.CompoundOrFlask.COMPOUND
                     elif self.graph_handler.graph.nodes[aggregate_id]['type'] == db.CompoundOrFlask.FLASK.name:
@@ -867,6 +980,19 @@ class Pathfinder(HoldsCollections):
 
     @staticmethod
     def _import_graph(filename: str) -> nx.DiGraph:
+        """
+        Import a graph from a file.
+
+        Parameters
+        ----------
+        filename : str
+            The path to the file containing the graph data.
+
+        Returns
+        -------
+        nx.DiGraph
+            The imported graph as a NetworkX directed graph.
+        """
         with open(filename, "r") as f:
             graph = json.load(f)
         # # # Extract additional node type information
@@ -934,14 +1060,17 @@ class Pathfinder(HoldsCollections):
             self.use_structure_model = False
             self.use_only_enabled_aggregates = False
             self.structure_model: db.Model = structure_model
+            self.use_thermodynamics_model = False
+            self.thermodynamics_model = False
             self._rxn_to_es_map: Dict[str, db.ID] = {}
             self._allowed_reaction_sides: Dict[str, db.Side] = {}
+            self._energy_label = "Electronic Energy"
 
         def add_reaction(self, reaction: db.Reaction):
             """
             Add a reaction to the graph.
             Each reaction node represents the LHS and RHS.
-            Hence every reagent of a reaction is connected to every product of a reaction via one reaction node.
+            Hence, every reagent of a reaction is connected to every product of a reaction via one reaction node.
 
             For instance:\n
             | A + B = C + D, reaction R\n
@@ -1000,10 +1129,14 @@ class Pathfinder(HoldsCollections):
                 rxn_node = ';'.join([reaction_id, str(i)])
                 rxn_node += ';'
                 # Construct property dict of node
-                rxn_node_properties = {'type': 'rxn_node'}
+                rxn_node_properties: Dict[str, Any] = {'type': 'rxn_node'}
                 es_id = self._get_mapped_es_of_reaction(reaction_id)
                 if es_id is not None:
                     rxn_node_properties['elementary_step_id'] = es_id
+                barriers: Optional[Tuple[float, float]] = self._get_barriers(reaction_id)
+                if barriers is not None:
+                    rxn_node_properties['activation_energies'] = barriers
+                    rxn_node_properties['energy_type'] = self._energy_label
                 self.graph.add_node(rxn_node, **rxn_node_properties)
                 rxn_nodes.append(rxn_node)
             # Convert to strings
@@ -1044,6 +1177,30 @@ class Pathfinder(HoldsCollections):
                             self.graph.edges[key, rxn_nodes[node_index]]['required_compounds']
                     node_index -= 1
 
+        def add_aggregate(self, aggregate: Union[db.Compound, db.Flask], aggregate_type: db.CompoundOrFlask):
+            """
+            Add an aggregate to the graph.
+            This is only to be used in a fallback strategy to add aggregates only if no reactions are present yet,
+            e.g. at the beginning of an exploration.
+
+            Parameters
+            ----------
+            aggregate : Union[db.Compound, db.Flask]
+                The aggregate to be added.
+            aggregate_type : db.CompoundOrFlask
+                The type of the aggregate.
+            """
+            aggregate_id = aggregate.id().string()
+            aggregate_type_name = aggregate_type.name
+            if aggregate_id not in self.graph:
+                self.graph.add_node(aggregate_id, type=aggregate_type_name)
+
+        def _get_barriers(self, _: str) -> Optional[Tuple[float, float]]:
+            """
+            Optional getter for the barrier of the reaction step.
+            """
+            return None
+
         def _get_weight(self, reaction: db.Reaction) -> Tuple[float, float]:
             """
             Determining the weights for the edges of the given reaction.
@@ -1080,6 +1237,25 @@ class Pathfinder(HoldsCollections):
                     valid_ids.append(reaction.id())
             return valid_ids
 
+        def get_valid_aggregate_ids(self) -> List[Tuple[db.ID, db.CompoundOrFlask]]:
+            """
+            Basic filter function for aggregates (compounds and flasks)
+            Returns a list of valid aggregate IDs.
+
+            Returns
+            -------
+            List[Tuple[db.ID, db.CompoundOrFlask]]
+                A list of tuples containing the valid aggregate IDs and their types.
+            """
+            valid_ids: List[Tuple[db.ID, db.CompoundOrFlask]] = list()
+            for compound in self._compounds.iterate_all_compounds():
+                if self._valid_aggregate(compound, db.CompoundOrFlask.COMPOUND):
+                    valid_ids.append((compound.id(), db.CompoundOrFlask.COMPOUND))
+            for flask in self._flasks.iterate_all_flasks():
+                if self._valid_aggregate(flask, db.CompoundOrFlask.FLASK):
+                    valid_ids.append((flask.id(), db.CompoundOrFlask.FLASK))
+            return valid_ids
+
         def _get_mapped_es_of_reaction(self, rxn_id_string: str) -> Optional[str]:
             id_ = self._rxn_to_es_map.get(rxn_id_string, None)
             return id_ if id_ is None else str(id_)
@@ -1107,17 +1283,17 @@ class Pathfinder(HoldsCollections):
             Returns
             -------
             bool
-                Bool indicating if the reaction is valid.
+                Boolean indicating if the reaction is valid.
             """
             reaction.link(self._reactions)
-
             if self.use_only_enabled_aggregates:
                 lhs, rhs = reaction.get_reactants(db.Side.BOTH)
                 lhs_types, rhs_types = reaction.get_reactant_types(db.Side.BOTH)
-                if not all(get_compound_or_flask(reactant_id, reactant_type, self._compounds, self._flasks).explore()
-                           for reactant_id, reactant_type in zip(lhs + rhs, lhs_types + rhs_types)):
+                if not all(
+                        get_compound_or_flask(reactant_id, reactant_type, self._compounds, self._flasks).explore()
+                        for reactant_id, reactant_type in zip(lhs + rhs, lhs_types + rhs_types)
+                ):
                     return False
-
             for es_id in reaction.get_elementary_steps():
                 valid_structures = False
                 valid_barriers = True
@@ -1130,21 +1306,35 @@ class Pathfinder(HoldsCollections):
                     assert self.model
                     if self.use_structure_model:
                         assert self.structure_model
+                        if self.use_thermodynamics_model:  # Extra step for thermodynamics model
+                            assert self.thermodynamics_model
                     # Structure model check if wanted here, structure must have model
                     if self.use_structure_model and \
                        self.structure_model != first_structure_lhs.get_model():  # type: ignore
                         # # # Skip structure if the structure model does not fit the set model
                         continue
-                    first_structure_lhs_e = get_energy_for_structure(
-                        first_structure_lhs, "electronic_energy", self.model, self._structures, self._properties)
+                    first_structure_lhs_e = get_energy_for_structure(first_structure_lhs, "electronic_energy",
+                                                                     self.model, self._structures, self._properties)
                     # # # Structure validity check
                     if first_structure_lhs_e is not None:
                         valid_structures = True
+                    if self.use_thermodynamics_model:  # # # validity of the thermodynamics model
+                        first_structure_lhs_e2 = get_energy_for_structure(first_structure_lhs, "electronic_energy",
+                                                                          self.thermodynamics_model, self._structures,
+                                                                          self._properties)
+                        if first_structure_lhs_e2 is not None:
+                            valid_structures = True
                     if self.filter_negative_barriers:
                         barriers = get_barriers_for_elementary_step_by_type(es, "electronic_energy", self.model,
                                                                             self._structures, self._properties)
-                        if None in barriers or (barriers[0] < 0.0 or barriers[1] < 0.0):  # type: ignore
+                        if None in barriers or (barriers[0] < 0.0 or barriers[1] < 0.0):
                             valid_barriers = False
+                        if self.use_thermodynamics_model:  # # # validity of the thermodynamics model
+                            barriers2 = get_barriers_for_elementary_step_by_type(es, "electronic_energy",
+                                                                                 self.thermodynamics_model,
+                                                                                 self._structures, self._properties)
+                            if None in barriers2 or (barriers2[0] < 0.0 or barriers2[1] < 0.0):
+                                valid_barriers = False
                     # # # Final structure and barrier check
                     if valid_structures and valid_barriers:
                         return True
@@ -1153,6 +1343,64 @@ class Pathfinder(HoldsCollections):
                     if len(first_structure_lhs.get_properties("electronic_energy")) > 0:
                         return True
             # If all elementary steps of this reaction fail the checks, this reaction is not valid
+            return False
+
+        def _valid_aggregate(self, aggregate: Union[db.Compound, db.Flask], aggregate_type: db.CompoundOrFlask) -> bool:
+            """
+            Checks if a given aggregate is valid.
+            An aggregate is considered valid if at least one structure of the aggregate has an electronic energy
+            assigned, if required calculated with the set db.Model.
+
+            If 'use_structure_model' is set to True, the structures are checked if they have
+            the required structure model.
+
+            If 'use_only_enabled_aggregates' is set to True, the aggregate is checked if it is enabled for
+            exploration.
+
+            Parameters
+            ----------
+            aggregate : Union[db.Compound, db.Flask]
+                The aggregate to be checked for validity.
+            aggregate_type : db.CompoundOrFlask
+                The type of the aggregate (Compound or Flask).
+
+            Returns
+            -------
+            bool
+                True if the aggregate is valid, False otherwise.
+            """
+            if aggregate_type == db.CompoundOrFlask.COMPOUND:
+                aggregate.link(self._compounds)
+            else:
+                aggregate.link(self._flasks)
+
+            if self.use_only_enabled_aggregates:
+                if not aggregate.explore():
+                    return False
+            # # # Loop over all structures of the aggregate
+            for structure_id in aggregate.get_structures():
+                tmp_structure = db.Structure(structure_id, self._structures)
+                # # # Model Check
+                # Check if energy of this structure with specified model exists
+                if self.model != db.Model("any", "any", "any") or\
+                   self.model != db.Model("any", "any", ""):  # type: ignore
+                    assert self.model
+                    if self.use_structure_model:
+                        assert self.structure_model
+                    # Structure model check if wanted here, structure must have model
+                    if self.use_structure_model and self.structure_model != tmp_structure.get_model():  # type: ignore
+                        # # # Skip structure if the structure model does not fit the set model
+                        continue
+                    tmp_structure_e = get_energy_for_structure(
+                        tmp_structure, "electronic_energy", self.model, self._structures, self._properties)
+                    # # # Structure validity check
+                    if tmp_structure_e is not None:
+                        return True
+                # Check if model is not specified (None)
+                else:
+                    if len(tmp_structure.get_properties("electronic_energy")) > 0:
+                        return True
+            # If all structures of this aggregate fail the checks, this aggregate is not valid
             return False
 
         def get_allowed_reaction_sides(self, reaction_id: str) -> db.Side:
@@ -1208,11 +1456,10 @@ class Pathfinder(HoldsCollections):
             """
             return self.temperature
 
-        def get_valid_reaction_ids(self):
+        def get_valid_reaction_ids(self) -> List[db.ID]:
             return [db.ID(key) for key in self._rxn_to_es_map.keys()]
 
         def _get_valid_reaction_ids(self) -> List[db.ID]:
-
             valid_ids: List[db.ID] = list()
             for reaction in self._reactions.iterate_all_reactions():
                 if self._valid_reaction(reaction):
@@ -1293,11 +1540,31 @@ class Pathfinder(HoldsCollections):
                         raise RuntimeError("Elementary step " + es_id.string() + " has label " + es.get_type() +
                                            " but no transition state.")
                     # # # Retrieve barriers of elementary step in kJ/mol
-                    barriers = get_barriers_for_elementary_step_by_type(
-                        es, "gibbs_free_energy", self.model, self._structures, self._properties)
-                    if None in barriers:
-                        barriers = get_barriers_for_elementary_step_by_type(
-                            es, "electronic_energy", self.model, self._structures, self._properties)
+                    if self.use_thermodynamics_model:  # consider model 1 (elec) and model 2 (gibbs correction)
+                        barriers2g = get_barriers_for_elementary_step_by_type(es, "gibbs_free_energy",
+                                                                              self.thermodynamics_model,
+                                                                              self._structures, self._properties)
+                        barriers2e = get_barriers_for_elementary_step_by_type(es, "electronic_energy",
+                                                                              self.thermodynamics_model,
+                                                                              self._structures, self._properties)
+                        if None in barriers2g:
+                            barriers = barriers2e
+                            if None in barriers2e:
+                                print("Warning: No electronic nor Gibbs energy with thermodynamics model "
+                                      "for elementary step {str_el}".format(str_el=es_id))
+                                barriers = get_barriers_for_elementary_step_by_type(es, "electronic_energy", self.model,
+                                                                                    self._structures, self._properties)
+                        else:
+                            gibbs_correction = [g-e for g, e in zip(barriers2g, barriers2e)]
+                            barriers1e = get_barriers_for_elementary_step_by_type(es, "electronic_energy", self.model,
+                                                                                  self._structures, self._properties)
+                            barriers = [b+gc for b, gc in zip(barriers1e, gibbs_correction)]
+                    else:  # consider only model 1
+                        barriers = get_barriers_for_elementary_step_by_type(es, "gibbs_free_energy", self.model,
+                                                                            self._structures, self._properties)
+                        if None in barriers:
+                            barriers = get_barriers_for_elementary_step_by_type(es, "electronic_energy", self.model,
+                                                                                self._structures, self._properties)
                     # # # Use user defined barrierless weight for negative barriers
                     # Check LHS Barrier
                     if barriers[0] < 0.0:
@@ -1360,7 +1627,6 @@ class Pathfinder(HoldsCollections):
                     k_rhs = self.barrierless_weight
                 else:
                     k_rhs = rate_constant_from_barrier(barriers[1], self.temperature)
-
             return abs(np.log(k_lhs * self._rate_constant_normalization)), \
                 abs(np.log(k_rhs * self._rate_constant_normalization))
 
@@ -1413,3 +1679,305 @@ class Pathfinder(HoldsCollections):
                 if data[1] > 0.0 and data[2] > 0.0:
                     return data[3]
             raise RuntimeError(f"No elementary step with positive barriers found for reaction {str(reaction.id())}")
+
+    class MinimumReactionBarrierBasedHandler(BasicHandler):
+        """
+        A class derived from the basic graph handler class to encode the reaction barrier information in the edges.
+        The reaction barrier is calculated according to the reaction-wrapper objects
+        (@see utilities/db_object_wrappers/reaction_wrapper.py).
+        The barriers are converted to rate constants, normalized over all rate constants in the graph and then the cost
+        function :math:`|log(normalized\\ rate\\ constant)|` is applied to obtain the weight.
+
+        Attributes
+        ----------
+        reference_state : ReferenceState
+            The reference state for calculating the rate constants from the barriers. Default is  derived from the
+            pressure and temperature in the electronic structure model.
+        _rate_constant_normalization : float
+            The factor to normalize the rate constant.
+        """
+
+        def __init__(self, db_manager: db.Manager, model: db.Model, structure_model: Optional[db.Model] = None):
+            """
+            Constructor.
+
+            Parameters
+            ----------
+            db_manager : db.Manager
+                The database manager.
+            model : db.Model
+                The electronic structure model for the electronic energies.
+            structure_model : db.Model, optional
+                The electronic structure for the structures and free energy corrections. If not provided, the electronic
+                structure model for the energies is used.
+            """
+            if structure_model is None:
+                structure_model = model
+            super().__init__(db_manager, model, structure_model)
+            self.reference_state = ReferenceState(float(model.temperature), float(model.pressure))
+            self.only_electronic: bool = False
+            self._barrier_limit: float = math.inf
+            self._rate_constant_normalization = 1.0
+            self.__valid_reactions: List[Reaction] = []
+            self.__reaction_cache: Optional[ReactionCache] = None
+            self._required_collections += ["manager"]
+            self._barrier_label = r"$G^{\degree}$"
+
+        def __get_reaction_cache(self) -> ReactionCache:
+            if self.__reaction_cache is None:
+                model_combination = ModelCombination(self.model, self.structure_model)
+                self.__reaction_cache = MultiModelCacheFactory().get_reaction_cache(
+                    self.only_electronic, model_combination, self._manager)
+                if self.only_electronic:
+                    self._barrier_label = "Electronic Energy"
+            return self.__reaction_cache
+
+        def get_valid_reaction_ids(self) -> List[db.ID]:
+            return [reaction.get_db_id() for reaction in self.__valid_reactions]
+
+        def initialize(self) -> None:
+            self.__valid_reactions = []
+            for db_reaction in self._reactions.iterate_all_reactions():
+                reaction = self.__get_reaction_cache().get_or_produce(db_reaction.id())
+                if not reaction.complete():
+                    continue
+                all_aggregates = reaction.get_lhs_aggregates() + reaction.get_rhs_aggregates()
+                if self.use_only_enabled_aggregates and any(not aggregate.explore() for aggregate in all_aggregates):
+                    continue
+                self.__valid_reactions.append(reaction)
+            self._calculate_rate_constant_normalization()
+
+        def __get_pathfinder_rate_constants(self, reaction: Reaction) -> Tuple[float, float]:
+            lhs_barrier, rhs_barrier = reaction.get_free_energy_of_activation(self.reference_state)
+            lhs_k, rhs_k = reaction.get_ts_theory_rate_constants(self.reference_state)
+            assert lhs_k is not None  # satisfy mypy
+            assert rhs_k is not None  # satisfy mypy
+            assert lhs_barrier is not None
+            assert rhs_barrier is not None
+            # Determine barrierless reactions
+            lhs_k_final = lhs_k if lhs_barrier > 0 else self.barrierless_weight
+            rhs_k_final = rhs_k if rhs_barrier > 0 else self.barrierless_weight
+            # The logic above should assert that k_lhs and k_rhs are never None here.
+            assert lhs_k_final is not None
+            assert rhs_k_final is not None
+            return lhs_k_final, rhs_k_final
+
+        def _calculate_rate_constant_normalization(self) -> None:
+            """
+            Determine the rate constant normalization factor for calculating the edge weights.
+            Loops over the reactions, converts every barrier to the rate constant and adds it to the sum of rate
+            constants.
+
+            The rate constant normalization is then the inverse of the final sum.
+            """
+            k_sum = sum(sum(self.__get_pathfinder_rate_constants(reaction)) for reaction in self.__valid_reactions)
+            if k_sum != 0.0:
+                self._rate_constant_normalization = 1 / k_sum
+
+        def _get_weight(self, reaction: db.Reaction) -> Tuple[float, float]:
+            """
+            Determines the weight for a given reaction.
+            The weight is calculated by determining the rate constant from the barrier, normalizing the constant with
+            the rate_constant_normalization and taking the abs(log()) of the corresponding product.
+            For barrierless reactions and negative barriers, the barrierless_weight is taken as rate constants.
+
+            Parameters
+            ----------
+            reaction : db.Reaction
+               The reaction for which the weights should be determined.
+
+            Returns
+            -------
+            weights : Tuple(float, float)
+                The weight for the LHS -> RxnNode and  for the RHS -> RxnNode.
+            """
+            reaction_wrapper = self.__get_reaction_cache().get_or_produce(reaction.id())
+            k_lhs, k_rhs = self.__get_pathfinder_rate_constants(reaction_wrapper)
+            return abs(np.log(k_lhs * self._rate_constant_normalization)), \
+                abs(np.log(k_rhs * self._rate_constant_normalization))
+
+        def _get_barriers(self, reaction_str_id: str) -> Optional[Tuple[float, float]]:
+            reaction_wrapper = self.__get_reaction_cache().get_or_produce(db.ID(reaction_str_id))
+            lhs_barrier, rhs_barrier = reaction_wrapper.get_free_energy_of_activation(self.reference_state)
+            if lhs_barrier is None or rhs_barrier is None:
+                return None
+            return lhs_barrier, rhs_barrier
+
+    class FromRMSFileBasedHandler(BasicHandler):
+        """
+        A class derived from the basic graph handler that loads the graph information from an RMS input file.
+        The barriers are converted to rate constants, normalized over all rate constants in the graph and then the cost
+        function :math:`|log(normalized\\ rate\\ constant)|` is applied to obtain the weight.
+
+        Attributes
+        ----------
+        temperature : float
+            The temperature.
+        rms_file_name : str
+            The RMS input file name.
+        """
+
+        def __init__(self, db_manager: db.Manager, rms_file_name: str, temperature: float):
+            """
+            Constructor.
+
+            Parameters
+            ----------
+            db_manager : db.Manager
+                The database manager.
+            rms_file_name : str
+                The RMS input file name.
+            temperature : float
+                The temperature.
+            """
+            super().__init__(db_manager, construct_place_holder_model(), construct_place_holder_model())
+            self.temperature: float = temperature
+            self.rms_file_name: str = rms_file_name
+            self._barrier_limit: float = math.inf
+            self._rate_constant_normalization = 1.0
+            self.__valid_reaction_entries: Dict[str, Dict] = {}
+            self.__species: Dict[str, Dict] = {}
+            self._required_collections += ["manager"]
+            self._energy_label = "$G^°$"
+
+        def _valid_reaction(self, _: db.Reaction) -> bool:
+            return True
+
+        def get_valid_reaction_ids(self) -> List[db.ID]:
+            return [db.ID(str_id) for str_id in self.__valid_reaction_entries.keys()]
+
+        def get_valid_reaction_entries(self) -> Dict[str, Dict]:
+            return self.__valid_reaction_entries
+
+        def get_species_entries(self) -> Dict[str, Dict]:
+            return self.__species
+
+        def get_aggregate_from_string_id(self, string_id: str) -> Union[db.Compound, db.Flask]:
+            aggregate: Union[db.Compound, db.Flask] = db.Compound(db.ID(string_id), self._compounds)
+            if not aggregate.exists():
+                aggregate = db.Flask(db.ID(string_id), self._flasks)
+            if not aggregate.exists():
+                raise RuntimeError("The aggregate with id {} does not exist".format(string_id))
+            return aggregate
+
+        def initialize(self) -> None:
+            self.__valid_reaction_entries = {}
+            self.__species = {}
+            with open(self.rms_file_name, 'r') as rms_file:
+                docs = yaml.safe_load(rms_file)
+                if "Phases" not in docs or len(docs["Phases"]) == 0 or "Species" not in docs["Phases"][0]:
+                    raise RuntimeError("Unexpected Phases/Species definition in the RMS file.")
+                species_doc = docs["Phases"][0]["Species"]
+
+                if "Reactions" not in docs:
+                    raise RuntimeError("The 'Reactions' entry is missing the the RMS file!")
+                reaction_entries = docs["Reactions"]
+
+                self.__species = {species["name"]: species for species in species_doc}
+
+                for reaction_entry in reaction_entries:
+                    if "reactants" not in reaction_entry:
+                        raise RuntimeError("No 'reactants' entry provided for a reaction. Make sure that your RMS input"
+                                           " file is formatted correctly.")
+                    if "products" not in reaction_entry:
+                        raise RuntimeError("No 'products' entry provided for a reaction. Make sure that your RMS input"
+                                           " file is formatted correctly.")
+                    reactant_str_ids = sorted(reaction_entry["reactants"])
+                    product_str_ids = sorted(reaction_entry["products"])
+                    all_aggregates = [self.get_aggregate_from_string_id(str_id)
+                                      for str_id in reactant_str_ids + product_str_ids]
+                    possible_reaction_ids = set(r_id.string() for r_id in all_aggregates[0].get_reactions())
+                    for aggregate in all_aggregates[1:]:
+                        possible_reaction_ids = possible_reaction_ids.intersection(set(r_id.string() for r_id in
+                                                                                       aggregate.get_reactions()))
+                    matching_reaction_id: Optional[db.ID] = None
+                    for reaction_str_id in possible_reaction_ids:
+                        reaction = db.Reaction(db.ID(reaction_str_id), self._reactions)
+                        candidate_reactants = reaction.get_reactants(db.Side.BOTH)
+                        lhs = sorted([a_id.string() for a_id in candidate_reactants[0]])
+                        rhs = sorted([a_id.string() for a_id in candidate_reactants[1]])
+                        lhs_matches_lhs = lhs == reactant_str_ids
+                        rhs_matches_rhs = rhs == product_str_ids
+                        lhs_matches_rhs = lhs == product_str_ids
+                        rhs_matches_lhs = rhs == reactant_str_ids
+                        match = (lhs_matches_lhs and rhs_matches_rhs) or (lhs_matches_rhs and rhs_matches_lhs)
+                        if match:
+                            matching_reaction_id = db.ID(reaction_str_id)
+                            self.__valid_reaction_entries[reaction_str_id] = reaction_entry
+                            break
+                    if matching_reaction_id is None:
+                        raise RuntimeError(f"The reaction with products: {product_str_ids} and reactants"
+                                           f" {reactant_str_ids} is not listed in the database!")
+            self._calculate_rate_constant_normalization()
+
+        def get_free_energy(self, aggregate_str_id: str) -> float:
+            poly = self.__species[aggregate_str_id]["thermo"]["polys"][0]
+            h = poly["coefs"][5] * utils.MOLAR_GAS_CONSTANT
+            s = poly["coefs"][6] * utils.MOLAR_GAS_CONSTANT
+            return h - self.temperature * s
+
+        def _get_barriers(self, reaction_str_id: str) -> Optional[Tuple[float, float]]:
+            reaction_entry = self.__valid_reaction_entries[reaction_str_id]
+            kinetics = reaction_entry['kinetics']
+            ea = kinetics["Ea"]
+            g_lhs = sum(self.get_free_energy(a_str_id) for a_str_id in reaction_entry["reactants"])
+            g_rhs = sum(self.get_free_energy(a_str_id) for a_str_id in reaction_entry["products"])
+            g_ts = g_lhs + ea
+            ea_reverse = max(0.0, g_ts - g_rhs)
+            return ea * 1e-3, ea_reverse * 1e-3
+
+        def get_rate_constants(self, reaction_str_id: str) -> Tuple[float, float]:
+            ea_tuple = self._get_barriers(reaction_str_id)
+            assert ea_tuple
+            ea = ea_tuple[0]
+            ea_reverse = ea_tuple[1]
+            reaction_entry = self.__valid_reaction_entries[reaction_str_id]
+            kinetics = reaction_entry['kinetics']
+            beta = 1e+3 * 1.0 / (self.temperature * utils.MOLAR_GAS_CONSTANT)  # 1e+3 to convert to kJ/mol
+            k_lhs2rhs = kinetics['A'] * self.temperature ** kinetics['n'] * math.exp(-ea * beta)
+            k_rhs2lhs = kinetics['A'] * self.temperature ** kinetics['n'] * math.exp(-ea_reverse * beta)
+            return k_lhs2rhs, k_rhs2lhs
+
+        def _get_mapped_es_of_reaction(self, rxn_id_string: str) -> Optional[str]:
+            if rxn_id_string not in self.__valid_reaction_entries:
+                raise RuntimeError("The reaction '{}' is not included in the pathfinder graph!"
+                                   .format(rxn_id_string))
+            reaction = db.Reaction(db.ID(rxn_id_string), self._reactions)
+            return reaction.get_elementary_steps()[0].string()
+
+        def _calculate_rate_constant_normalization(self) -> None:
+            """
+            Determine the rate constant normalization factor for calculating the edge weights.
+            Loops over the reactions, converts every barrier to the rate constant and adds it to the sum of rate
+            constants.
+
+            The rate constant normalization is then the inverse of the final sum.
+            """
+            k_sum = sum(sum(self.get_rate_constants(reaction_str_id))
+                        for reaction_str_id in self.__valid_reaction_entries.keys())
+            if k_sum != 0.0:
+                self._rate_constant_normalization = 1 / k_sum
+
+        def _get_weight(self, reaction: db.Reaction) -> Tuple[float, float]:
+            """
+            Determines the weight for a given reaction.
+            The weight is calculated by determining the rate constant from the barrier, normalizing the constant with
+            the rate_constant_normalization and taking the abs(log()) of the corresponding product.
+
+            Parameters
+            ----------
+            reaction : db.Reaction
+               The reaction for which the weights should be determined.
+
+            Returns
+            -------
+            weights : Tuple(float, float)
+                The weight for the LHS -> RxnNode and  for the RHS -> RxnNode.
+            """
+            reaction_str_id = reaction.id().string()
+            if reaction_str_id not in self.__valid_reaction_entries:
+                raise RuntimeError("The reaction with id {} is not documented in the RMS input file."
+                                   .format(reaction_str_id))
+            k_lhs, k_rhs = self.get_rate_constants(reaction_str_id)
+            return abs(np.log(k_lhs * self._rate_constant_normalization)), \
+                abs(np.log(k_rhs * self._rate_constant_normalization))

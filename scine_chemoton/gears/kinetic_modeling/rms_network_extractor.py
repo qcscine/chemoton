@@ -8,8 +8,10 @@ See LICENSE.txt for details.
 import scine_database as db
 import scine_utilities as utils
 
+from typing import List, Tuple
+
 from scine_chemoton.gears.kinetic_modeling.rms_kinetic_modeling import RMSKineticModelingJobFactory
-from scine_chemoton.gears.kinetic_modeling.kinetic_modeling import KineticModeling
+from scine_chemoton.gears.kinetic_modeling import KineticModeling
 from scine_chemoton.gears.kinetic_modeling.atomization import MultiModelEnergyReferences
 
 
@@ -53,6 +55,7 @@ class ReactionNetworkData:
         assert None not in ea
         assert None not in entropies
         assert None not in enthalpies
+        self.reactants: List[Tuple[List[str], List[str]]] = []
         self.aggregate_ids = [a.get_db_id().string() for a in a_values]
         self.reaction_ids = [r.get_db_id().string() for r in reactions]
         self.enthalpies = [e * hartree_to_j_per_mol for e in enthalpies]  # type: ignore
@@ -63,6 +66,9 @@ class ReactionNetworkData:
         self.exponents = [0 for _ in reactions]
         self.aggregates = aggregates
         self.reactions = reactions
+        for reaction in self.reactions:
+            reactants = reaction.get_db_object().get_reactants(db.Side.BOTH)
+            self.reactants.append(([a_id.string() for a_id in reactants[0]], [a_id.string() for a_id in reactants[1]]))
         assert None not in entropies
         assert None not in ea
         rms_job_factory.assert_non_negative_barriers(self.enthalpies, self.entropies, self.ea, self.reaction_ids,

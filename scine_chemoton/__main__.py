@@ -7,7 +7,7 @@ See LICENSE.txt for details.
 
 # Standard library imports
 import os
-import pkg_resources
+import pkg_resources  # type: ignore
 import psutil
 import sys
 import signal
@@ -26,6 +26,7 @@ from scine_chemoton.gears.thermo import BasicThermoDataCompletion
 from scine_chemoton.gears.compound import BasicAggregateHousekeeping
 from scine_chemoton.gears.reaction import BasicReactionHousekeeping
 from scine_chemoton.gears.network_refinement.calculation_based_refinement import CalculationBasedRefinement
+from scine_chemoton.gears.network_refinement.refinement import RefinementOptions
 from scine_chemoton.gears.kinetics import (
     MinimalConnectivityKinetics,
     # BasicBarrierHeightKinetics,
@@ -243,14 +244,14 @@ def main() -> None:
     # Improve the network with a better model or find more connections with additional double ended searches
     refinement_gear = CalculationBasedRefinement()
     refinement_engine = Engine(credentials)
-    refinement_gear.options.refinements = {
-        "refine_single_points": False,  # SP for all minima and TS
-        "refine_optimizations": False,  # optimize all minima and TS (+ validation)
-        "double_ended_refinement": False,  # find TS of existing reactions of different model with double ended search
-        "double_ended_new_connections": False,  # find more unimolecular reactions in the network
-        "refine_single_ended_search": False,  # redo previously successful single ended reaction searches with new model
-        "refine_structures_and_irc": False,  # redo irc and structure opt. from the old transition state.
-    }
+    refinement_gear.options.refinements = RefinementOptions(
+        refine_single_points=False,  # SP for all minima and TS
+        refine_optimizations=False,  # optimize all minima and TS (+ validation)
+        double_ended_refinement=False,  # find TS of existing reactions of different model with double ended search
+        double_ended_new_connections=False,  # find more unimolecular reactions in the network
+        refine_single_ended_search=False,  # redo previously successful single ended reaction searches with new model
+        refine_structures_and_irc=False,  # redo irc and structure opt. from the old transition state.
+    )
     pre_refinement_model = db.Model("PM6", "PM6", "")
     post_refinement_model = db.Model("DFT", "", "")
     refinement_gear.options.model = pre_refinement_model

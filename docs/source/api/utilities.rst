@@ -1,4 +1,3 @@
-
 Utilities
 =========
 
@@ -6,8 +5,11 @@ Methods for structure manipulations
 """""""""""""""""""""""""""""""""""
 .. automodule:: scine_chemoton.utilities.reactive_complexes
 .. automodule:: scine_chemoton.utilities.reactive_complexes.inter_reactive_complexes
+.. automodule:: scine_chemoton.utilities.reactive_complexes.adsorption
 .. automodule:: scine_chemoton.utilities.reactive_complexes.lebedev_sphere
 .. automodule:: scine_chemoton.utilities.reactive_complexes.unit_circle
+.. automodule:: scine_chemoton.utilities.surfaces.periodic_utils
+.. automodule:: scine_chemoton.utilities.surfaces.pymatgen_interface
 .. automodule:: scine_chemoton.utilities.insert_initial_structure
 .. automodule:: scine_chemoton.utilities.masm
 

@@ -876,8 +876,9 @@ class BondBased(TrialGenerator):
             this_settings["rc_minimal_spin_multiplicity"] = bool(
                 self.options.bimolecular_options.minimal_spin_multiplicity)
 
+        model = self._get_calculation_model(reactive_structures)
         if check_for_existing:
-            calc_id = get_calculation_id(job.order, reactive_structures, self.options.model, self._calculations,
+            calc_id = get_calculation_id(job.order, reactive_structures, model, self._calculations,
                                          settings=this_settings)
             if calc_id is not None:
                 if isinstance(self.results_enabling_policy, EnableJobSpecificCalculations):
@@ -886,7 +887,7 @@ class BondBased(TrialGenerator):
 
         calculation = db.Calculation()
         calculation.link(self._calculations)
-        calculation.create(self.options.model, job, reactive_structures)
+        calculation.create(model, job, reactive_structures)
         # Sleep a bit in order not to make the DB choke
         time.sleep(0.001)
         calculation.set_settings(this_settings)
@@ -972,19 +973,20 @@ class BondBased(TrialGenerator):
         RuntimeError
             Raises if the structure is not corresponding to one connected molecule.
         """
+        n_bound_pairs = 0
+        n_unbound_pairs = 0
         if n_reactive_bound_pairs is None or n_reactive_unbound_pairs is None:
             bond_orders = utils.BondDetector.detect_bonds(atoms)
             # Get the number of connected and unconnected atom pairs
             graph_result = masm.interpret.graphs(atoms, bond_orders, masm.interpret.BondDiscretization.Binary)
             n_atoms = atoms.size()
             n_pairs = comb(n_atoms, 2)
-
-        n_bound_pairs = sum([g.E for g in graph_result.graphs]) if n_reactive_bound_pairs is None \
-            else max(n_reactive_bound_pairs, 0)
-        if n_reactive_unbound_pairs is None:
-            # pylint: disable-next=(possibly-used-before-assignment)
+            n_bound_pairs = sum([g.E for g in graph_result.graphs])
             n_unbound_pairs = n_pairs - sum([g.E for g in graph_result.graphs])
-        else:
+
+        if n_reactive_bound_pairs is not None:
+            n_bound_pairs = max(n_reactive_bound_pairs, 0)
+        if n_reactive_unbound_pairs is not None:
             n_unbound_pairs = max(n_reactive_unbound_pairs, 0)
         return n_unbound_pairs, n_bound_pairs
 

@@ -12,6 +12,8 @@ import os
 import json
 import copy
 import numpy as np
+from typing import Tuple
+import random
 
 # Local application tests imports
 from ...gears import HoldsCollections
@@ -21,9 +23,12 @@ import scine_database as db
 from scine_database.energy_query_functions import rate_constant_from_barrier
 from scine_database import test_database_setup as db_setup
 
+import scine_utilities as utils
+
 # Local application imports
 from ..resources import resources_root_path
 from ...gears.pathfinder import Pathfinder as pf
+from scine_chemoton.utilities.db_object_wrappers.wrapper_caches import MultiModelCacheFactory
 
 
 class PathfinderTests(unittest.TestCase, HoldsCollections):
@@ -121,7 +126,7 @@ class PathfinderTests(unittest.TestCase, HoldsCollections):
         finder = pf(manager)
         finder.options.barrierless_weight = 0.5
         finder._construct_graph_handler()
-
+        finder.graph_handler.use_thermodynamics_model = False
         assert finder.graph_handler._valid_reaction(reaction) is False
         # Assign energy to first reactant of elementary step to be a valid reaction
         reactant = db.Structure(el_step.get_reactants(db.Side.LHS)[0][0], self._structures)
@@ -137,6 +142,45 @@ class PathfinderTests(unittest.TestCase, HoldsCollections):
         # # # Set model and check validity again
         finder.graph_handler.model = db.Model("FAKE", "FAKE", "F-AKE")
         assert finder.graph_handler._valid_reaction(reaction) is True
+
+    @pytest.mark.filterwarnings('ignore::UserWarning')
+    def test_basic_graph_handler_no_reactions(self):
+        manager = db_setup.get_clean_db("test_pathfinder_basic_graph_handler_no_reactions")
+        self.custom_setup(manager)
+        # # # Create dummy reaction
+        # Dummy Reactants
+        reactant_struct = []
+        reactant_cmp = []
+        for i in range(0, 2):
+            if i == 0:
+                label = db.Label.MINIMUM_OPTIMIZED
+                a_type = db.CompoundOrFlask.COMPOUND
+            else:
+                label = db.Label.COMPLEX_OPTIMIZED
+                a_type = db.CompoundOrFlask.FLASK
+            cmp_id, struct_id = db_setup.insert_single_empty_structure_aggregate(manager, label)
+            db_setup.add_random_energy(db.Structure(struct_id, self._structures), (10.0, 20.0), self._properties)
+            reactant_struct.append(struct_id)
+            reactant_cmp.append((cmp_id, a_type))
+        # # #  Setup pathfinder with basic graph handler
+        finder = pf(manager)
+        finder._construct_graph_handler()
+        finder.graph_handler.model = db.Model("FALKE", "FAKE", "F-AKE")
+        for compound, a_type in reactant_cmp:
+            assert finder.graph_handler._valid_aggregate(db.Compound(compound, self._compounds), a_type) is False
+
+        # # # Set model and check validity again
+        finder.graph_handler.model = db.Model("FAKE", "FAKE", "F-AKE")
+        assert finder.graph_handler._valid_aggregate(db.Compound(
+            reactant_cmp[-1][0], self._compounds), db.CompoundOrFlask.FLASK) is True
+        assert finder.graph_handler.get_valid_aggregate_ids() == reactant_cmp
+
+        finder.options.use_structure_model = True
+        finder.options.structure_model = db.Model("FAKE", "FAKE", "F-AKE")
+        # Construct graph and check that there only two nodes
+        finder.build_graph()
+        assert len(finder.graph_handler.graph.nodes) == 2
+        assert len(finder.graph_handler.graph.edges) == 0
 
     def test_add_reaction_of_basic_graph_handler(self):
         n_compounds = 7
@@ -219,6 +263,7 @@ class PathfinderTests(unittest.TestCase, HoldsCollections):
         finder = pf(manager)
         finder.options.model = db.Model("FAKE", "FAKE", "F-AKE")
         finder.graph_handler = pf.BarrierBasedHandler(manager, db.Model("FAKE", "FAKE", "F-AKE"))
+        finder.graph_handler.use_thermodynamics_model = False
         finder.graph_handler._map_elementary_steps_to_reactions()
         assert finder.graph_handler._rxn_to_es_map == {reaction.id().string(): el_step_id}
         # Check temperature setting
@@ -256,6 +301,7 @@ class PathfinderTests(unittest.TestCase, HoldsCollections):
         finder.graph_handler = pf.BarrierBasedHandler(manager, db.Model("FAKE", "FAKE", "F-AKE"))
         finder.graph_handler.filter_negative_barriers = finder.options.filter_negative_barriers
         finder.graph_handler.barrierless_weight = finder.options.barrierless_weight
+        finder.graph_handler.use_thermodynamics_model = False
 
         finder.graph_handler._map_elementary_steps_to_reactions()
         # Check, that nothing is build
@@ -344,6 +390,7 @@ class PathfinderTests(unittest.TestCase, HoldsCollections):
 
         finder.graph_handler = pf.BarrierBasedHandler(manager, db.Model("FAKE", "FAKE", "F-AKE"))
         finder.graph_handler.barrierless_weight = 1e12
+        finder.graph_handler.use_thermodynamics_model = False
         finder.graph_handler._map_elementary_steps_to_reactions()
 
         assert finder.graph_handler.barrierless_weight == 1e12
@@ -383,6 +430,7 @@ class PathfinderTests(unittest.TestCase, HoldsCollections):
             barrier_limits,
             n_inserts,
         )
+        MultiModelCacheFactory().clear()
         self.custom_setup(manager)
         dummy_finder = pf(manager)
         # Check for raising of RuntimeError
@@ -390,12 +438,17 @@ class PathfinderTests(unittest.TestCase, HoldsCollections):
         self.assertRaises(RuntimeError, dummy_finder._construct_graph_handler)
         # Loop over both handlers
         for handler in dummy_finder.get_valid_graph_handler_options():
+            # This graph handler requires an RMS input file. It is tested separately.
+            if handler == "from-rms-input":
+                continue
+
             finder = pf(manager)
             finder.options.graph_handler = handler
             # Set additional settings for barrier handler
-            if handler == "barrier":
+            if handler == "barrier" or handler == "reaction-barrier":
                 finder.options.model = db.Model("FAKE", "FAKE", "F-AKE")
                 finder.options.barrierless_weight = 1e3
+                finder.options.only_electronic_energies = True
             # Build the graph
             finder.build_graph()
             # Check that the options were correctly forwarded
@@ -646,3 +699,251 @@ class PathfinderTests(unittest.TestCase, HoldsCollections):
 
         os.remove(graph_path)
         os.remove(cc_path)
+
+    def test_minimum_reaction_barrier_based_handler(self):
+        MultiModelCacheFactory().clear()
+        manager = db_setup.get_clean_db("test_pathfinder_minimum_reaction_barrier_based_handler")
+        self.custom_setup(manager)
+        # # # Create dummy reaction
+        reaction = self._add_complete_reaction(2, 2)
+        # The energies for this reaction should be -30 -- -20 (TS) --> -50
+        el_step_id = db_setup._add_step(reaction, (10.0, 10.0), self._compounds,
+                                        self._structures, self._elementary_steps, self._properties)
+        reaction.set_elementary_steps([el_step_id])
+
+        finder = pf(manager)
+        model = db.Model("FAKE", "FAKE", "F-AKE")
+        finder.options.model = model
+
+        finder.graph_handler = pf.MinimumReactionBarrierBasedHandler(manager, model)
+        finder.graph_handler.only_electronic = True
+        finder.graph_handler.barrierless_weight = 1e12
+        finder.graph_handler.initialize()
+
+        assert finder.graph_handler.barrierless_weight == 1e12
+        k_lhs = rate_constant_from_barrier(10.0, float(model.temperature))
+        k_rhs = rate_constant_from_barrier(30.0, float(model.temperature))
+        inv_k_sum = 1 / (k_lhs + k_rhs)
+        assert abs(finder.graph_handler._rate_constant_normalization - inv_k_sum) < abs(inv_k_sum) * 0.01
+        ref_weights = (abs(np.log(k_lhs * inv_k_sum)), abs(np.log(k_rhs * inv_k_sum)))
+        # Check weights obtained
+        weights = finder.graph_handler._get_weight(reaction)
+        assert abs(ref_weights[0] - weights[0]) < 1e-12
+        assert abs(ref_weights[1] - weights[1]) < 1e-12
+
+        finder.options.only_electronic_energies = True
+        finder.options.graph_handler = "reaction-barrier"
+        finder.options.barrierless_weight = 1e12
+        finder.build_graph()
+        rxn_node = finder.graph_handler.graph.nodes(data=True)[reaction.id().string()+";0;"]
+        reference_activation_energies = [10.0 * utils.HARTREE_PER_KJPERMOL, 30 * utils.HARTREE_PER_KJPERMOL]
+        assert "energy_type" in rxn_node
+        assert "activation_energies" in rxn_node
+        assert rxn_node["energy_type"] == "Electronic Energy"
+        assert abs(rxn_node["activation_energies"][0] - reference_activation_energies[0]) < 1e-9
+        assert abs(rxn_node["activation_energies"][1] - reference_activation_energies[1]) < 1e-9
+
+    def get_rms_dummy_file(self) -> Tuple[str, db.Reaction]:
+        reaction = self._add_complete_reaction(1, 1)
+        el_step_id = db_setup._add_step(reaction, (10.0, 10.0), self._compounds,
+                                        self._structures, self._elementary_steps, self._properties)
+        reaction.set_elementary_steps([el_step_id])
+
+        reactants = reaction.get_reactants(db.Side.BOTH)
+        reactant_id = reactants[0][0]
+        product_id = reactants[1][0]
+        reference_file_name = os.path.join(resources_root_path(), "pathfinder-rms-file-handler.rms")
+        file_name = "tmp-test-file.rms"
+        text = open(reference_file_name, "r").read()
+        text = text.replace("reactant_id", reactant_id.string()).replace("product_id", product_id.string())
+        with open(file_name, "w") as text_file:
+            text_file.write(text)
+        return file_name, reaction
+
+    def test_rms_file_based_handler_construction(self):
+        MultiModelCacheFactory().clear()
+        manager = db_setup.get_clean_db("test_rms_file_based_handler_construction")
+        self.custom_setup(manager)
+        # # # Create dummy reaction for RMS file
+        file_name, reaction = self.get_rms_dummy_file()
+
+        finder = pf(manager)
+        model = db.Model("FAKE", "FAKE", "F-AKE")
+        temperature = 433.15
+        finder.options.model = model
+        finder.options.graph_handler = "from-rms-input"
+        finder.options.temperature = temperature
+        finder.options.barrierless_weight = 1e12
+        finder.options.rms_file_name = file_name
+        finder.build_graph()
+
+        assert len(finder.graph_handler.get_valid_reaction_ids()) == 1
+        assert len(finder.graph_handler.get_valid_reaction_entries()) == 1
+        assert finder.graph_handler.get_valid_reaction_ids()[0] == reaction.id()
+        assert len(finder.graph_handler.get_species_entries()) == 2
+
+        os.remove(file_name)
+
+    def test_from_rms_file_based_handler(self):
+        """
+        To test the RMS file based graph handler, a dummy RMS file is copied and the compound IDs are added.
+        The barrier information in the DB is not used.
+        """
+        MultiModelCacheFactory().clear()
+        manager = db_setup.get_clean_db("test_from_rms_file_based_handler")
+        self.custom_setup(manager)
+        # # # Create dummy reaction for RMS file
+        file_name, reaction = self.get_rms_dummy_file()
+
+        finder = pf(manager)
+        model = db.Model("FAKE", "FAKE", "F-AKE")
+        finder.options.model = model
+
+        temperature = 433.15
+        finder.graph_handler = pf.FromRMSFileBasedHandler(manager, file_name, 433.15)
+        finder.graph_handler.barrierless_weight = 1e12
+        finder.graph_handler.initialize()
+
+        assert finder.graph_handler.barrierless_weight == 1e12
+        ea = 21037.8725 * 1e-3
+        delta_e = -3011.9495 * 1e-3
+        ea_reverse = ea + delta_e
+        k_lhs = rate_constant_from_barrier(ea, temperature)
+        k_rhs = rate_constant_from_barrier(ea_reverse, temperature)
+        inv_k_sum = 1 / (k_lhs + k_rhs)
+        assert abs(finder.graph_handler._rate_constant_normalization - inv_k_sum) < abs(inv_k_sum) * 0.01
+        ref_weights = (abs(np.log(k_lhs * inv_k_sum)), abs(np.log(k_rhs * inv_k_sum)))
+
+        weights = finder.graph_handler._get_weight(reaction)
+        assert abs(ref_weights[0] - weights[0]) < 1e-7
+        assert abs(ref_weights[1] - weights[1]) < 1e-7
+        assert len(finder.graph_handler.get_valid_reaction_ids()) == 1
+        assert len(finder.graph_handler.get_valid_reaction_entries()) == 1
+        assert finder.graph_handler.get_valid_reaction_ids()[0] == reaction.id()
+        assert len(finder.graph_handler.get_species_entries()) == 2
+
+        os.remove(file_name)
+
+    def test_thermodynamics_model_gibbs_energy(self):
+        """
+        Test the use of the thermodynamics model, which is meant to calculate the Gibbs energy using
+        electronic energy of model 1, and the Gibbs correction of model 2. To validate that the feature is
+        working as expected, the following test is conducted with a dummy reaction:
+        A --> TS(B) --> C
+        Both A, B and C have electronic and Gibbs energies with model 1, and energies with model 2, to create
+        three pathfinder objects:
+          Case 1: structure (model1) and Gibbs energies (model1)
+          Case 2: structure (model1) and Gibbs energies (model2)
+          Case 3: structure (model1) and Gibbs energies Elec(model1) + Gibbs correction (model2)
+        If Case 1 != Case 2 != Case 3, the test is passed.
+        """
+        # set up
+        random.seed(42)
+        manager = db_setup.get_clean_db("test_pathfinder_thermodynamics_model")
+        self.custom_setup(manager)
+        model1 = db.Model("FAKE", "FAKE", "F-AKE")
+        model2 = db.Model("DUMMY", "DUMMY", "D-UMMY")
+        moleca = utils.AtomCollection([utils.ElementType.H, utils.ElementType.H], [[0, 0, 0], [0, 0, 1]])
+        molecb = utils.AtomCollection([utils.ElementType.H, utils.ElementType.H], [[0, 0, 0], [0, 0, 2]])
+        molecc = utils.AtomCollection([utils.ElementType.H, utils.ElementType.H], [[0, 0, 0], [0, 0, 3]])
+        # create compounds, structures and properties of A and C
+        cA = db.Compound(db.ID())
+        cA.link(self._compounds)
+        cA.create([])
+        sa1 = db.Structure()
+        sa1.link(self._structures)
+        sa1.create(moleca, 0, 1)
+        sa1.set_aggregate(cA.get_id())
+        sa1.set_model(model1)
+        sa2 = db.Structure()
+        sa2.link(self._structures)
+        sa2.create(moleca, 0, 1)
+        sa2.set_aggregate(cA.get_id())
+        sa2.set_model(model1)
+        cC = db.Compound(db.ID())
+        cC.link(self._compounds)
+        cC.create([])
+        sc1 = db.Structure()
+        sc1.link(self._structures)
+        sc1.create(molecc, 0, 1)
+        sc1.set_aggregate(cC.get_id())
+        sc1.set_model(model1)
+        sc2 = db.Structure()
+        sc2.link(self._structures)
+        sc2.create(molecb, 0, 1)
+        sc2.set_aggregate(cC.get_id())
+        sc2.set_model(model1)
+        for sobject in [sa1, sc1, sa2, sc2]:
+            for model in [model1, model2]:
+                prop1 = db.NumberProperty()
+                prop1.link(self._properties)
+                prop1.create(model, "electronic_energy", random.uniform(*[-0.008, -0.007]))
+                sobject.add_property(prop1.get_property_name(), prop1.get_id())
+                prop2 = db.NumberProperty()
+                prop2.link(self._properties)
+                prop2.create(model, "gibbs_free_energy", random.uniform(*[-0.009, -0.008]))
+                sobject.add_property(prop2.get_property_name(), prop2.get_id())
+        # structures and properties of the TS
+        sb1 = db.Structure()
+        sb1.link(self._structures)
+        sb1.create(molecb, 0, 1)
+        sb1.set_model(model1)
+        sb2 = db.Structure()
+        sb2.link(self._structures)
+        sb2.create(molecb, 0, 1)
+        sb2.set_model(model1)
+        for sobject in [sb1, sb2]:
+            for model in [model1, model2]:
+                prop = db.NumberProperty()
+                prop.link(self._properties)
+                prop.create(model, "electronic_energy", random.uniform(*[-0.002, -0.001]))
+                sobject.add_property(prop.get_property_name(), prop.get_id())
+                prop = db.NumberProperty()
+                prop.link(self._properties)
+                prop.create(model, "gibbs_free_energy", random.uniform(*[-0.004, -0.003]))
+                sobject.add_property(prop.get_property_name(), prop.get_id())
+        # elementary steps and reactions
+        step1 = db.ElementaryStep.make([sa1.get_id()], [sc1.get_id()], self._elementary_steps)
+        step1.set_transition_state(sb1.get_id())
+        step2 = db.ElementaryStep.make([sa2.get_id()], [sc2.get_id()], self._elementary_steps)
+        step2.set_transition_state(sb2.get_id())
+        reaction = db.Reaction()
+        reaction.link(self._reactions)
+        reaction.create([cA.get_id()], [cC.get_id()])
+        cA.add_reaction(reaction.get_id())
+        cC.add_reaction(reaction.get_id())
+        reaction.add_elementary_step(step1.get_id())
+        reaction.add_elementary_step(step2.get_id())
+        # Set up Pathfinder = Structure (model 1) and Gibbs energies (model 1)
+        finder = pf(manager)
+        finder.options.model = model1
+        finder.options.graph_handler = "barrier"
+        finder.options.use_structure_model = False
+        finder.options.structure_model = model1
+        finder.options.use_thermodynamics_model = False
+        finder.options.thermodynamics_model = model2
+        finder.build_graph()
+        rateconstant1 = finder.graph_handler._rate_constant_normalization
+        # Set up Pathfinder = Structure (model 1) and Gibbs energies (model 2)
+        finder = pf(manager)
+        finder.options.model = model2
+        finder.options.graph_handler = "barrier"
+        finder.options.use_structure_model = True
+        finder.options.structure_model = model1
+        finder.options.use_thermodynamics_model = False
+        finder.options.thermodynamics_model = model2
+        finder.build_graph()
+        rateconstant2 = finder.graph_handler._rate_constant_normalization
+        # Set up Pathfinder = Structure (model 1) and Gibbs energies (model 2)
+        finder = pf(manager)
+        finder.options.model = model1
+        finder.options.graph_handler = "barrier"
+        finder.options.use_structure_model = True
+        finder.options.structure_model = model1
+        finder.options.use_thermodynamics_model = True
+        finder.options.thermodynamics_model = model2
+        finder.build_graph()
+        rateconstant3 = finder.graph_handler._rate_constant_normalization
+        assert rateconstant1 != rateconstant2
+        assert rateconstant1 != rateconstant3
+        assert rateconstant2 != rateconstant3

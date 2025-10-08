@@ -8,51 +8,22 @@ See LICENSE.txt for details.
 from typing import Optional, Dict, List, Tuple
 import math
 
+import numpy as np
 import scine_database as db
 import scine_utilities as utils
 
 
-class ReferenceState:
-    """
-    Reference state for thermodynamic calculations (harmonic vib., rigid rotor, particle in a box).
-    Requires pressure, temperature, and optionally the symmetry of the molecule.
-
-    Parameters
-    ----------
-    t : float
-        The temperature in K.
-    p : float
-        The pressure in Pa.
-    sym : int
-        The symmetry number of the molecule.
-    """
-
-    def __init__(self, t: float, p: float, sym: int = 1) -> None:
-        self.temperature = t
-        self.pressure = p
-        self.symmetry = sym
-        assert isinstance(self.temperature, float)
-        assert isinstance(self.pressure, float)
-        assert isinstance(self.symmetry, int)
-
-    def __eq__(self, other):
-        """
-        Equal operator. Compares temperature, pressure, and symmetry number.
-        """
-        if not isinstance(other, ReferenceState):
-            return False
-        return abs(self.temperature - other.temperature) < 1e-9 and abs(self.pressure - other.pressure) < 1e-9\
-            and self.symmetry - other.symmetry == 0
+ReferenceState = utils.ThermodynamicReferenceState
 
 
-class PlaceHolderReferenceState(ReferenceState):
+class PlaceHolderReferenceState(utils.ThermodynamicReferenceState):
     """
     Place-holder reference state. This can be used as a replacement for None default arguments that must be replaced
     at a later point.
     """
 
     def __init__(self) -> None:
-        super().__init__(t=math.nan, p=math.nan, sym=1)
+        super().__init__(math.nan, math.nan)
 
     def __eq__(self, other):
         return isinstance(other, PlaceHolderReferenceState)
@@ -72,11 +43,16 @@ class ThermodynamicProperties:
         The property collection.
     structure_collection
         The structure collection.
+    structure_id
+        The ID of the structure.
+    symmetry_number: int
+        The symmetry number, i.e., the ratio of symmetry equivalent degrees of freedom. This will affect the rotational
+        partition function.
     """
 
     def __init__(self, hessian_property_id: Optional[db.ID], energy_property_id: db.ID,
                  property_collection: db.Collection, structure_collection: db.Collection,
-                 structure_id: db.ID) -> None:
+                 structure_id: db.ID, symmetry_number: int = 1) -> None:
         self._hessian_prop_id = hessian_property_id
         self._energy_property_id = energy_property_id
         self._structure_id = structure_id
@@ -86,7 +62,9 @@ class ThermodynamicProperties:
         self._entropy: Optional[float] = None
         self._enthalpy: Optional[float] = None
         self._zero_point_energy_correction: Optional[float] = None
-        self._reference_state = ReferenceState(float("inf"), float("inf"), 1)
+        self._reference_state = ReferenceState(float("inf"), float("inf"))
+        self._symmetry_number = symmetry_number
+        self._molecular_degrees_of_freedom: Optional[utils.MolecularDegreesOfFreedom] = None
 
     def get_thermochemistry_calculator(self) -> utils.ThermochemistryCalculator:
         """
@@ -102,22 +80,28 @@ class ThermodynamicProperties:
         return utils.ThermochemistryCalculator(hessian, atom_collection, structure.get_multiplicity(),
                                                self._electronic_energy)
 
-    def _update_thermodynamics(self, reference_state: ReferenceState):
+    def get_molecular_degrees_of_freedom(self) -> utils.MolecularDegreesOfFreedom:
+        if self._molecular_degrees_of_freedom is None:
+            return self.get_thermochemistry_calculator().get_molecular_degrees_of_freedom()
+        return self._molecular_degrees_of_freedom
+
+    def _update_thermodynamics(self, reference_state: utils.ThermodynamicReferenceState):
         if reference_state == self._reference_state:
             return
         self._reference_state = reference_state
         thermochemistry_calculator = self.get_thermochemistry_calculator()
         thermochemistry_calculator.set_temperature(self._reference_state.temperature)
         thermochemistry_calculator.set_pressure(self._reference_state.pressure)
-        thermochemistry_calculator.set_molecular_symmetry(self._reference_state.symmetry)
+        thermochemistry_calculator.set_molecular_symmetry(self._symmetry_number)
         thermochemistry_results = thermochemistry_calculator.calculate()
         self._entropy = thermochemistry_results.overall.entropy
         self._enthalpy = thermochemistry_results.overall.enthalpy
         self._zero_point_energy_correction = thermochemistry_results.overall.zero_point_vibrational_energy
+        self._molecular_degrees_of_freedom = thermochemistry_calculator.get_molecular_degrees_of_freedom()
         assert self._enthalpy
         assert self._entropy
 
-    def get_reference_state(self) -> ReferenceState:
+    def get_reference_state(self) -> utils.ThermodynamicReferenceState:
         """
         Getter for the last thermodynamic reference state.
         """
@@ -131,7 +115,7 @@ class ThermodynamicProperties:
             self._electronic_energy = db.NumberProperty(self._energy_property_id, self._properties).get_data()
         return self._electronic_energy
 
-    def get_enthalpy(self, reference_state: ReferenceState) -> float:
+    def get_enthalpy(self, reference_state: utils.ThermodynamicReferenceState) -> float:
         """
         Getter for the enthalpy (may update the reference state).
 
@@ -144,7 +128,7 @@ class ThermodynamicProperties:
         assert self._enthalpy
         return self._enthalpy
 
-    def get_entropy(self, reference_state: ReferenceState) -> float:
+    def get_entropy(self, reference_state: utils.ThermodynamicReferenceState) -> float:
         """
         Getter for the entropy (may update the reference state).
 
@@ -157,7 +141,7 @@ class ThermodynamicProperties:
         assert self._entropy
         return self._entropy
 
-    def get_gibbs_free_energy_correction(self, reference_state: ReferenceState) -> float:
+    def get_gibbs_free_energy_correction(self, reference_state: utils.ThermodynamicReferenceState) -> float:
         """
         Getter for the gibbs free energy correction (may update the reference state).
 
@@ -168,7 +152,7 @@ class ThermodynamicProperties:
         """
         return self.get_gibbs_free_energy(reference_state) - self.get_electronic_energy()
 
-    def get_gibbs_free_energy(self, reference_state: ReferenceState) -> float:
+    def get_gibbs_free_energy(self, reference_state: utils.ThermodynamicReferenceState) -> float:
         """
         Getter for the gibbs free energy (may update the reference state).
 
@@ -240,12 +224,32 @@ class ThermodynamicPropertiesCache:
         self._electronic_energy_property_name = "electronic_energy"
         self._hessian_property_name = "hessian"
 
-        self._reference_state: ReferenceState = ReferenceState(float("inf"), float("inf"))
+        self._reference_state: utils.ThermodynamicReferenceState = ReferenceState(float("inf"), float("inf"))
         self._minimum_gibbs: Optional[float] = None
         self._minimum_enthalpy: Optional[float] = None
         self._minimum_entropy: Optional[float] = None
+        self._minimum_electronic_energy: Optional[float] = None
         self._n_structures = 0
         self._minimum_structure_int_id: int = 0
+        self._minimum_molecular_degrees_of_freedom: Optional[utils.MolecularDegreesOfFreedom] = None
+
+    def get_representative_electronic_energy(self,
+                                             reference_state: utils.ThermodynamicReferenceState) -> Optional[float]:
+        """
+        Getter for the electronic energy of the structure with the lowest Gibbs free energy at the given
+        reference state.
+
+        Parameters
+        ----------
+        reference_state : ReferenceState
+            The reference state.
+
+        Returns
+        -------
+            The electronic energy of the structure with the lowest Gibbs free energy.
+        """
+        self.get_ensemble_enthalpy(reference_state)
+        return self._minimum_electronic_energy
 
     def get_or_produce(self, structure_id: db.ID) -> Optional[ThermodynamicProperties]:
         """
@@ -301,7 +305,7 @@ class ThermodynamicPropertiesCache:
             n_structures = self._n_structures
         return reference_state != self._reference_state or n_structures != self._n_structures
 
-    def _update_minimum(self, reference_state: ReferenceState) -> None:
+    def _update_minimum(self, reference_state: utils.ThermodynamicReferenceState) -> None:
         if not self.minimum_values_need_update(reference_state, len(self._cache.keys())):
             return
         self._sorted_list = []
@@ -316,12 +320,15 @@ class ThermodynamicPropertiesCache:
             self._n_structures = len(self._cache.keys())
             self._reference_state = reference_state
             therm = self._cache[self._minimum_structure_int_id]
+            self._minimum_electronic_energy = therm.get_electronic_energy()
             if not self._only_electronic:
                 self._minimum_enthalpy = therm.get_enthalpy(reference_state)
                 self._minimum_entropy = therm.get_entropy(reference_state)
+                self._minimum_molecular_degrees_of_freedom = therm.get_molecular_degrees_of_freedom()
             else:
                 self._minimum_enthalpy = self._minimum_gibbs
                 self._minimum_entropy = 0.0
+                self._minimum_molecular_degrees_of_freedom = None
 
     def get_n_cached(self) -> int:
         """
@@ -341,7 +348,20 @@ class ThermodynamicPropertiesCache:
         self._update_minimum(reference_state)
         return self._minimum_gibbs
 
-    def get_ensemble_enthalpy(self, reference_state: ReferenceState) -> Optional[float]:
+    def get_ensemble_degrees_of_freedom(self, reference_state: utils.ThermodynamicReferenceState)\
+            -> Optional[utils.MolecularDegreesOfFreedom]:
+        """
+        Getter for the ensemble degrees of freedom.
+
+        Returns
+        -------
+            The ensemble degrees of freedom. May return None, if no free energy is available for any
+            structure.
+        """
+        self._update_minimum(reference_state)
+        return self._minimum_molecular_degrees_of_freedom
+
+    def get_ensemble_enthalpy(self, reference_state: utils.ThermodynamicReferenceState) -> Optional[float]:
         """
         Getter for the enthalpy of the structure with the lowest Gibb's free energy approximation (no conformational
         contribution).
@@ -367,7 +387,33 @@ class ThermodynamicPropertiesCache:
         self.get_ensemble_gibbs_free_energy(reference_state)
         return self._minimum_entropy
 
-    def get_sorted_structure_list(self, reference_state: ReferenceState) -> List[Tuple[db.ID, float]]:
+    def get_ensemble_microcanonical_entropy(self, energy: float, rrkm: bool = True, active_rotors: bool = False)\
+            -> Optional[float]:
+        """
+        Getter for the microcanical entropy of the ensemble. The energy must be a total energy
+        larger than the zero temperature energy of the ensemble, i.e., it must be larger than the electronic
+        energy plus the zero point vibrational energy.
+        """
+        reference_state: utils.ThermodynamicReferenceState = utils.vacuum_zero_kelvin()
+        degrees_of_freedom = self.get_ensemble_degrees_of_freedom(reference_state)
+        zero_point_energy = self.get_ensemble_enthalpy(reference_state)
+        # If the requested energy is too low for the molecule to exist in that state, we return None.
+        if zero_point_energy is None or energy < zero_point_energy:
+            return None
+        if degrees_of_freedom is None:
+            return None
+        if rrkm:
+            rrkm_degrees_of_freedom = degrees_of_freedom.get_rrkm_degrees_of_freedom(active_rotors)
+            density_of_states = rrkm_degrees_of_freedom.density_of_states(np.asarray([energy - zero_point_energy]))[0]
+        else:
+            density_of_states = degrees_of_freedom.density_of_states(np.asarray([energy - zero_point_energy]))[0]
+        if density_of_states < 1.0:
+            return None
+        r_in_atomic_units = utils.MOLAR_GAS_CONSTANT * utils.HARTREE_PER_KJPERMOL * 1e-3
+        return r_in_atomic_units * math.log(density_of_states)
+
+    def get_sorted_structure_list(self,
+                                  reference_state: utils.ThermodynamicReferenceState) -> List[Tuple[db.ID, float]]:
         self.get_ensemble_gibbs_free_energy(reference_state)
         return self._sorted_list
 

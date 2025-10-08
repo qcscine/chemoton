@@ -45,7 +45,7 @@ class ChemicalReaction(NetworkExpansion):
 
     def __init__(self, model: db.Model,  # pylint: disable=keyword-arg-before-vararg
                  gear_options: Optional[GearOptions] = None,
-                 status_cycle_time: float = 60.0,
+                 status_cycle_time: float = 5.0,
                  include_thermochemistry: bool = False,
                  general_settings: Optional[Dict[str, Any]] = None,
                  add_default_chemoton_nt_settings: bool = True,
@@ -156,7 +156,7 @@ class Dissociation(ChemicalReaction):
 
     def __init__(self, model: db.Model,  # pylint: disable=keyword-arg-before-vararg
                  gear_options: Optional[GearOptions] = None,
-                 status_cycle_time: float = 60.0,
+                 status_cycle_time: float = 5.0,
                  include_thermochemistry: bool = False,
                  general_settings: Optional[Dict[str, Any]] = None,
                  add_default_chemoton_nt_settings: bool = True,
@@ -182,18 +182,20 @@ class Dissociation(ChemicalReaction):
         general_settings = dissociations_gear.trial_generator.options.base_job_settings
         dissociations_gear.trial_generator = FastDissociations()
         dissociations_gear.trial_generator.options.base_job_settings = general_settings
+        tg_options = dissociations_gear.trial_generator.options.unimolecular_options
 
         if self._add_default_chemoton_nt_settings:
-            dissociations_gear.trial_generator.options.cutting_job_settings = default_cutting_settings()
-        dissociations_gear.trial_generator.options.min_bond_dissociations = 1
-        dissociations_gear.trial_generator.options.max_bond_dissociations = self.options.max_bond_dissociations
-        dissociations_gear.trial_generator.options.enable_further_explorations = True
-        dissociations_gear.trial_generator.options.always_further_explore_dissociative_reactions = True
+            tg_options.cutting_job_settings = default_cutting_settings()
+        tg_options.min_bond_dissociations = 1
+        tg_options.max_bond_dissociations = self.options.max_bond_dissociations
+        tg_options.enable_further_explorations = True
+        tg_options.always_further_explore_dissociative_reactions = True
         further_job = self.options.general_react_job
-        dissociations_gear.trial_generator.options.unimolecular_options.further_job = further_job
-        dissociations_gear.trial_generator.options.unimolecular_options.further_job_settings.update(
+        tg_options.further_job = further_job
+        tg_options.further_job_settings.update(
             self.options.general_react_job_settings.as_dict()
         )
+        tg_options.additional_nt_limit = self.options.further_explore_dissociations_barrier
         dissociations_gear.trial_generator.further_exploration_filter = ReactionCoordinateMaxDissociationEnergyFilter(
             max_dissociation_energy=self.options.further_explore_dissociations_barrier,
             energy_type=self.energy_type,
@@ -233,14 +235,16 @@ class Association(Dissociation):
 
     def __init__(self, model: db.Model,  # pylint: disable=keyword-arg-before-vararg
                  gear_options: Optional[GearOptions] = None,
-                 status_cycle_time: float = 60.0,
+                 status_cycle_time: float = 5.0,
                  include_thermochemistry: bool = False,
                  general_settings: Optional[Dict[str, Any]] = None,
                  add_default_chemoton_nt_settings: bool = True,
                  exact_settings_check: bool = False,
                  react_flasks: bool = False,
                  max_bond_associations: int = 1, max_bond_dissociations: int = 0,
-                 max_intra_associations: int = 0, *args, **kwargs):
+                 max_intra_associations: int = 0,
+                 react_flasks_with_compounds: bool = False,
+                 *args, **kwargs):
         super().__init__(model, gear_options, status_cycle_time, include_thermochemistry, general_settings,
                          add_default_chemoton_nt_settings, exact_settings_check,
                          react_flasks,  # react_flasks
@@ -249,9 +253,12 @@ class Association(Dissociation):
                          max_bond_associations,  # max_bond_associations
                          max_intra_associations,  # max_intra_associations
                          *args, **kwargs)
+        self.react_flasks_with_compounds = react_flasks_with_compounds
 
     def _set_protocol(self, credentials: db.Credentials) -> None:
         elementary_step_gear = self._basic_elementary_step_gear_setup(credentials)
+        if self.react_flasks_with_compounds:
+            elementary_step_gear.options.looped_collection = "mixed"
 
         elementary_step_gear.options.enable_unimolecular_trials = False
         elementary_step_gear.options.enable_bimolecular_trials = True
@@ -286,6 +293,8 @@ class Rearrangement(Association):
     options: Rearrangement.Options
 
     def _set_protocol(self, credentials: db.Credentials) -> None:
+        if self.react_flasks_with_compounds:
+            raise ValueError("Mixed flask and compound reactions are not possible for unimolecular rearrangements")
         elementary_step_gear = self._basic_elementary_step_gear_setup(credentials)
         elementary_step_gear.options.enable_unimolecular_trials = True
         elementary_step_gear.options.enable_bimolecular_trials = False

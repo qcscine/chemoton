@@ -175,7 +175,7 @@ class InterReactiveComplexes(ReactiveComplexes):
         self.lebedev = LebedevSphere()
 
     @staticmethod
-    def _rotation_to_vector(to_rotate: np.ndarray, direction: np.ndarray) -> np.ndarray:
+    def rotation_to_vector(to_rotate: np.ndarray, direction: np.ndarray) -> np.ndarray:
         """
         Generates  a rotation matrix to rotate the row vector 'to_rotate' into
         the direction 'direction'.
@@ -232,8 +232,8 @@ class InterReactiveComplexes(ReactiveComplexes):
         elem1, elem2 : List[utils.ElementType] of length n and m
             Element types of elements
 
-        Return
-        ------
+        Returns
+        -------
         float
             The additional shift required to separate the molecules along the x-axis.
         """
@@ -381,10 +381,10 @@ class InterReactiveComplexes(ReactiveComplexes):
 
         .. math:: C_i = \\sum^{N \\setminus N_i}_{I} \\frac{1}{||\\vec{r_i} - \\vec{R_I}||^6}
 
-        The point with the minimal repulsion (largest average distance to all other
+        The point with the minimal repulsion (the largest average distance to all other
         atoms) survives. If `self.options.multiple_attack_points' is `True' all locally best points
         (i.e. better or equal than all of their nearest neighbors) survive.
-        Otherwise only the single best point of attack is generated.
+        Otherwise, only the single best point of attack is generated.
         A cutoff of 15 a.u. around :math:`N_i` is used to prescreen all atoms
         included in :math:`N`.
 
@@ -393,7 +393,7 @@ class InterReactiveComplexes(ReactiveComplexes):
 
         Parameters
         ----------
-        indices : Tuple[int]
+        indices : Union[Tuple[int], Tuple[int, int]]
             The indices of the atoms around whose centroid the points are centered.
         coords : np.ndarray of shape (n,3)
             Atom positions.
@@ -471,7 +471,7 @@ class InterReactiveComplexes(ReactiveComplexes):
         pruned[0] = points[min_idx]
         return pruned
 
-    def _get_attack_points_per_atom(
+    def get_attack_points_per_atom(
         self, coords: np.ndarray, element_types: List, vdw_scaling: float = 0.7, indices: Union[List[int], None] = None
     ) -> Dict[Tuple[int], np.ndarray]:
         """
@@ -546,7 +546,7 @@ class InterReactiveComplexes(ReactiveComplexes):
 
         Returns
         -------
-        List[Tuple(Tuple(int, int), np.ndarray))]
+        Dict[Tuple[int, int], np.ndarray]
             A list of Tuples containing the indices representing atom pairs and
             the np.ndarray of shape (n,3) containing the attack points found
             between this atom pair.
@@ -565,7 +565,7 @@ class InterReactiveComplexes(ReactiveComplexes):
             # Rotate circle s.t. its normal aligns with the interatom axis
             interatom = coords[j] - coords[i]  # Interatom axis
             circle_normal = np.array([0.0, 0.0, 1.0])  # Initial points are in xy-plane
-            r = self._rotation_to_vector(circle_normal, interatom)
+            r = self.rotation_to_vector(circle_normal, interatom)
             possible_directions = (r.T.dot(possible_directions.T)).T
             # Move exactly between atoms
             possible_directions += 0.5 * (coords[i] + coords[j])
@@ -670,11 +670,11 @@ class InterReactiveComplexes(ReactiveComplexes):
                 # Rotate directions towards each other
                 # Face S1 in direction +x
                 x = np.array([1.0, 0.0, 0.0])
-                r = self._rotation_to_vector(direction1, x)
+                r = self.rotation_to_vector(direction1, x)
                 alignment1 = r.flatten()
                 coord1 = (r.T.dot(coord1.T)).T
                 #  Face S2 in direction -x
-                r = self._rotation_to_vector(direction2, -1.0 * x)
+                r = self.rotation_to_vector(direction2, -1.0 * x)
                 coord2 = (r.T.dot(coord2.T)).T
                 # Parallelize if both centers are defined by two atoms
                 if all(n_site == 2 for n_site in len_sites):
@@ -682,7 +682,7 @@ class InterReactiveComplexes(ReactiveComplexes):
                     interatom1 = coord1[sites1[0]] - coord1[sites1[1]]
                     interatom2 = coord2[sites2[0]] - coord2[sites2[1]]
                     # Rotate interatom2 to align with interatom1
-                    r_parallel = self._rotation_to_vector(interatom2, interatom1)
+                    r_parallel = self.rotation_to_vector(interatom2, interatom1)
                     coord2 = (r_parallel.T.dot(coord2.T)).T
                     # Combine two rotation operations
                     r = r.dot(r_parallel)
@@ -785,11 +785,11 @@ class InterReactiveComplexes(ReactiveComplexes):
 
         Yields
         ------
-        inter_coord : Tuple[Tuple[Tuple[int]]
+        inter_coord : Tuple[List[Tuple[int, int]]]
             Tuple of Tuples of one or two atom pairs composing the reactive atoms
             of the interstructural component of this reactive complex reaction.
             First atom per pair belongs to structure1, second to structure2.
-        align1, align2 : np.array
+        align1, align2 : np.ndarray
             Rotation matrices aligning the two sites along the x-axis (rotations
             assume that the geometric mean of the reactive atoms of each
             structure is translated into the origin)
@@ -819,7 +819,7 @@ class InterReactiveComplexes(ReactiveComplexes):
 
         Parameters
         ----------
-        atoms1, atoms2 : scine_utilities.AtomCollection
+        atoms1, atoms2 : utils.AtomCollection
             The two structures for which a set of reactive complexes is to be
             generated.
         id1, id2 : str
@@ -835,11 +835,11 @@ class InterReactiveComplexes(ReactiveComplexes):
 
         Yields
         ------
-        inter_coord : Tuple[Tuple[Tuple[int]]
+        inter_coord : Tuple[List[Tuple[int, int]]]
             Tuple of Tuples of one or two atom pairs composing the reactive atoms
             of the interstructural component of this reactive complex reaction.
             First atom per pair belongs to structure1, second to structure2.
-        align1, align2 : np.array
+        align1, align2 : np.ndarray
             Rotation matrices aligning the two sites along the x-axis (rotations
             assume that the geometric mean of the reactive atoms of each
             structure is translated into the origin)
@@ -923,9 +923,9 @@ class InterReactiveComplexes(ReactiveComplexes):
                     )
 
         # Generate attack points around atoms
-        attack_points1.update(self._get_attack_points_per_atom(
+        attack_points1.update(self.get_attack_points_per_atom(
             coordinates1, elements1, indices=list(new_attacked_atoms1)))
-        attack_points2.update(self._get_attack_points_per_atom(
+        attack_points2.update(self.get_attack_points_per_atom(
             coordinates2, elements2, indices=list(new_attacked_atoms2)))
         attack_points1.update(self._get_attack_points_per_atom_pair(
             coordinates1, elements1, list(new_attacked_pairs1)))

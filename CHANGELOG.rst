@@ -1,6 +1,22 @@
 Changelog
 =========
 
+Release 4.1.0
+-------------
+
+New features:
+ - Add a simple gear to reoptimize minimum structures.
+ - Add a simple gear to refine TS structures and derive minimum energy paths from them.
+ - Enable the exploration of flasks reacting with compounds.
+ - Added additional optimization logic to the ElementaryStepGear that detects if its AggregateFilter can be applied to each individual aggregate before carrying out bimolecular loops over all aggregates.
+ - Added ExactElementCountFilter to filter out aggregates and structures by specifying the number of occurrences of each element.
+ - Added TrialGenerator for adsorbing molecules onto surfaces.
+ - Added additional option to CatalystFilter.
+ - Add a Pathfinder-interface that can read RMS input files.
+ - Add a Pathfinder handler that uses the same barrier definition as in the microkinetic modeling gears.
+ - Adds an option to create (microcanonical) microkinetic modeling jobs with RRKM theory at a given energy.
+ - Add a Pathfinder option to calculate the cost based on electronic energy (model 1) + Gibbs correction (model 2).
+
 Release 4.0.0
 -------------
 

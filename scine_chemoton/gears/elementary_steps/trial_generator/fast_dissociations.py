@@ -56,6 +56,7 @@ class FastDissociations(BondBased):
                 "always_further_explore_dissociative_reactions",
                 "further_job",
                 "further_job_settings",
+                "additional_nt_limit",
                 "_parent",
                 "_unusable_settings",
             )
@@ -127,6 +128,13 @@ class FastDissociations(BondBased):
                     Additional settings passed to Calculation evaluating the possible
                     reactions. These settings are passed to all further explorations and the dissociative
                     reaction coordinates.
+                """
+                self.additional_nt_limit: float = 0.0
+                """
+                float
+                    For all dissociations with dissociation energies below that limit for which puffin cannot find
+                    a barrierless reaction directly, it will carry out immediately an associative NT2 based search
+                    based on the separate fragments. The default is 0.0.
                 """
 
             def __setattr__(self, item, value) -> None:
@@ -426,7 +434,6 @@ class FastDissociations(BondBased):
 
         Parameters
         ----------
-
         reactive_structure : db.ID
             The ID of the reactant.
         dissociation_pairs : List[Tuple[int, int]]
@@ -444,6 +451,10 @@ class FastDissociations(BondBased):
                 dissociation_pairs)
         else:
             raise RuntimeError("Only 'scine_dissociation_cut' order supported for fast dissociations")
+
+        this_settings["additional_nt_run_dissociation_energy_limit"] = \
+            self.options.unimolecular_options.additional_nt_limit
+        this_settings.update(self.options.unimolecular_options.further_job_settings.as_dict())
 
         if check_for_existing and get_calculation_id(job.order, [reactive_structure], self.options.model,
                                                      self._calculations, settings=this_settings) is not None:

@@ -300,7 +300,8 @@ class FragmentBased(TrialGenerator):
         )
 
     @_sanity_check_wrapper
-    def bimolecular_reactions(self, structure_list: List[db.Structure], with_exact_settings_check: bool = False):
+    def bimolecular_reactions(self, structure_list: List[db.Structure], with_exact_settings_check: bool = False)\
+            -> None:
         """
         Creates reactive complex calculations corresponding to the bimolecular
         reactions between the structures if there is not already a calculation
@@ -744,7 +745,7 @@ class FragmentBased(TrialGenerator):
             Whether it should be checked if a calculation with these exact
             settings and model already exists or not (default: False)
         """
-        model = self.options.model
+        model = self._get_calculation_model(reactive_structures)
         this_settings = self._get_settings(settings)
         # Sleep a bit in order not to make the DB choke
         time.sleep(0.001)
@@ -767,8 +768,7 @@ class FragmentBased(TrialGenerator):
             this_settings["afir_afir_use_max_fragment_distance"] = bool(reaction_type == ReactionType.Disconnective)
             if reaction_type == ReactionType.Disconnective:
                 # Set fragment distance for convergence to 3*sum of maximum covalent radii within i and j
-                struct = db.Structure(reactive_structures[0])
-                struct.link(self._structures)
+                struct = db.Structure(reactive_structures[0], self._structures)
                 atoms = struct.get_atoms()
                 covalent_max = [
                     max(utils.ElementInfo.covalent_radius(atoms.get_element(atom_index)) for atom_index in frag)

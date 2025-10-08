@@ -14,7 +14,11 @@ from multiprocessing import Value
 from multiprocessing.sharedctypes import SynchronizedBase
 from setproctitle import setproctitle
 from typing import List, Generator, Tuple, Any, ItemsView, Union
-from typing_extensions import TypeVar
+import sys
+if sys.version_info < (3, 12):
+    from typing_extensions import TypeVar
+else:
+    from typing import TypeVar
 import time
 
 # Third party imports

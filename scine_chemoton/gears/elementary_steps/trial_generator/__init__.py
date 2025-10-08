@@ -4,10 +4,12 @@ __copyright__ = """ This code is licensed under the 3-clause BSD license.
 Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Group.
 See LICENSE.txt for details.
 """
+
 # Standard library imports
 from abc import ABCMeta, abstractmethod
+from copy import deepcopy
 from functools import wraps
-from typing import Callable, Dict, List, Tuple, Optional, Any
+from typing import Callable, Dict, List, Tuple, Optional, Any, Union
 from warnings import warn
 
 # Third party imports
@@ -17,6 +19,7 @@ from scine_utilities import ValueCollection
 
 from scine_chemoton.gears import HoldsCollections
 from scine_chemoton.gears import Gear
+from scine_chemoton.utilities.reactive_complexes.adsorption import AdsorptionResult
 from scine_chemoton.filters.reactive_site_filters import ReactiveSiteFilter
 from scine_chemoton.utilities.options import BaseOptions
 from scine_chemoton.utilities.place_holder_model import (
@@ -71,7 +74,7 @@ class TrialGenerator(HoldsCollections, metaclass=ABCMeta):
         super().__init__()
         self._parent: Optional[Gear] = None  # allows to propagate model information to gear
         self.options = self.Options(parent=self)
-        self._required_collections = ["calculations", "structures"]
+        self._required_collections = ["calculations", "structures", "properties"]
         self.reactive_site_filter = ReactiveSiteFilter()
 
     @abstractmethod
@@ -144,17 +147,20 @@ class TrialGenerator(HoldsCollections, metaclass=ABCMeta):
 
     @abstractmethod
     def bimolecular_coordinates(self, structure_list: List[db.Structure], with_exact_settings_check: bool = False) \
-            -> Dict[
-        Tuple[List[Tuple[int, int]], int],
-        List[Tuple[ndarray, ndarray, float, float]]
-    ]:
+            -> Union[Dict[Tuple[List[Tuple[int, int]], int],
+                          List[Tuple[ndarray, ndarray, float, float]]],
+                     List[AdsorptionResult]
+                     ]:
         """
         Returns the reaction coordinates allowed for bimolecular reactions for the given structures based on
         the set options and filters. This method does not set up new calculations.
-        The returned object is a list of dictionary.
-        The keys are a tuple containing a reaction coordinates and the number of dissociations.
-        The values hold a list of instructions. Each entry in this list allows to construct a reactive complex.
-        Therefore, the number of reactive complexes per reaction coordinate can also be inferred.
+        The returned object is either:
+
+        * | A dictionary.
+          | The keys are a tuple containing a reaction coordinates and the number of dissociations.
+          | The values hold a list of instructions. Each entry in this list allows to construct a reactive complex.
+          | Therefore, the number of reactive complexes per reaction coordinate can also be inferred.
+        * A list of AdsorptionResult objects.
 
         Notes
         -----
@@ -187,6 +193,18 @@ class TrialGenerator(HoldsCollections, metaclass=ABCMeta):
     def get_bimolecular_job_order(self) -> str:
         raise NotImplementedError
 
+    def _get_calculation_model(self, calculation_structures: List[db.ID]) -> db.Model:
+        model = deepcopy(self.options.model)
+        for sid in calculation_structures:
+            structure = db.Structure(sid, self._structures)
+            pbc = structure.get_model().periodic_boundaries
+            if structure.get_label() == db.Label.SURFACE_ADSORPTION_GUESS:
+                model.periodic_boundaries = pbc
+                break
+            if pbc and pbc.lower() != "none":
+                model.periodic_boundaries = pbc
+        return model
+
     def _get_settings(self, settings: ValueCollection) -> ValueCollection:
         """
         Convenience method to combine given settings with the base settings.
@@ -196,7 +214,6 @@ class TrialGenerator(HoldsCollections, metaclass=ABCMeta):
 
 
 def _sanity_check_wrapper(fun: Callable) -> Callable:
-
     @wraps(fun)
     def _impl(self: TrialGenerator, *args, **kwargs):
         self._sanity_check_configuration()

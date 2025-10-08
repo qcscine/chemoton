@@ -91,12 +91,18 @@ class ReactiveSiteFilter(HoldsCollections, HasName, _AbstractSiteFilter):
                                       "properties", "structures", "reactions"]
 
     def __and__(self, o):
+        """
+        Overloaded `&` operator to chain rules with logical 'and'.
+        """
         if not isinstance(o, ReactiveSiteFilter):
             raise TypeError("ReactiveSiteFilter expects ReactiveSiteFilter "
                             "(or derived class) to chain with.")
         return ReactiveSiteFilterAndArray([self, o])
 
     def __or__(self, o):
+        """
+        Overloaded `|` operator to chain rules with logical 'or'.
+        """
         if not isinstance(o, ReactiveSiteFilter):
             raise TypeError("ReactiveSiteFilter expects ReactiveSiteFilter "
                             "(or derived class) to chain with.")

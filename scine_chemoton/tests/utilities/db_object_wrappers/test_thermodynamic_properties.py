@@ -12,6 +12,7 @@ import numpy as np
 
 # Third party imports
 import scine_database as db
+import scine_utilities as utils
 
 # Local application tests imports
 from scine_database import test_database_setup as db_setup
@@ -35,7 +36,7 @@ class TestThermodynamicProperties(unittest.TestCase, HoldsCollections):
         self.electronic_energy = -75.64001590264
         self.model = db.Model("FAKE", "FAKE", "F-AKE")
         # References from Turbomole job.
-        self.ref = ReferenceState(298.15, 101325.0, 1)
+        self.ref = ReferenceState(298.15, 101325.0)
         self.reference_free_energy = -75.6488462958007
         self.reference_correction = -0.00883039316073564
         self.reference_zero_point_energy_correction = 0.007480021854688685
@@ -110,6 +111,23 @@ class TestThermodynamicProperties(unittest.TestCase, HoldsCollections):
         s = cache.get_ensemble_entropy(self.ref)
         g = h - self.ref.temperature * s
         assert abs(g - cache.get_ensemble_gibbs_free_energy(self.ref)) < 1e-9
+
+        degrees_of_freedom = cache.get_ensemble_degrees_of_freedom(self.ref)
+        assert abs(degrees_of_freedom.enthalpy(self.ref) - h) < 1e-9
+        assert abs(degrees_of_freedom.entropy(self.ref) - s) < 1e-9
+        assert abs(degrees_of_freedom.helmholtz_free_energy(self.ref) - g) < 1e-9  # no volume/pressure effect.
+
+        zero_point_energy = degrees_of_freedom.enthalpy(utils.vacuum_zero_kelvin())
+        # The micro canonical entropy/density of states of a single classical harmonic oscillator is energy independent.
+        # (the rotational part is energy independent anyway)
+        s_micro = cache.get_ensemble_microcanonical_entropy(zero_point_energy + 0.3, rrkm=True, active_rotors=True)
+        s_micro_2 = cache.get_ensemble_microcanonical_entropy(zero_point_energy + 1.3, rrkm=True, active_rotors=True)
+        assert abs(s_micro - s_micro) < 1e-12  # NaN check
+        assert abs(s_micro_2 - s_micro) < 1e-9
+        s_micro_3 = cache.get_ensemble_microcanonical_entropy(zero_point_energy + 1.3, rrkm=True, active_rotors=False)
+        assert s_micro_3 < s_micro  # There are fewer states available if we do not include rotation
+        assert abs(s_micro - 4.310833826915466e-05) < 1e-8
+
         cache.clear()
         assert cache.minimum_values_need_update(self.ref, 1)
 
@@ -176,3 +194,8 @@ class TestThermodynamicProperties(unittest.TestCase, HoldsCollections):
         print("Add new one!")
         new_g = aggregate.get_free_energy(self.ref)
         assert abs((new_g - g) - delta) < 1e-6
+
+        degrees_of_freedom = aggregate.get_molecular_degrees_of_freedom(self.ref)
+        zero_point_energy = degrees_of_freedom.enthalpy(utils.vacuum_zero_kelvin())
+        s_micro = aggregate.get_microcanonical_entropy(zero_point_energy + 0.3, rrkm=True, active_rotors=True)
+        assert abs(s_micro - 4.310833826915466e-05) < 1e-8

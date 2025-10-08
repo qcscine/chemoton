@@ -26,9 +26,9 @@ class MockGenerator(TrialGenerator):
     Attributes
     ----------
     unimol_counter : int
-        How often  `unimolecular_reactions` was called.
+        How often `unimolecular_reactions` was called.
     bimol_counter : ReactiveSiteFilter
-        How often  `bimolecular_reactions` was called.
+        How often `bimolecular_reactions` was called.
     """
     class Options(TrialGenerator.Options):
 

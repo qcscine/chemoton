@@ -45,12 +45,18 @@ class DistanceBaseRule(BaseRule):
         """
 
     def __and__(self, o):
+        """
+        Overloaded `&` operator to chain rules with logical 'and'.
+        """
         if not isinstance(o, DistanceBaseRule):
             raise TypeError(f"{self.__class__.__name__} expects DistanceBaseRule "
                             f"(or derived class) to chain with.")
         return DistanceRuleAndArray([self, o])
 
     def __or__(self, o):
+        """
+        Overloaded `|` operator to chain rules with logical 'or'.
+        """
         if not isinstance(o, DistanceBaseRule):
             raise TypeError(f"{self.__class__.__name__} expects DistanceBaseRule "
                             f"(or derived class) to chain with.")

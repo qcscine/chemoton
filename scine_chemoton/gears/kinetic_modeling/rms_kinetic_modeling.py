@@ -149,8 +149,8 @@ class RMSKineticModelingJobFactory(KineticModelingJobFactory):
             "viscosity": "none",  # taken from tabulated values corresponding to the solvent in the model if not given
             "reactor_solvent": "none",  # taken from the electronic structure model if not given
             "diffusion_limited": False,  # Only viable for phase_type: ideal_dilute_solution. May destabilize ODE.
-            "reactor_temperature": "none",  # taken from the the electronic structure model if not given
-            "reactor_pressure": "none",  # taken from the the electronic structure model if not given
+            "reactor_temperature": "none",  # taken from the electronic structure model if not given
+            "reactor_pressure": "none",  # taken from the electronic structure model if not given
             "absolute_tolerance": 1e-22,  # 1e-22 should be very conservative. 1e-18 could be fine as well.
             "relative_tolerance": 1e-9,
             "solvent_aggregate_str_id": "none",  # allow the solvent concentration to change by providing the solvent id

@@ -18,7 +18,6 @@ from scine_database.queries import get_common_calculation_ids
 from scine_database.concentration_query_functions import query_concentration_with_object
 from scine_database.compound_and_flask_creation import get_compound_or_flask
 from ...utilities.calculation_creation_helpers import finalize_calculation
-from ...utilities.db_object_wrappers.thermodynamic_properties import ReferenceState
 from ...utilities.db_object_wrappers.reaction_wrapper import Reaction
 from ...utilities.db_object_wrappers.wrapper_caches import (
     MultiModelReactionCache,
@@ -52,7 +51,7 @@ class KineticModelingJobFactory(ABC):
         self.min_flux_truncation = 1e-5
         self.vertex_flux_label = "concentration_flux"
         self.flux_variance_label: Optional[str] = None
-        self.reference_state = ReferenceState(298.15, 1e+5)
+        self.reference_state = utils.standard_state_gas()
         self.max_barrier = 100.0  # kJ/mol
         self._calculation_model = deepcopy(self._model_combinations[0].electronic_model)
         self._electronic_structure_program = self._calculation_model.program
@@ -200,8 +199,8 @@ class KineticModelingJobFactory(ABC):
         reaction_str_ids_not_to_iterate = rxn_string_ids_zero_flux
         print("Iterative kinetic model construction from starting reactants")
         print('#Iter  N-Reactions N-Aggregates')
+        loop_iteration = 1
         while sets_changed:
-            loop_iteration = 1
             sets_changed = False
             # iterate over all reactions of all currently accessible compounds minus the reactions already considered
             # accessible, zero flux, or inaccessible because of a too high barrier/low reaction rate constant.
@@ -261,27 +260,18 @@ class KineticModelingJobFactory(ABC):
 
     def _reaction_is_accessible(self, reaction: Reaction, accessible_aggregate_ids: Set[int]) -> bool:
         lhs_rhs_ids = reaction.get_db_object().get_reactants(db.Side.BOTH)
-        lhs_rhs_types = reaction.get_db_object().get_reactant_types(db.Side.BOTH)
-        for a_id, a_type in zip(lhs_rhs_ids[0] + lhs_rhs_ids[1], lhs_rhs_types[0] + lhs_rhs_types[1]):
-            db_aggregate = get_compound_or_flask(a_id, a_type, self._compounds, self._flasks)
-            if not db_aggregate.analyze():
-                return False
+        if not reaction.analyze():
+            return False
+        all_lhs = all(int(lhs_id.string(), 16) in accessible_aggregate_ids for lhs_id in lhs_rhs_ids[0])
+        all_rhs = all(int(rhs_id.string(), 16) in accessible_aggregate_ids for rhs_id in lhs_rhs_ids[1])
+        if not all_lhs and not all_rhs:
+            return False
         lhs_barrier, rhs_barrier = reaction.get_free_energy_of_activation(self.reference_state, in_j_per_mol=True)
         if lhs_barrier is None or rhs_barrier is None:
             return False
-        all_lhs = True if lhs_barrier * 1e-3 < self.max_barrier else False  # Barrier in J/mol, threshold in kJ/mol
-        all_rhs = True if rhs_barrier * 1e-3 < self.max_barrier else False
+        all_lhs = all_lhs and lhs_barrier * 1e-3 < self.max_barrier  # Barrier in J/mol, threshold in kJ/mol
+        all_rhs = all_rhs and rhs_barrier * 1e-3 < self.max_barrier
 
-        if all_lhs:
-            for lhs_id in lhs_rhs_ids[0]:
-                if int(lhs_id.string(), 16) not in accessible_aggregate_ids:
-                    all_lhs = False
-                    break
-        if all_rhs:
-            for rhs_id in lhs_rhs_ids[1]:
-                if int(rhs_id.string(), 16) not in accessible_aggregate_ids:
-                    all_rhs = False
-                    break
         return all_rhs or all_lhs
 
     def _get_old_zero_flux_reactions(self, aggregates: List[Aggregate]) -> List[db.ID]:

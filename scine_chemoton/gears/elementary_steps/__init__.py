@@ -17,7 +17,7 @@ from scine_database.queries import stop_on_timeout
 from scine_utilities import ValueCollection
 
 # Local application imports
-from scine_chemoton.filters.aggregate_filters import AggregateFilter
+from scine_chemoton.filters.aggregate_filters import AggregateFilter, AggregateFilterAndArray, AggregateFilterOrArray
 from scine_chemoton.filters.reactive_site_filters import ReactiveSiteFilter
 from scine_chemoton.utilities.place_holder_model import (
     construct_place_holder_model,
@@ -26,6 +26,7 @@ from scine_chemoton.utilities.place_holder_model import (
 from .trial_generator import TrialGenerator
 from .trial_generator.bond_based import BondBased
 from .. import Gear, _initialize_a_gear_to_a_db
+from scine_chemoton.utilities.reactive_complexes.adsorption import AdsorptionResult
 from scine_chemoton.utilities.warnings import ModelChangedWarning, SettingsChangedWarning
 
 
@@ -80,7 +81,7 @@ class ElementaryStepGear(Gear, ABC):
             self.looped_collection: str = "compounds"
             """
             str
-                The collection to loop over. Can be "compounds" or "flasks".
+                The collection to loop over. Can be "compounds", "flasks", or "mixed".
             """
 
         def __setattr__(self, item, value) -> None:
@@ -95,8 +96,9 @@ class ElementaryStepGear(Gear, ABC):
                 self._parent is not None and
                 hasattr(self._parent, "trial_generator")
             )
-            if item == "looped_collection" and value not in ["compounds", "flasks"]:
-                raise ValueError(f"Invalid value for {item}: '{value}'. Only 'compounds' and 'flasks' are allowed.")
+            if item == "looped_collection" and value not in ["compounds", "flasks", "mixed"]:
+                raise ValueError(f"Invalid value for {item}: '{value}'. "
+                                 f"Only 'compounds', 'flasks', and 'mixed' are allowed.")
             if item == "base_job_settings":
                 if not isinstance(value, ValueCollection):
                     raise TypeError(f"The {item} must be a ValueCollection.")
@@ -117,13 +119,17 @@ class ElementaryStepGear(Gear, ABC):
 
     def __init__(self) -> None:
         super().__init__()
-        self._required_collections = ["calculations", "compounds", "flasks", "properties", "reactions", "structures"]
+        self._required_collections = ["calculations", "compounds", "flasks", "properties", "reactions", "structures",
+                                      "manager"]
         self.options = self.Options(_parent=self)
         self.trial_generator: TrialGenerator = BondBased()
         self.trial_generator.options.base_job_settings = self.options.base_job_settings
         self.aggregate_filter: AggregateFilter = AggregateFilter()
         self._cache: Set[str] = set()
         self._rebuild_cache = True
+        self._filtered_aggregate_ids: List[db.ID] = []
+        self._second_filtered_aggregate_ids: List[db.ID] = []
+        self._required_filter: Optional[AggregateFilter] = None
 
     def __setattr__(self, item, value) -> None:
         """
@@ -148,7 +154,8 @@ class ElementaryStepGear(Gear, ABC):
         if item == "aggregate_filter":
             if not isinstance(value, AggregateFilter):
                 raise TypeError(f"The {item} must be an AggregateFilter.")
-            if hasattr(self, "options") and self.options.looped_collection == "flasks" and not value.supports_flasks():
+            if (hasattr(self, "options") and self.options.looped_collection in ["flasks", "mixed"]
+                    and not value.supports_flasks()):
                 raise ValueError(f"The aggregate filter {value.name} does not support flasks.")
 
     def clear_cache(self) -> None:
@@ -183,6 +190,8 @@ class ElementaryStepGear(Gear, ABC):
         observer : Optional[Callable[[], None]]
             A function that is called after each aggregate to count the number of aggregates processed.
         """
+        if isinstance(self.options.model, PlaceHolderModelType):
+            raise ValueError("The model option must be set to a specific model.")
         _initialize_a_gear_to_a_db(self, credentials)
         return self._internal_loop_impl(setup_calculations=False,
                                         loop_unimolecular=self.options.enable_unimolecular_trials,
@@ -193,9 +202,10 @@ class ElementaryStepGear(Gear, ABC):
                                 observer: Optional[Callable[[], None]] = None) -> \
             Dict[str,
                  Dict[str,
-                      Dict[Tuple[List[Tuple[int, int]], int],
-                           List[Tuple[ndarray, ndarray, float, float]]
-                           ]
+                      Union[Dict[Tuple[List[Tuple[int, int]], int],
+                                 List[Tuple[ndarray, ndarray, float, float]]],
+                            List[AdsorptionResult]
+                            ]
                       ]
                  ]:
         """
@@ -220,6 +230,8 @@ class ElementaryStepGear(Gear, ABC):
         observer : Optional[Callable[[], None]]
             A function that is called after each aggregate to count the number of aggregates processed.
         """
+        if isinstance(self.options.model, PlaceHolderModelType):
+            raise ValueError("The model option must be set to a specific model.")
         _initialize_a_gear_to_a_db(self, credentials)
         return self._internal_loop_impl(setup_calculations=False,
                                         loop_unimolecular=False,
@@ -260,9 +272,10 @@ class ElementaryStepGear(Gear, ABC):
                           ],
                      Dict[str,
                           Dict[str,
-                               Dict[Tuple[List[Tuple[int, int]], int],
-                                    List[Tuple[ndarray, ndarray, float, float]]
-                                    ]
+                               Union[Dict[Tuple[List[Tuple[int, int]], int],
+                                          List[Tuple[ndarray, ndarray, float, float]]],
+                                     List[AdsorptionResult]
+                                     ]
                                ]
                           ]
                      ]:
@@ -276,14 +289,25 @@ class ElementaryStepGear(Gear, ABC):
             = defaultdict(lambda: defaultdict(list))
         bi_result: Dict[str,
                         Dict[str,
-                             Dict[Tuple[List[Tuple[int, int]], int],
-                                  List[Tuple[ndarray, ndarray, float, float]]
-                                  ]
+                             Union[Dict[Tuple[List[Tuple[int, int]], int],
+                                        List[Tuple[ndarray, ndarray, float, float]]],
+                                   List[AdsorptionResult]
+                                   ]
                              ]
                         ] \
             = defaultdict(lambda: defaultdict(dict))
+        self._filtered_aggregate_ids = []
+        self._second_filtered_aggregate_ids = []
+        self._required_filter = None
         # Loop over all aggregates
-        collection, iterator = self._get_collection_iterator()
+        if self.options.looped_collection.lower().strip() in ["compounds", "mixed"]:
+            collection, iterator = self._get_collection_iterator(db.CompoundOrFlask.COMPOUND, loop_bimolecular)
+        elif self.options.looped_collection.lower().strip() == "flasks":
+            collection, iterator = self._get_collection_iterator(db.CompoundOrFlask.FLASK, loop_bimolecular)
+        else:
+            raise ValueError(f"Invalid value for looped_collection: '{self.options.looped_collection}'. "
+                             f"Only 'compounds', 'flasks', and 'mixed' are allowed.")
+
         for aggregate_one in stop_on_timeout(iterator):
             aggregate_one.link(collection)
             if self.have_to_stop_at_next_break_point():
@@ -291,7 +315,7 @@ class ElementaryStepGear(Gear, ABC):
             if observer is not None:
                 observer()
             eligible_sid_one = None
-            if loop_unimolecular and self.aggregate_filter.filter(aggregate_one):
+            if loop_unimolecular and self._apply_aggregate_filter(aggregate_one):
                 eligible_sid_one = sorted(self._get_eligible_structures(aggregate_one))
                 for sid_one in eligible_sid_one:
                     if self.have_to_stop_at_next_break_point():
@@ -326,19 +350,25 @@ class ElementaryStepGear(Gear, ABC):
             if not eligible_sid_one:
                 continue
             c_id_one = aggregate_one.id().string()
-            _, second_iterator = self._get_collection_iterator()
+            if self.options.looped_collection.lower().strip() == "compounds":
+                second_collection, second_iterator = self._get_collection_iterator(db.CompoundOrFlask.COMPOUND,
+                                                                                   loop_bimolecular)
+            else:
+                second_collection, second_iterator = self._get_collection_iterator(db.CompoundOrFlask.FLASK,
+                                                                                   loop_bimolecular)
             for aggregate_two in stop_on_timeout(second_iterator):
-                aggregate_two.link(collection)
+                aggregate_two.link(second_collection)
                 if self.have_to_stop_at_next_break_point():
                     return {}, {}
                 # Make this loop run lower triangular + diagonal only
                 c_id_two = aggregate_two.id().string()
                 sorted_ids = sorted([c_id_one, c_id_two])
                 # Second criterion needed to not exclude diagonal
-                if sorted_ids[0] == c_id_two and c_id_one != c_id_two:
+                if (self.options.looped_collection.lower().strip() != "mixed"
+                        and sorted_ids[0] == c_id_two and c_id_one != c_id_two):
                     continue
                 # Filter
-                if not self.aggregate_filter.filter(aggregate_one, aggregate_two):
+                if not self._apply_aggregate_filter(aggregate_one, aggregate_two):
                     continue
                 eligible_sid_two = sorted(self._get_eligible_structures(aggregate_two))
                 if not eligible_sid_two:
@@ -411,15 +441,86 @@ class ElementaryStepGear(Gear, ABC):
             return self.options.structure_model == structure.get_model()
         return True
 
-    def _get_collection_iterator(self) -> Tuple[db.Collection, Iterator[Union[db.Compound, db.Flask]]]:
+    def _get_collection_iterator(self, agg_type: db.CompoundOrFlask, loop_bimolecular: bool) \
+            -> Tuple[db.Collection, Iterator[Union[db.Compound, db.Flask]]]:
         selection = {"exploration_disabled": {"$ne": True}}
-        if self.options.looped_collection == "compounds":
-            return self._compounds, self._compounds.iterate_compounds(dumps(selection))
-        if self.options.looped_collection == "flasks":
+        # set variables depending on the wanted type
+        if agg_type == db.CompoundOrFlask.COMPOUND:
+            collection = self._compounds
+            iterator = self._compounds.iterate_compounds(dumps(selection))
+            def constructor(id_: db.ID) -> Union[db.Compound, db.Flask]: return db.Compound(id_, self._compounds)
+        elif agg_type == db.CompoundOrFlask.FLASK:
             self._check_filters_for_flask_compatibility()
-            return self._flasks, self._flasks.iterate_flasks(dumps(selection))
-        raise ValueError(f"Invalid value for looped_collection: '{self.options.looped_collection}'. "
-                         f"Only 'compounds' and 'flasks' are allowed.")
+            collection = self._flasks
+            iterator = self._flasks.iterate_flasks(dumps(selection))
+            def constructor(id_: db.ID) -> Union[db.Compound, db.Flask]: return db.Flask(id_, self._flasks)
+        else:
+            raise ValueError(f"Invalid value for looped_collection: '{agg_type}'")
+        if not loop_bimolecular:
+            # no filter optimization possible
+            return collection, iterator
+        if self._filtered_aggregate_ids and self.options.looped_collection.lower().strip() != "mixed":
+            # we have already filtered the aggregates and we can loop over them again, because we do not mix compounds
+            # with flasks
+            return collection, (constructor(id_) for id_ in self._filtered_aggregate_ids)
+        if self.aggregate_filter.independent_bimolecular_filtering():
+            # we can directly filter the aggregates
+            self._determine_filtered_ids(collection, iterator, self.aggregate_filter)
+            if self._second_filtered_aggregate_ids:
+                # we have filtered them for a second time because we have a mixed loop
+                return collection, (constructor(id_) for id_ in self._second_filtered_aggregate_ids)
+            # iterator on the filtered aggregates
+            return collection, (constructor(id_) for id_ in self._filtered_aggregate_ids)
+        # the filter is not independent, we try some tricks for optimization
+        if not isinstance(self.aggregate_filter, AggregateFilterAndArray) \
+                and not isinstance(self.aggregate_filter, AggregateFilterOrArray):
+            # filter is not an array of filters, we cannot optimize
+            return collection, iterator
+        if self._required_filter is None:
+            # we find out which filter is independent
+            first_independent_filter: Optional[AggregateFilter] = None
+            new_sub_filters: List[AggregateFilter] = []
+            for f in self.aggregate_filter:
+                if first_independent_filter is None and f.independent_bimolecular_filtering():
+                    first_independent_filter = f
+                else:
+                    new_sub_filters.append(f)
+            if first_independent_filter is None:
+                # no filter is independent, we cannot optimize
+                return collection, iterator
+            # we have an independent filter, we can filter the aggregates
+            self._determine_filtered_ids(collection, iterator, first_independent_filter)
+            self._required_filter = (
+                type(self.aggregate_filter)(new_sub_filters))  # pylint: disable=too-many-function-args
+            self._required_filter.initialize_collections(self._manager)
+        else:
+            # we have a mixed loop and already determined the independent filter, but now we have to filter a different
+            # aggregates collection
+            self._determine_filtered_ids(collection, iterator, self._required_filter)
+        if self._second_filtered_aggregate_ids:
+            return collection, (constructor(id_) for id_ in self._second_filtered_aggregate_ids)
+        return collection, (constructor(id_) for id_ in self._filtered_aggregate_ids)
+
+    def _determine_filtered_ids(self, collection: db.Collection, iterator: Iterator[Union[db.Compound, db.Flask]],
+                                filter_to_apply: AggregateFilter) -> None:
+        second_list = len(self._filtered_aggregate_ids) > 0
+        for aggregate in iterator:
+            aggregate.link(collection)
+            if filter_to_apply.filter(aggregate):
+                if second_list:
+                    self._second_filtered_aggregate_ids.append(aggregate.id())
+                else:
+                    self._filtered_aggregate_ids.append(aggregate.id())
+
+    def _apply_aggregate_filter(self,
+                                aggregate_one: Union[db.Compound, db.Flask],
+                                aggregate_two: Union[db.Compound, db.Flask, None] = None) \
+            -> bool:
+        if self._required_filter is None:
+            if self._filtered_aggregate_ids:
+                return True
+            return self.aggregate_filter.filter(aggregate_one, aggregate_two)
+        return self._required_filter.filter(aggregate_one, aggregate_two)
 
     def _check_filters_for_flask_compatibility(self) -> None:
         """

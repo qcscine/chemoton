@@ -6,7 +6,11 @@ See LICENSE.txt for details.
 """
 
 from typing import List, Optional
-from typing_extensions import Self
+import sys
+if sys.version_info < (3, 11):
+    from typing_extensions import Self
+else:
+    from typing import Self
 
 from wrapt import ObjectProxy
 import scine_database as db

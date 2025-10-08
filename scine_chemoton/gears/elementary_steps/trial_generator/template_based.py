@@ -660,7 +660,7 @@ class TemplateBased(TrialGenerator):
     @staticmethod
     def _get_bound_unbound_pairs_from_atoms(
         atoms: utils.AtomCollection, n_reactive_bound_pairs: int = -1, n_reactive_unbound_pairs: int = -1
-    ):
+    ) -> Tuple[int, int]:
         """
         Counts how many bound and unbound atom pairs there are in the given atom collection according to distance-based
         bond orders.
@@ -690,6 +690,8 @@ class TemplateBased(TrialGenerator):
         RuntimeError
             Raises if the structure is not corresponding to one connected molecule.
         """
+        n_bound_pairs = 0
+        n_unbound_pairs = 0
         if n_reactive_bound_pairs < 0 or n_reactive_unbound_pairs < 0:
             bond_orders = utils.BondDetector.detect_bonds(atoms)
             # Get the number of connected and unconnected atom pairs
@@ -701,11 +703,13 @@ class TemplateBased(TrialGenerator):
                     "Atom collection contains more than one molecule according to distance-based bond orders."
                 )
             graph = graph_result.graphs[0]
+            n_bound_pairs = graph.E
+            n_unbound_pairs = n_pairs - graph.E
 
-        # pylint: disable-next=possibly-used-before-assignment
-        n_bound_pairs = graph.E if n_reactive_bound_pairs < 0 else n_reactive_bound_pairs
-        # pylint: disable-next=possibly-used-before-assignment
-        n_unbound_pairs = n_pairs - graph.E if n_reactive_unbound_pairs < 0 else n_reactive_unbound_pairs
+        if n_reactive_bound_pairs >= 0:
+            n_bound_pairs = n_reactive_bound_pairs
+        if n_reactive_unbound_pairs >= 0:
+            n_unbound_pairs = n_reactive_unbound_pairs
         return n_unbound_pairs, n_bound_pairs
 
     def get_unimolecular_job_order(self) -> str:

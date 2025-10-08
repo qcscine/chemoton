@@ -40,7 +40,7 @@ def test_rotation_to_vector():
     start = np.array([2.0, 0.0, 0.0])
     target = np.array([0.5, 0.5, 0.5])
 
-    r = InterReactiveComplexes._rotation_to_vector(start, target)
+    r = InterReactiveComplexes.rotation_to_vector(start, target)
     end = r.T.dot(start)
 
     # end and target are parallel
@@ -183,7 +183,7 @@ def test_prune_by_repulsion_bond():
         # Rotate circle s.t. its normal aligns with the interatom axis
         interatom = coords[indices[0]] - coords[indices[1]]  # Interatom axis
         circle_normal = np.array([0.0, 0.0, 1.0])  # Initial points are in xy-plane
-        r = InterReactiveComplexes._rotation_to_vector(circle_normal, interatom)
+        r = InterReactiveComplexes.rotation_to_vector(circle_normal, interatom)
         possible_directions = (r.T.dot(possible_directions.T)).T
         # Move exactly between atoms
         possible_directions += 0.5 * (coords[indices[0]] + coords[indices[1]])
@@ -232,7 +232,7 @@ def test_get_attack_points_per_atom():
     for index in [None, [0]]:
         # Get attack points for all atoms
         reactive_complex = InterReactiveComplexes()
-        attack_points = reactive_complex._get_attack_points_per_atom(coords, elements, indices=index)
+        attack_points = reactive_complex.get_attack_points_per_atom(coords, elements, indices=index)
         # Flatten attack points
         flat_attack_points = []
         for pi in attack_points.values():
@@ -306,10 +306,10 @@ def test_set_up_rotamers_atom_on_atom():
     reactive_complex.options.number_rotamers_two_on_two = 500
 
     # Attack points of C in methane
-    attack_points1 = reactive_complex._get_attack_points_per_atom(coords1, elements1)
+    attack_points1 = reactive_complex.get_attack_points_per_atom(coords1, elements1)
     index1 = (0,)
     # Attack points of O in oxygen
-    attack_points2 = reactive_complex._get_attack_points_per_atom(coords2, elements2)
+    attack_points2 = reactive_complex.get_attack_points_per_atom(coords2, elements2)
     index2 = (2,)
     # Get operations for setting up one rotamer
     operations = reactive_complex._set_up_rotamers(
@@ -377,7 +377,7 @@ def test_set_up_rotamers_atom_on_pair():
     reactive_complex.options.number_rotamers_two_on_two = 500
 
     # Attack points of C in methane
-    attack_points1 = reactive_complex._get_attack_points_per_atom(coords1, elements1)
+    attack_points1 = reactive_complex.get_attack_points_per_atom(coords1, elements1)
     index1 = (0,)
     # Attack points of OH bond in water
     attack_points2 = reactive_complex._get_attack_points_per_atom_pair(coords2, elements2, [(1, 2)])

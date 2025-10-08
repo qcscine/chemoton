@@ -178,7 +178,8 @@ class KineticsBase(Gear, ABC):
         if cache_entry is not None and cache_entry[0] == n_structures:
             return cache_entry[1]
         # todo replace with a database library function
-        user_labels = [db.Label.USER_OPTIMIZED, db.Label.USER_GUESS, db.Label.USER_COMPLEX_OPTIMIZED]
+        user_labels = [db.Label.USER_OPTIMIZED, db.Label.USER_GUESS, db.Label.USER_COMPLEX_OPTIMIZED,
+                       db.Label.USER_SURFACE_OPTIMIZED]
         for s_id in structures:
             structure = db.Structure(s_id, self._structures)
             if structure.get_label() in user_labels:

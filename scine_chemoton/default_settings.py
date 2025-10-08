@@ -18,6 +18,14 @@ def default_nt_settings() -> utils.ValueCollection:
         "nt_nt_fixed_number_of_micro_cycles": True,
         "nt_nt_number_of_micro_cycles": 10,
         "nt_nt_filter_passes": 10,
+        **default_ts_irc_ircopt_settings(),  # type: ignore
+        # # # Settings for the optimisation of the reactive complex
+        "rcopt_convergence_max_iterations": 1000,
+    })
+
+
+def default_ts_irc_ircopt_settings() -> utils.ValueCollection:
+    return utils.ValueCollection({
         # # # Settings for the tsopt task
         "tsopt_convergence_max_iterations": 1000,
         "tsopt_convergence_step_max_coefficient": 2.0e-3,
@@ -62,8 +70,6 @@ def default_nt_settings() -> utils.ValueCollection:
         "opt_geoopt_coordinate_system": "cartesianWithoutRotTrans",
         "opt_bfgs_use_trust_radius": True,
         "opt_bfgs_trust_radius": 0.4,
-        # # # Settings for the optimisation of the reactive complex
-        "rcopt_convergence_max_iterations": 1000,
         # # # Settings for spin propensity checks
         **default_spin_propensity_settings(),  # type: ignore
         # # # Settings for connectivity checks

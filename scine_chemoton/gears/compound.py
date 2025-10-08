@@ -199,12 +199,17 @@ class BasicAggregateHousekeeping(Gear):
             # Check if graph exists
             graph = structure.get_graph("masm_cbor_graph")
             label = structure.get_label()
+            complex_labels = [
+                db.Label.COMPLEX_OPTIMIZED,
+                db.Label.SURFACE_COMPLEX_OPTIMIZED,
+                db.Label.USER_COMPLEX_OPTIMIZED
+            ]
             if ";" in graph:
-                if label != db.Label.COMPLEX_OPTIMIZED and label != db.Label.USER_COMPLEX_OPTIMIZED:
+                if label not in complex_labels:
                     warn(f"Structure '{str(structure.id())}' received incorrect label '{str(label)}', "
                          f"according to its graph, it is actually a complex.")
             else:
-                if label == db.Label.COMPLEX_OPTIMIZED or label == db.Label.USER_COMPLEX_OPTIMIZED:
+                if label in complex_labels:
                     warn(f"Structure '{str(structure.id())}' received incorrect label '{str(label)}', "
                          f"according to its graph, it is actually NOT a complex.")
             return graph
@@ -277,9 +282,9 @@ class BasicAggregateHousekeeping(Gear):
         # Setup query for optimized structures without aggregate
         selection = {
             "$and": [
+                {"analysis_disabled": {"$ne": True}},
                 {"label": {"$in": optimized_labels()}},
                 {"aggregate": ""},
-                {"analysis_disabled": {"$ne": True}},
             ]
         }
         # Loop over all results

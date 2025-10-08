@@ -5,7 +5,7 @@ Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Gr
 See LICENSE.txt for details.
 """
 
-from typing import Union, Dict, List, Tuple
+from typing import Union, Dict, List, Tuple, Optional
 from abc import ABC, abstractmethod
 
 import scine_database as db
@@ -54,6 +54,14 @@ class Ensemble(ABC):
     def _initialize_db_object(self, manager: db.Manager) -> Union[db.Compound, db.Flask, db.Reaction]:
         raise NotImplementedError
 
+    def get_electronic_energy(self, reference_state: ReferenceState) -> Optional[float]:
+        """
+        Getter for the electronic energy, representative for this structure ensemble, i.e., the electronic energy
+        of the structure with the lowest free energy approximation at the given reference state.
+        """
+        self._update_thermodynamics()
+        return self._structure_thermodynamics.get_representative_electronic_energy(reference_state)
+
     def get_db_id(self) -> db.ID:
         """
         Returns the database ID.
@@ -94,6 +102,15 @@ class Ensemble(ABC):
     @abstractmethod
     def _update_thermodynamics(self):
         raise NotImplementedError
+
+    def get_molecular_degrees_of_freedom(self,
+                                         reference_state: ReferenceState) -> Optional[utils.MolecularDegreesOfFreedom]:
+        """
+        Getter for the molecular degrees of freedom. These are typically, rotation, translation, vibration,
+        and electronic contributions.
+        """
+        self._update_thermodynamics()
+        return self._structure_thermodynamics.get_ensemble_degrees_of_freedom(reference_state)
 
     def complete(self):
         """

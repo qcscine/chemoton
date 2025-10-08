@@ -20,14 +20,15 @@ def connect_to_db(credentials: db.Credentials) -> db.Manager:
     return manager
 
 
-def yes_or_no_question(question: str, callable_input: Callable = input) -> bool:
+def yes_or_no_question(question: str, callable_input: Callable[[str], str] = input) -> bool:
     inp = callable_input(f"{question}? (y/n) ")
     while True:
-        if inp.strip().lower() in ["y", "yes"]:
+        inp = inp.replace('"', '').replace("'", "").strip().lower()
+        if inp in ["y", "yes"]:
             return True
-        if inp.strip().lower() in ["n", "no"]:
+        if inp in ["n", "no"]:
             return False
-        inp = callable_input("Did not recognize answer, please answer 'yes' or 'no': ")
+        inp = callable_input(f"Did not recognize answer '{inp}', please answer 'yes' or 'no': ")
 
 
 def integer_question(question: str, limits: Tuple[int, int], callable_input: Callable = input) -> int:

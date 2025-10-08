@@ -97,6 +97,16 @@ class Aggregate(Ensemble):
         return query_concentration_with_object(self._concentration_flux_property_name, self.get_db_object(),
                                                self._properties, self._structures)
 
+    def get_microcanonical_entropy(self, energy: float, rrkm: bool = True, active_rotors: bool = False)\
+            -> Optional[float]:
+        """
+        Getter for the microcanonical entropy at the given energy. The energy must be a total energy
+        larger than the zero temperature energy of the ensemble, i.e., it must be larger than the electronic
+        energy plus the zero point vibrational energy.
+        """
+        self._update_thermodynamics()
+        return self._structure_thermodynamics.get_ensemble_microcanonical_entropy(energy, rrkm, active_rotors)
+
     def get_aggregate_type(self) -> db.CompoundOrFlask:
         """
         Getter for the aggregate type.

@@ -113,14 +113,12 @@ def test_incorrect_refinement_input():
     with pytest.raises(RuntimeError):
         refinement_engine.run(single=True)
 
-    refinement_gear.options.refinements["double_ended_new_connections"] = True
+    refinement_gear.options.refinements.double_ended_new_connections = True
     refinement_engine.set_gear(refinement_gear)
     refinement_engine.run(single=True)  # should not fail
 
-    refinement_gear.options.refinements["redo_single_points"] = True
-    refinement_engine.set_gear(refinement_gear)
-    with pytest.raises(RuntimeError):
-        refinement_engine.run(single=True)
+    with pytest.raises(AttributeError):
+        refinement_gear.options.refinements.redo_single_points = True
     # Cleaning
     manager.wipe()
 
@@ -171,6 +169,7 @@ def test_if_refinement_runs_deactivated():
 
 @pytest.mark.filterwarnings("ignore:.+is not implemented by default:UserWarning")
 def test_refinement_with_wrong_model():
+    from scine_chemoton.gears.network_refinement.refinement import RefinementOptions
     n_compounds = 10
     n_flasks = 0
     n_reactions = 5
@@ -208,14 +207,14 @@ def test_refinement_with_wrong_model():
     refinement_gear = CalculationBasedRefinement()
     refinement_gear.options.model = pre_model
     refinement_gear.options.post_refine_model = refine_model
-    refinement_gear.options.refinements = {
-        "refine_single_points": True,
-        "refine_optimizations": True,
-        "double_ended_refinement": True,
-        "double_ended_new_connections": True,
-        "refine_single_ended_search": True,
-        "refine_structures_and_irc": True,
-    }
+    refinement_gear.options.refinements = RefinementOptions(
+        refine_single_points=True,
+        refine_optimizations=True,
+        double_ended_refinement=True,
+        double_ended_new_connections=True,
+        refine_single_ended_search=True,
+        refine_structures_and_irc=True,
+    )
     refinement_engine = Engine(manager.get_credentials(), fork=False)
     refinement_engine.set_gear(refinement_gear)
     for _ in range(2):
@@ -277,14 +276,7 @@ def test_sp_refinement():
     refinement_gear.options.model = pre_model
     refinement_gear.options.post_refine_model = refine_model
     refinement_gear.options.only_electronic_energies = True
-    refinement_gear.options.refinements = {
-        "refine_single_points": True,
-        "refine_optimizations": False,
-        "double_ended_refinement": False,
-        "double_ended_new_connections": False,
-        "refine_single_ended_search": False,
-        "refine_structures_and_irc": False,
-    }
+    refinement_gear.options.refinements.refine_single_points = True
     refinement_engine = Engine(manager.get_credentials(), fork=False)
     refinement_engine.set_gear(refinement_gear)
     for _ in range(2):
@@ -340,14 +332,8 @@ def test_barrier_screening():
     refinement_gear = CalculationBasedRefinement()
     refinement_gear.options.model = pre_model
     refinement_gear.options.post_refine_model = refine_model
-    refinement_gear.options.refinements = {
-        "refine_single_points": True,
-        "refine_optimizations": False,
-        "double_ended_refinement": False,
-        "double_ended_new_connections": False,
-        "refine_single_ended_search": False,
-        "refine_structures_and_irc": False,
-    }
+    refinement_gear.options.refinements.refine_single_points = True,
+
     refinement_gear.elementary_step_filter = ElementaryStepBarrierFilter(100.0, ModelCombination(pre_model),
                                                                          only_electronic_energies=True)
     refinement_engine = Engine(manager.get_credentials(), fork=False)
@@ -413,14 +399,8 @@ def test_opt_refinement():
     refinement_gear.options.model = pre_model
     refinement_gear.options.post_refine_model = refine_model
     refinement_gear.options.only_electronic_energies = True
-    refinement_gear.options.refinements = {
-        "refine_single_points": False,
-        "refine_optimizations": True,
-        "double_ended_refinement": False,
-        "double_ended_new_connections": False,
-        "refine_single_ended_search": False,
-        "refine_structures_and_irc": False,
-    }
+    refinement_gear.options.refinements.refine_optimizations = True
+
     refinement_engine = Engine(manager.get_credentials(), fork=False)
     refinement_engine.set_gear(refinement_gear)
     for _ in range(2):
@@ -501,14 +481,8 @@ def test_sp_and_opt_refinement():
     refinement_gear.options.model = pre_model
     refinement_gear.options.post_refine_model = refine_model
     refinement_gear.options.only_electronic_energies = True
-    refinement_gear.options.refinements = {
-        "refine_single_points": True,
-        "refine_optimizations": True,
-        "double_ended_refinement": False,
-        "double_ended_new_connections": False,
-        "refine_single_ended_search": False,
-        "refine_structures_and_irc": False,
-    }
+    refinement_gear.options.refinements.refine_single_points = True
+    refinement_gear.options.refinements.refine_optimizations = True
     refinement_engine = Engine(manager.get_credentials(), fork=False)
     refinement_engine.set_gear(refinement_gear)
     for _ in range(5):
@@ -568,14 +542,7 @@ def test_double_ended_new():
     refinement_gear.options.model = pre_model
     refinement_gear.options.post_refine_model = refine_model
     refinement_gear.options.only_electronic_energies = True
-    refinement_gear.options.refinements = {
-        "refine_single_points": False,
-        "refine_optimizations": False,
-        "double_ended_refinement": False,
-        "double_ended_new_connections": True,
-        "refine_single_ended_search": False,
-        "refine_structures_and_irc": False,
-    }
+    refinement_gear.options.refinements.double_ended_new_connections = True
     refinement_engine = Engine(manager.get_credentials(), fork=False)
     refinement_engine.set_gear(refinement_gear)
     for _ in range(5):
@@ -650,14 +617,7 @@ def test_single_ended_refinement():
     refinement_gear.options.post_refine_model = refine_model
     refinement_gear.options.only_electronic_energies = True
     refinement_gear.step_disabling = DisableAllSteps()
-    refinement_gear.options.refinements = {
-        "refine_single_points": False,
-        "refine_optimizations": False,
-        "double_ended_refinement": False,
-        "double_ended_new_connections": False,
-        "refine_single_ended_search": True,
-        "refine_structures_and_irc": False,
-    }
+    refinement_gear.options.refinements.refine_single_ended_search = True
     refinement_engine = Engine(manager.get_credentials(), fork=False)
     refinement_engine.set_gear(refinement_gear)
     for _ in range(5):
@@ -733,14 +693,7 @@ def test_refine_structures_and_irc():
     refinement_gear.options.model = pre_model
     refinement_gear.options.post_refine_model = refine_model
     refinement_gear.options.only_electronic_energies = True
-    refinement_gear.options.refinements = {
-        "refine_single_points": False,
-        "refine_optimizations": False,
-        "double_ended_refinement": False,
-        "double_ended_new_connections": False,
-        "refine_single_ended_search": False,
-        "refine_structures_and_irc": True,
-    }
+    refinement_gear.options.refinements.refine_structures_and_irc = True
     refinement_engine = Engine(manager.get_credentials(), fork=False)
     refinement_engine.set_gear(refinement_gear)
     for _ in range(5):
@@ -819,14 +772,7 @@ def test_refine_structures_and_irc_reaction_based_loop():
     refinement_gear.options.model = pre_model
     refinement_gear.options.post_refine_model = refine_model
     refinement_gear.options.only_electronic_energies = True
-    refinement_gear.options.refinements = {
-        "refine_single_points": False,
-        "refine_optimizations": False,
-        "double_ended_refinement": False,
-        "double_ended_new_connections": False,
-        "refine_single_ended_search": False,
-        "refine_structures_and_irc": True,
-    }
+    refinement_gear.options.refinements.refine_structures_and_irc = True
     refinement_gear.options.transition_state_energy_window = 0.0
     refinement_gear.reaction_filter = StopReactionFilter(["some_react_job"])
     refinement_engine = Engine(manager.get_credentials(), fork=False)
@@ -888,14 +834,7 @@ def test_refine_manual_reaction_selection():
     refinement_gear.options.model = pre_model
     refinement_gear.options.post_refine_model = refine_model
     refinement_gear.options.only_electronic_energies = True
-    refinement_gear.options.refinements = {
-        "refine_single_points": False,
-        "refine_optimizations": False,
-        "double_ended_refinement": False,
-        "double_ended_new_connections": False,
-        "refine_single_ended_search": False,
-        "refine_structures_and_irc": True,
-    }
+    refinement_gear.options.refinements.refine_structures_and_irc = True
     random_reaction = reactions.get_one_reaction(dumps({}))
     refinement_gear.reaction_filter = (StopReactionFilter(["some_react_job"])
                                        and ReactionIDFilter([random_reaction.id()]))
@@ -958,14 +897,7 @@ def test_reaction_based_single_points():
     refinement_gear.options.model = pre_model
     refinement_gear.options.post_refine_model = refine_model
     refinement_gear.options.only_electronic_energies = True
-    refinement_gear.options.refinements = {
-        "refine_single_points": True,
-        "refine_optimizations": False,
-        "double_ended_refinement": False,
-        "double_ended_new_connections": False,
-        "refine_single_ended_search": False,
-        "refine_structures_and_irc": False,
-    }
+    refinement_gear.options.refinements.refine_single_points = True
     random_reactions = reactions.random_select_reactions(3)
     refinement_gear.reaction_filter = StopReactionFilter(["some_react_job"]) and ReactionIDFilter(
         [r.id() for r in random_reactions])
@@ -1052,14 +984,7 @@ def test_single_ended_refinement_set_up_optimizations():
     refinement_gear.options.model = pre_model
     refinement_gear.options.post_refine_model = refine_model
     refinement_gear.options.only_electronic_energies = True
-    refinement_gear.options.refinements = {
-        "refine_single_points": False,
-        "refine_optimizations": False,
-        "double_ended_refinement": False,
-        "double_ended_new_connections": False,
-        "refine_single_ended_search": True,
-        "refine_structures_and_irc": False,
-    }
+    refinement_gear.options.refinements.refine_single_ended_search = True
     refinement_engine = Engine(manager.get_credentials(), fork=False)
     refinement_engine.set_gear(refinement_gear)
     for _ in range(5):
@@ -1142,14 +1067,7 @@ def test_double_ended_refinement():
     refinement_gear.options.post_refine_model = refine_model
     refinement_gear.options.only_electronic_energies = True
     refinement_gear.elementary_step_filter = StopDuringExploration(orders_to_wait_for=["some_react_job"])
-    refinement_gear.options.refinements = {
-        "refine_single_points": False,
-        "refine_optimizations": False,
-        "double_ended_refinement": True,
-        "double_ended_new_connections": False,
-        "refine_single_ended_search": False,
-        "refine_structures_and_irc": False,
-    }
+    refinement_gear.options.refinements.double_ended_refinement = True
     refinement_engine = Engine(manager.get_credentials(), fork=False)
     refinement_engine.set_gear(refinement_gear)
     for _ in range(5):
@@ -1199,7 +1117,7 @@ def test_enable_instead_of_refinement():
     refinement_gear.options.model = pre_model
     refinement_gear.options.post_refine_model = refine_model
     refinement_gear.options.only_electronic_energies = True
-    refinement_gear.options.refinements["refine_structures_and_irc"] = True
+    refinement_gear.options.refinements.refine_structures_and_irc = True
     refinement_gear.options.transition_state_energy_window = 0.0
     refinement_gear.reaction_enabling = ApplyToAllStepsInReaction(
         FilteredStepEnabling(ConsistentEnergyModelFilter(refine_model)))

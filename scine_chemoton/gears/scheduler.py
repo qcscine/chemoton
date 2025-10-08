@@ -77,6 +77,7 @@ class Scheduler(Gear):
             """
             self.job_priorities: Dict[str, int] = {
                 "scine_geometry_optimization": 2,
+                "scine_geometry_validation": 2,
                 "scine_ts_optimization": 2,
                 "scine_single_point": 5,
                 "scine_bond_orders": 2,
@@ -85,6 +86,7 @@ class Scheduler(Gear):
                 "scine_react_complex_afir": 5,
                 "scine_react_complex_nt": 5,
                 "scine_react_complex_nt2": 5,
+                "scine_kingfisher": 5,
                 "scine_react_ts_guess": 5,
                 "scine_step_refinement": 5,
                 "scine_dissociation_cut": 5,

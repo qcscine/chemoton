@@ -62,12 +62,18 @@ class FurtherExplorationFilter(ReactiveSiteFilter):
         self._structure_property_key = 'dissociated_structures'
 
     def __and__(self, o):
+        """
+        Overloaded `&` operator to chain rules with logical 'and'.
+        """
         if not isinstance(o, FurtherExplorationFilter):
             raise TypeError("FurtherExplorationFilter expects FurtherExplorationFilter "
                             "(or derived class) to chain with.")
         return FurtherExplorationFilterAndArray([self, o])
 
     def __or__(self, o):
+        """
+        Overloaded `|` operator to chain rules with logical 'or'.
+        """
         if not isinstance(o, FurtherExplorationFilter):
             raise TypeError("FurtherExplorationFilter expects FurtherExplorationFilter "
                             "(or derived class) to chain with.")

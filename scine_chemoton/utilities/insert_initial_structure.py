@@ -5,12 +5,15 @@ Copyright ETH Zurich, Department of Chemistry and Applied Biosciences, Reiher Gr
 See LICENSE.txt for details.
 """
 
-from typing import Union, Optional
+from typing import Union, List, Tuple, Optional
 import warnings
 
 import scine_database as db
 from scine_database.insert_concentration import insert_concentration_for_structure
 import scine_utilities as utils
+from pymatgen.io.cif import CifParser
+
+from .surfaces.pymatgen_interface import PmgInterface
 
 
 def insert_initial_structure(
@@ -40,13 +43,13 @@ def insert_initial_structure(
     model : db.Model
         Model to be used for the calculation.
     label : db.Label, optional
-        Label of the inserted structure, by default db.Label.MINIMUM_GUESS.
+        Label of the inserted structure, by default db.Label.USER_GUESS.
     job : db.Job, optional
         Job to be performed on the initial structure, by default db.Job('scine_geometry_optimization').
     settings : utils.ValueCollection, optional
         Job settings, by default none.
     start_concentration : float
-        The start concentratoin of the compound that will be generated from this structure.
+        The start concentration of the compound that will be generated from this structure.
 
     Returns
     -------
@@ -83,3 +86,46 @@ def insert_initial_structure(
 
     calculation.set_status(db.Status.NEW)
     return structure, calculation
+
+
+def insert_surface_from_materials_project(database: db.Manager, materials_project_query: str,
+                                          miller: Union[str, int, List[int]],
+                                          charge: int, multiplicity: int, model: db.Model,
+                                          label: db.Label = db.Label.USER_GUESS,
+                                          job: db.Job = db.Job('scine_geometry_optimization'),
+                                          settings: Optional[dict] = None, slab_settings: Optional[dict] = None,
+                                          extension: int = 1, conventional_cell: bool = True,
+                                          query_type: str = 'chemical_formula') \
+        -> List[Tuple[db.Structure, db.Calculation]]:
+
+    if query_type == 'chemical_formula':
+        crystal = PmgInterface.get_crystal_structure_by_formula(materials_project_query, conventional_cell)
+    elif query_type == 'material_id':
+        crystal = PmgInterface.get_crystal_structure_by_id(materials_project_query, conventional_cell)
+    else:
+        raise NotImplementedError("Only support query by 'chemical_formula' and 'material_id'")
+
+    if slab_settings is None:
+        slab_settings = {}
+    slabs = PmgInterface.get_slabs(crystal, miller, **slab_settings)
+    return PmgInterface.insert_slabs(slabs, charge, multiplicity, model, label, job, settings, extension, database)
+
+
+def insert_surface_from_cif_file(database: db.Manager, crystal_structure_filename: str,
+                                 miller: Union[str, int, List[int]],
+                                 charge: int, multiplicity: int, model: db.Model,
+                                 label: db.Label = db.Label.USER_GUESS,
+                                 job: db.Job = db.Job('scine_geometry_optimization'),
+                                 settings: Optional[dict] = None, slab_settings: Optional[dict] = None,
+                                 extension: int = 1) \
+        -> List[Tuple[db.Structure, db.Calculation]]:
+    parser = CifParser(crystal_structure_filename)
+    if parser.has_errors:
+        for warning in parser.warnings:
+            print(warning)
+    pymatgen_structure = parser.get_structures()[0]
+
+    if slab_settings is None:
+        slab_settings = {}
+    slabs = PmgInterface.get_slabs(pymatgen_structure, miller, **slab_settings)
+    return PmgInterface.insert_slabs(slabs, charge, multiplicity, model, label, job, settings, extension, database)

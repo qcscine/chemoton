@@ -31,7 +31,7 @@ from scine_chemoton.filters.reactive_site_filters import (
     HeuristicPolarizationReactionCoordinateFilter,
     CentralSiteFilter,
     AtomPairFunctionalGroupFilter,
-    SubStructureFilter,
+    SubStructureFilter
 )
 from scine_chemoton.reaction_rules.distance_rules import (
     DistanceRuleAndArray,
@@ -39,6 +39,7 @@ from scine_chemoton.reaction_rules.distance_rules import (
     SimpleDistanceRule,
     FunctionalGroupRule,
     AlwaysTrue,
+    DistanceBaseRule
 )
 from scine_chemoton.reaction_rules.polarization_rules import (
     PolarizationRuleAndArray,
@@ -1502,3 +1503,67 @@ class ReactiveSiteFiltersTests(unittest.TestCase):
         allowed_atoms = f.filter_atoms([cat, cat], list(range(n_atoms_tot)))
         assert len(allowed_atoms) == (n_atoms_tot - 24)
         assert allowed_atoms == list(set(range(n_atoms_tot)).difference(set(ring_ids)))
+
+    def test_reaction_rule_logical_arrays(self):
+        import ast
+        import scine_molassembler
+        import scine_utilities as utils
+
+        molecule_graph = ("pGFhhaVhYQBhYwZhb4GCAAFhcqRhbIKBB4EKY2xua4GiYXCCAAFjc2VxhQYHCAkKYmxygoEBgQBhc4KBCoEHYXMBp"
+                          "WFhAGFjB2FvgYMAAQJhcqRhbIOBBYEGgQhjbG5rgaJhcIIBAmNzZXGFBwYKCQhibHKDgQKBAYEAYXODgQiBBoEFYXM"
+                          "CpWFhAGFjCGFvgYMAAQJhcqRhbIOBAIEHgQljbG5rgaJhcIIBAmNzZXGFCAcGCglibHKDgQCBAoEBYXODgQCBCYEHY"
+                          "XMCpWFhAGFjCWFvgYQAAQIDYXKkYWyEgQOBBIEIgQpjbG5rgaJhcIICA2NzZXGFCQgHBgpibHKDggABgQOBAmFzg4ID"
+                          "BIEKgQhhcwWlYWEAYWMKYW+BhAABAgNhcqRhbISBAYECgQaBCWNsbmuBomFwggIDY3NlcYUKBgcICWJscoOCAAGBA4E"
+                          "CYXODggECgQmBBmFzBWFjD2FnomFFi4MACACDAQoAgwIKAIMDCQCDBAkAgwUHAIMGBwCDBgoAgwcIAIMICQCDCQoAYV"
+                          "qLAQEBAQEICAYHBgZhdoMDAAA=")
+        masm_idx_map = "[(0, 9), (0, 10), (0, 3), (0, 0), (0, 8), (0, 1), (0, 2), (0, 4), (0, 7), (0, 6), (0, 5)]"
+        serializer = scine_molassembler.JsonSerialization
+        cbor_binary = serializer.base_64_decode(molecule_graph)
+        cbor_format = serializer.BinaryFormat.CBOR
+        molecule = serializer(cbor_binary, cbor_format).to_molecule()
+
+        structure = utils.AtomCollection()
+        structure.elements = [utils.ElementType.C, utils.ElementType.C, utils.ElementType.H, utils.ElementType.H,
+                              utils.ElementType.N, utils.ElementType.H, utils.ElementType.H, utils.ElementType.H,
+                              utils.ElementType.C, utils.ElementType.O, utils.ElementType.O]
+        elements = [str(x) for x in structure.elements]
+        idx_map = ast.literal_eval(masm_idx_map)
+        structure.positions = [[-0.56606503, -0.87422282, 1.51932552],
+                               [0.57495475, 1.78777293, 1.2036215],
+                               [0.80731496, -2.21429814, 2.39329262],
+                               [-1.65356973, -3.18610399, -1.70374871],
+                               [-1.07003493, -1.44848158, -1.10954381],
+                               [2.08482842, 2.21896558, 2.58595883],
+                               [-0.91163229, 3.27016257, 1.33448012],
+                               [-2.30010651, -0.85345123, 2.6976502],
+                               [0.51022826, -0.09092477, -2.70220106],
+                               [1.62495855, 1.80020315, -1.28934354],
+                               [0.89912355, -0.40962169, -4.92949168]]
+
+        # Filter should return true for one carbon atom
+        filter1 = SimpleDistanceRule("N", 1) & SimpleDistanceRule("O", 1)
+        filter2 = DistanceRuleAndArray([SimpleDistanceRule("N", 1), SimpleDistanceRule("O", 1)])
+
+        assert isinstance(filter1, DistanceBaseRule)
+        assert isinstance(filter2, DistanceBaseRule)
+        allowed_ids = [8]
+        for i, _ in enumerate(elements):
+            assert (filter1.filter_by_rule([molecule], idx_map, elements, i)
+                    == filter2.filter_by_rule([molecule], idx_map, elements, i))
+            if i in allowed_ids:
+                assert filter2.filter_by_rule([molecule], idx_map, elements, i)
+            else:
+                assert not filter2.filter_by_rule([molecule], idx_map, elements, i)
+
+        # Filter should return true for three carbon atoms and one hydrogen atom
+        filter3 = SimpleDistanceRule("N", 1) | SimpleDistanceRule("O", 1)
+        filter4 = DistanceRuleOrArray([SimpleDistanceRule("N", 1), SimpleDistanceRule("O", 1)])
+
+        allowed_ids = [8, 0, 1, 3]
+        for i, _ in enumerate(elements):
+            assert (filter3.filter_by_rule([molecule], idx_map, elements, i)
+                    == filter4.filter_by_rule([molecule], idx_map, elements, i))
+            if i in allowed_ids:
+                assert filter4.filter_by_rule([molecule], idx_map, elements, i)
+            else:
+                assert not filter4.filter_by_rule([molecule], idx_map, elements, i)

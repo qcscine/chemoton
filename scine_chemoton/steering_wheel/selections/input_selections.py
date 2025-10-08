@@ -10,7 +10,11 @@ from copy import deepcopy
 from os import path
 from pathlib import Path
 from typing import Any, List, Optional, Tuple, Union
-from typing_extensions import TypeAlias
+import sys
+if sys.version_info < (3, 10):
+    from typing_extensions import TypeAlias
+else:
+    from typing import TypeAlias
 
 import scine_database as db
 import scine_utilities as utils

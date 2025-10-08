@@ -18,7 +18,11 @@ from threading import Thread, Event
 import warnings
 from time import sleep
 from typing import Any, Optional, Union, ItemsView, Tuple, List, Type
-from typing_extensions import TypeVar
+import sys
+if sys.version_info < (3, 12):
+    from typing_extensions import TypeVar
+else:
+    from typing import TypeVar
 
 from scine_database import Collection, Manager
 from scine_utilities import AtomCollection

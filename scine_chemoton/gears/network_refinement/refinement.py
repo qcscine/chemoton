@@ -11,6 +11,7 @@ from json import dumps
 from typing import Dict, List, Tuple, Set, Optional
 from warnings import warn
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, asdict
 
 # Third party imports
 import scine_database as db
@@ -20,7 +21,8 @@ from scine_database.queries import (
     model_query,
     stop_on_timeout,
     get_calculation_id_from_structure,
-    query_calculation_in_id_set
+    query_calculation_in_id_set,
+    optimized_labels
 )
 from scine_database.energy_query_functions import get_energy_for_structure
 
@@ -51,6 +53,57 @@ from .enabling import (
 )
 from ...utilities.db_object_wrappers.thermodynamic_properties import ReferenceState, PlaceHolderReferenceState
 from scine_chemoton.default_settings import default_opt_settings, default_nt_settings
+
+
+@dataclass(slots=True)
+class RefinementOptions:
+    """
+    RefinementOptions
+        A class specifying the wanted refinement(s)
+    """
+    refine_single_points: bool = False
+    """
+    bool
+        Calculate energies of all minima and transition states if they belong to a calculation that produced an
+        elementary step with a barrier less than 'max_barrier'. The job for the calculations can be selected
+        with 'options.sp_job' and its settings with 'options.sp_job_settings'.
+    """
+    refine_optimizations: bool = False
+    """
+    bool
+        Perform optimizations of minima and transition states. The same maximum barrier condition applies as for
+        'refine_single_points'. The job for the minima optimizations can be selected with 'options.opt_job' and
+        its settings with 'options.opt_job_settings'. The job for the transition state optimizations can be
+        selected with 'options.tsopt_job' and its settings with 'options.tsopt_job_settings'.
+    """
+    double_ended_refinement: bool = False
+    """
+    bool
+        Perform double ended TS searches for compounds that are connected. The 'max_barrier' conditions applies
+        as above. The job for this search can be selected with 'options.double_ended_job' and its settings with
+        'options.double_ended_job_settings'.
+    """
+    double_ended_new_connections: bool = False
+    """
+    bool
+        Perform double ended TS searches for compounds that might be connected. The job for this search can be
+        selected with 'options.double_ended_job' and its settings with 'options.double_ended_job_settings'.
+    """
+    refine_single_ended_search: bool = False
+    """
+    bool
+        Perform single ended searches again with new model if they were already successful with another model.
+        The 'max_barrier' conditions applies as above. The job for this search can be selected with
+        'options.single_ended_job' and its settings with 'options.single_ended_job_settings'.
+    """
+    refine_structures_and_irc: bool = False
+    """
+    bool
+        Reoptimize an elementary step that was found previously. The previous transition state is used as an
+        initial guess. A complete IRC is performed. The 'max_barrier' conditions applies as above.  The job for
+        this search can be selected with 'options.single_ended_step_refinement_job' and its settings with
+        'options.single_ended_step_refinement_settings'.
+    """
 
 
 class NetworkRefinement(Gear, ABC):
@@ -132,40 +185,10 @@ class NetworkRefinement(Gear, ABC):
                 The model used for the loop over previous calculations. If just a place-holder is provided,
                 the pre_refine_model is used.
             """
-            self.refinements: Dict[str, bool] = {
-                "refine_single_points": False,
-                "refine_optimizations": False,
-                "double_ended_refinement": False,
-                "double_ended_new_connections": False,
-                "refine_single_ended_search": False,
-                "refine_structures_and_irc": False,
-            }
+            self.refinements: RefinementOptions = RefinementOptions()
             """
-            Dict[str, bool]
-                A dictionary specifying the wanted refinement(s)
-                'refine_single_points': Calculate energies of all minima and transition states if they belong to a
-                calculation that produced an elementary step with a barrier less than 'max_barrier'. The job for the
-                calculations can be selected with 'options.sp_job' and its settings with 'options.sp_job_settings'.
-                'refine_optimizations': Perform optimizations of minima and transition states. The same maximum barrier
-                condition applies as for 'refine_single_points'. The job for the minima optimizations can be selected
-                with 'options.opt_job' and its settings with 'options.opt_job_settings'. The job for the transition
-                state optimizations can be selected with 'options.tsopt_job' and its settings with
-                'options.tsopt_job_settings'.
-                'double_ended_refinement': Perform double ended TS searches for compounds that
-                are connected. The 'max_barrier' conditions applies as above. The job for this search can be
-                selected with 'options.double_ended_job' and its settings with 'options.double_ended_job_settings'.
-                'double_ended_new_connections': Perform double ended TS searches for compounds that
-                might be connected. The job for this search can be selected with 'options.double_ended_job' and its
-                settings with 'options.double_ended_job_settings'.
-                'refine_single_ended_search': Perform single ended searches again with new model if they were
-                already successful with another model. The 'max_barrier' conditions applies as above. The job for this
-                search can be selected with 'options.single_ended_job' and its settings with
-                'options.single_ended_job_settings'.
-                'refine_structures_and_irc': Reoptimize an elementary step that was found previously. The previous
-                transition state is used as an initial guess. A complete IRC is performed. The 'max_barrier' conditions
-                applies as above.  The job for this search can be selected with
-                'options.single_ended_step_refinement_job' and its settings with
-                'options.single_ended_step_refinement_settings'.
+            RefinementOptions
+                The wanted refinement(s)
             """
             self.sp_job: db.Job = db.Job("scine_single_point")
             """
@@ -395,26 +418,27 @@ class NetworkRefinement(Gear, ABC):
 
     def _loop_impl(self):
         if self.options.model == self.options.post_refine_model and (
-            sum(self.options.refinements.values()) != 1 or not self.options.refinements["double_ended_new_connections"]
+            sum(asdict(self.options.refinements).values()) != 1 or
+            not self.options.refinements.double_ended_new_connections
         ) and not self.options.calculation_model != self.options.model:
             # new_connections would make sense to have identical model --> allow it if this is the only activated
             # refinement
             # If a calculation_model is given which differs from the pre_refine_model, allow it too.
             raise RuntimeError("model and post_refine_model must be different!")
-        if self.options.refinements["refine_single_points"]:
+        if self.options.refinements.refine_single_points:
             self._loop("refine_single_points")
-        if self.options.refinements["refine_optimizations"]:
+        if self.options.refinements.refine_optimizations:
             warn("WARNING: optimized TS verification after refinement is not implemented by default, yet")
             self._loop("refine_optimizations")
-        if self.options.refinements["double_ended_refinement"]:
+        if self.options.refinements.double_ended_refinement:
             self._loop("double_ended_refinement")
-        if self.options.refinements["double_ended_new_connections"]:
+        if self.options.refinements.double_ended_new_connections:
             warn("WARNING: A double ended job creating new connections between aggregates is not implemented by"
                  " default, yet")
             self._double_ended_new_connections_loop()
-        if self.options.refinements["refine_single_ended_search"]:
+        if self.options.refinements.refine_single_ended_search:
             self._loop("refine_single_ended_search")
-        if self.options.refinements["refine_structures_and_irc"]:
+        if self.options.refinements.refine_structures_and_irc:
             self._loop("refine_structures_and_irc")
         if self.have_to_stop_at_next_break_point():
             return
@@ -513,14 +537,7 @@ class NetworkRefinement(Gear, ABC):
         selection_i = {
             "$and": [
                 {"exploration_disabled": {"$ne": True}},
-                {
-                    "$or": [
-                        {"label": "minimum_optimized"},
-                        {"label": "user_optimized"},
-                        {"label": "complex_optimized"},
-                        {"label": "user_complex_optimized"},
-                    ]
-                },
+                {"label": {"$in": optimized_labels()}},
                 {"aggregate": {"$ne": ""}},
             ]
             + model_query(self.options.model)
@@ -543,6 +560,8 @@ class NetworkRefinement(Gear, ABC):
                 "$and": [
                     {"_id": {"$gt": {"$oid": str(structure_i.id())}}},  # avoid double count
                     {"exploration_disabled": {"$ne": True}},
+                    # minimum structure
+                    {"label": {"$in": optimized_labels()}},
                     # PES minimum requirements
                     {"nAtoms": {"$eq": n_atoms}},
                     {"charge": {"$eq": charge}},
@@ -550,15 +569,6 @@ class NetworkRefinement(Gear, ABC):
                     # has aggregate but different one
                     {"aggregate": {"$ne": ""}},
                     {"aggregate": {"$ne": str(aggregate_i)}},
-                    # minimum structure
-                    {
-                        "$or": [
-                            {"label": "minimum_optimized"},
-                            {"label": "user_optimized"},
-                            {"label": "complex_optimized"},
-                            {"label": "user_complex_optimized"},
-                        ]
-                    },
                 ]
                 + model_query(self.options.model)
             }
